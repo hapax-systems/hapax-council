@@ -2543,6 +2543,24 @@ def constitution_note_sha256(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _prompt_dispatch_module() -> Any:
+    """Reuse dispatch readers lazily; admission never invokes a reviewer."""
+
+    import importlib.util
+
+    name = "cc_pr_review_dispatch"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).with_name("cc-pr-review-dispatch.py")
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("review dispatch readers unavailable")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
 def _live_capacity_evidence(
     pr_number: int,
     head_sha: str,
@@ -2553,6 +2571,7 @@ def _live_capacity_evidence(
     registry: Mapping[str, Any],
     constituted_at: str,
     constitution_note_sha256: object = None,
+    dossier: Mapping[str, Any] | None = None,
 ) -> tuple[int, dict[str, int]] | None:
     """Re-derive capacity from the live PR diff, never from dossier fields.
 
@@ -2563,6 +2582,8 @@ def _live_capacity_evidence(
     hash, "changed" is content minus seat dispositions; without it, the note's
     mtime after ``constituted_at``.
     """
+
+    from github_pr_status import ListingRoute, choose_transport, rate_snapshot, rest_pool_blocked
 
     repo = str(frontmatter.get("pr_repo") or "").strip()
     try:
@@ -2583,36 +2604,90 @@ def _live_capacity_evidence(
     if not repo or not re.fullmatch(r"[0-9a-f]{40}", head_sha) or note_changed:
         return None
 
-    def gh(*args: str) -> str | None:
-        try:
-            result = subprocess.run(
-                ["gh", *args, "--repo", repo],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        return result.stdout if result.returncode == 0 else None
-
-    before = gh("pr", "view", str(pr_number), "--json", "headRefOid")
-    diff = gh("pr", "diff", str(pr_number)) if before is not None else None
-    after = gh("pr", "view", str(pr_number), "--json", "headRefOid") if diff is not None else None
     try:
+        if not isinstance(dossier, Mapping):
+            return None
+        source = dossier.get("diff_source")
+        comparison_base = dossier.get("comparison_base")
+        dispatch = _prompt_dispatch_module()
+        if source == "local-git":
+            if not isinstance(comparison_base, str) or not re.fullmatch(
+                r"[0-9a-f]{40}", comparison_base
+            ):
+                return None
+        elif (
+            source not in {"github-rest", "gh-pr-diff"}
+            or comparison_base != dispatch._GITHUB_DIFF_BASE
+        ):
+            return None
+        snapshot = rate_snapshot(repo_root=REPO_ROOT, runner=subprocess.run)
+        transport, reason = choose_transport(
+            repo_root=REPO_ROOT, runner=subprocess.run, snapshot=snapshot
+        )
+        if transport is None:
+            return None
+        route = ListingRoute(transport, rest_pool_blocked(snapshot) is not None, reason)
+
+        def fetch_live_pr() -> Any:
+            return dispatch.fetch_pr(
+                pr_number, repo=repo, repo_root=REPO_ROOT, runner=subprocess.run, route=route
+            )
+
+        before = fetch_live_pr()
         if (
-            before is None
-            or after is None
-            or diff is None
-            or json.loads(before).get("headRefOid") != head_sha
-            or json.loads(after).get("headRefOid") != head_sha
+            before.head_sha != head_sha
+            or before.number != pr_number
+            or before.changed_file_count is None
+            or len(before.files) != before.changed_file_count
+        ):
+            return None
+        if source == "local-git":
+            # Replay the recorded source even when today's quota preference changed.
+            # This reader has no REST fallback; a local failure cannot spend that pool.
+            diff = dispatch.fetch_pr_diff_from_local(
+                before, repo_root=REPO_ROOT, runner=subprocess.run
+            )
+        else:
+            if route.rest_blocked:
+                return None
+            if source == "github-rest":
+                diff = dispatch.fetch_pr_diff(
+                    before,
+                    repo=repo,
+                    repo_root=REPO_ROOT,
+                    runner=subprocess.run,
+                    route=ListingRoute("rest", False, reason),
+                    allow_local=False,
+                )
+            else:
+                # Dispatch's legacy REST reader is a distinct recorded source.
+                diff = dispatch.PrDiff(
+                    dispatch._run_gh(
+                        ["gh", "pr", "diff", str(pr_number), "--repo", repo],
+                        repo_root=REPO_ROOT,
+                        runner=subprocess.run,
+                    ),
+                    source="gh-pr-diff",
+                    comparison_base=dispatch._GITHUB_DIFF_BASE,
+                )
+        if (
+            diff.source != source
+            or diff.comparison_base != comparison_base
+            or hashlib.sha256(diff.encode("utf-8")).hexdigest() != dossier.get("diff_sha256")
+            or fetch_live_pr() != before
         ):
             return None
         charters = "\n\n".join(
             charter_text(str(lens)) for lens in registry.get("always_on_lenses") or []
         )
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        RuntimeError,
+        subprocess.TimeoutExpired,
+    ):
         return None
     note_block = _capacity_untrusted_block(
         "Linked cc-task note", f"## Linked task note: {note_path.name}\n\n{floor_note}", 60_000
@@ -3218,6 +3293,7 @@ def review_dossier_validity_blockers(
                     if CONSTITUTION_NOTE_SHA256_FIELD in loaded
                     else None
                 ),
+                dossier=loaded,
             )
 
     bound_pr = pr_number
