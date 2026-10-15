@@ -155,6 +155,7 @@ ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset(
         "claude.review.opus",
         "claude.interactive.full",
         "glmcp.review.direct",
+        "muse.review.direct",
     }
 )
 

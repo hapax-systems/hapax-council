@@ -78,6 +78,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "codex.headless.spark",
         "agy.review.direct",
         "glmcp.review.direct",
+        "muse.review.direct",
         "local_tool.local.worker",
         "vibe.headless.full",
     }
@@ -88,6 +89,12 @@ UNKNOWN_PRIVACY_POSTURES = frozenset({"unknown", "public_risk"})
 AGY_REVIEW_ROUTE_ID = "agy.review.direct"
 AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
+# Meta Muse review seat: the capability receipt clears the seat latch; a fresh
+# hapax.muse_quota_admission.v1 receipt (served model == pinned Standard model, META_API_KEY
+# scrubbed), folded into the live ledger by the telemetry writer, clears the quota blocker.
+MUSE_REVIEW_ROUTE_ID = "muse.review.direct"
+MUSE_REVIEW_ADMISSION_BLOCKER = "muse_review_seat_receipt_admission_required"
+MUSE_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
 CLAUDE_HEADLESS_ROUTE_ID = "claude.headless.full"
 CLAUDE_INTERACTIVE_ROUTE_ID = "claude.interactive.full"
@@ -114,6 +121,7 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     # Lane/session presence never clears this (review finding gemini-1, 2026-09-12: a route
     # missing from this set can never clear its config-recorded blocker).
     KIMI_INTERACTIVE_ROUTE_ID: KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER,
+    MUSE_REVIEW_ROUTE_ID: MUSE_ROUTE_SPECIFIC_QUOTA_BLOCKER,
 }
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 _WRAPPER_CAPABILITY_REASON_PREFIXES = (
@@ -153,6 +161,7 @@ class Platform(StrEnum):
     GEMINI = "gemini"
     GLMCP = "glmcp"
     KIMI = "kimi"
+    MUSE = "muse"
     LOCAL_TOOL = "local_tool"
     VIBE = "vibe"
 
@@ -2396,6 +2405,8 @@ def _capability_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[
         reasons.add("agy_review_seat_receipt_admission_required")
     if route_payload.get("route_id") == CLAUDE_REVIEW_ROUTE_ID:
         reasons.add(CLAUDE_REVIEW_ADMISSION_BLOCKER)
+    if route_payload.get("route_id") == MUSE_REVIEW_ROUTE_ID:
+        reasons.add(MUSE_REVIEW_ADMISSION_BLOCKER)
     if route_payload.get("route_id") == "api.headless.provider_gateway":
         reasons.add("provider_gateway_evidence_absent")
     return reasons
