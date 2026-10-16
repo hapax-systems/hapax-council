@@ -4809,6 +4809,106 @@ def test_archive_refuses_an_existing_archive_and_an_unreadable_marker(
     assert marker.value.reason_code == "claim_publication_archive_marker_unreadable"
 
 
+@pytest.mark.parametrize(
+    ("bound", "now"),
+    [
+        (float("nan"), _ARCHIVE_NOW),
+        (float("inf"), _ARCHIVE_NOW),
+        (0.0, _ARCHIVE_NOW),
+        (-1.0, _ARCHIVE_NOW),
+        (_ARCHIVE_BOUND, float("nan")),
+        (_ARCHIVE_BOUND, float("inf")),
+        (_ARCHIVE_BOUND, float("-inf")),
+    ],
+)
+def test_archive_refuses_a_non_finite_or_non_positive_age_before_deciding(
+    tmp_path: Path, bound: float, now: float
+) -> None:
+    """codex on #5177: a NaN bound made every journal old enough (NaN compares false)."""
+
+    fixture, _journals = _archive_root(tmp_path)
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ClaimPublicationError) as invalid:
+        sdlc_claim.archive_terminal_claim_publications(
+            vault_root=fixture.vault,
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            older_than_seconds=bound,
+            observed_at="20261016T030000Z",
+            now_epoch=now,
+            apply=True,
+        )
+
+    assert invalid.value.reason_code == "claim_publication_archive_bound_invalid"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_archive_fsyncs_the_shared_parent_before_the_first_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codex on #5177: the archive directory's own entry must be durable before any journal
+    leaves the live root, or a crash can lose the archive that now holds it."""
+
+    fixture, _journals = _archive_root(tmp_path)
+    events: list[tuple[str, str]] = []
+    original_fsync = sdlc_claim._fsync_directory
+    original_rename = sdlc_claim.os.rename
+
+    def fsync(path: Path) -> None:
+        events.append(("fsync", Path(path).name))
+        original_fsync(path)
+
+    def rename(source: object, target: object) -> None:
+        events.append(("rename", Path(str(source)).name))
+        original_rename(source, target)
+
+    monkeypatch.setattr(sdlc_claim, "_fsync_directory", fsync)
+    monkeypatch.setattr(sdlc_claim.os, "rename", rename)
+
+    _archive(fixture, apply=True)
+
+    first_rename = next(index for index, event in enumerate(events) if event[0] == "rename")
+    assert ("fsync", fixture.transactions.parent.name) in events[:first_rename]
+
+
+@pytest.mark.parametrize("shape", ["missing", "file", "symlink"])
+def test_archive_decides_nothing_for_a_root_that_is_not_one_real_directory(
+    tmp_path: Path, shape: str
+) -> None:
+    fixture, _journals = _archive_root(tmp_path)
+    root = tmp_path / "other-root"
+    if shape == "file":
+        root.write_text("not a directory\n")
+    elif shape == "symlink":
+        root.symlink_to(fixture.transactions, target_is_directory=True)
+
+    decisions = sdlc_claim.archive_terminal_claim_publications(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=root,
+        older_than_seconds=_ARCHIVE_BOUND,
+        observed_at="20261016T030000Z",
+        now_epoch=_ARCHIVE_NOW,
+        apply=True,
+    )
+
+    assert decisions == ()
+    assert all(path.is_dir() for path in fixture.transactions.iterdir())
+
+
+def test_archive_leaves_a_journal_named_entry_that_is_not_a_directory(tmp_path: Path) -> None:
+    fixture, _journals = _archive_root(tmp_path)
+    stray = fixture.transactions / f"claim-pub-{'d' * 64}"
+    stray.write_text("not a journal\n")
+
+    decisions = {item.publication_id: item for item in _archive(fixture, apply=True)}
+
+    assert decisions[stray.name].reason == "not_a_journal_directory"
+    assert decisions[stray.name].archive is False
+    assert stray.is_file()
+
+
 # ── task resolution retaken through task-store frontier churn (M95) ──────────
 # claim-publication-frontier-churn-bounded-retry-m95-20260927
 

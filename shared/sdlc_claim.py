@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -7087,11 +7088,14 @@ def archive_terminal_claim_publications(
     act, taken under the seat's claim serialization, never implicitly.
     """
 
-    if older_than_seconds <= 0:
+    # A NaN compares false, so a NaN bound or clock would make every journal "old enough".
+    if not (math.isfinite(older_than_seconds) and math.isfinite(now_epoch)) or (
+        older_than_seconds <= 0
+    ):
         raise ClaimPublicationError(
             "claim_publication_archive_bound_invalid",
-            "pass a positive age bound in seconds",
-            str(older_than_seconds),
+            "pass a finite positive age bound in seconds and a finite now_epoch",
+            f"older_than_seconds={older_than_seconds!r} now_epoch={now_epoch!r}",
         )
     root = _normalized(transaction_root)
     if not root.is_dir() or root.is_symlink():
@@ -7116,6 +7120,8 @@ def archive_terminal_claim_publications(
             "rerun with a fresh observed_at; an archive is created once",
             str(archive),
         ) from exc
+    # The archive's own entry must be durable before any journal leaves the live root.
+    _fsync_directory(archive.parent)
     moved: list[TerminalJournalArchiveDecision] = []
     for item in decisions:
         if not item.archive:
