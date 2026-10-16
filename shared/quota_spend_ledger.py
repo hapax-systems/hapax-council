@@ -57,8 +57,49 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
-AGY_ADMISSION_MODEL = "gemini-3.1-pro-high"
-AGY_ADMISSION_MODELS = frozenset({AGY_ADMISSION_MODEL, "gemini-3.1-pro-preview"})
+
+
+def agy_review_model_binding() -> tuple[str, str]:
+    """Resolve the declared model at use, never at import or by availability.
+
+    The base descriptor supplies the compatibility alias. Catalog availability
+    and review-family qualification remain separate admission requirements.
+    """
+    path = REPO_ROOT / "config" / "platform-capability-registry.json"
+    try:
+        registry = json.loads(path.read_text(encoding="utf-8"))
+        routes = [r for r in registry["routes"] if r["route_id"] == "agy.review.direct"]
+        if len(routes) != 1:
+            raise ValueError("expected one agy review route")
+        route = routes[0]
+        base = route["execution_descriptor"]["model_id"]
+        variants = [
+            v
+            for v in route["descriptor_variants"]
+            if v["knobs_override"].get("model_id", base) == base
+            and v["knobs_override"].get("effort") == "high"
+        ]
+        if (
+            len(variants) != 1
+            or not isinstance(variants[0]["blocked_reasons"], list)
+            or variants[0]["blocked_reasons"]
+        ):
+            raise ValueError("expected one unblocked high-effort base-model variant")
+        variant_id = variants[0]["variant_id"]
+        if not variant_id.startswith("agy@"):
+            raise ValueError("expected an agy CLI variant")
+        model = variant_id.removeprefix("agy@")
+        if not all(re.fullmatch(r"gemini-[a-z0-9][a-z0-9_.-]*", v) for v in (model, base)):
+            raise ValueError("expected Gemini model bindings")
+        return model, base
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(
+            "agy review registry binding unavailable or ambiguous; repair the governed "
+            "agy.review.direct base-model/high-effort variant in "
+            "config/platform-capability-registry.json; no model fallback"
+        ) from exc
+
+
 AGY_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?:[a-z0-9_.+-]*agy-quota-admission[a-z0-9_.+-]*\.yaml|"
@@ -1811,7 +1852,7 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
         AGY_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
         and _has_safe_agy_admission_witness(ref)
         and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
-        and any(f":model:{model}:" in ref for model in AGY_ADMISSION_MODELS)
+        and any(f":model:{model}:" in ref for model in agy_review_model_binding())
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
     )
