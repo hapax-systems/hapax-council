@@ -32,7 +32,7 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
 REGISTRY_BYTE_PIN = (
-    "8ef998d707ad7fb18ba48b33b0ee7674202d4884d32a10609ae83d6eb67a6335"  # pragma: allowlist secret
+    "517544b61c09b60229d5fcaf024b2c4146eae2ad2e567b5f998dcbecbb82d3f9"  # pragma: allowlist secret
 )
 
 
@@ -619,7 +619,7 @@ def test_primary_source_candidate_rejects_malformed_facts(changes: dict[str, Any
         _check_primary_source_request(**changes)
 
 
-def test_primary_source_candidate_declares_unimplemented_bounded_composition() -> None:
+def test_primary_source_candidate_declares_unexposed_bounded_composition() -> None:
     from shared.platform_capability_registry import PlatformCapabilityRegistry
 
     payload = _json(REGISTRY)
@@ -631,8 +631,8 @@ def test_primary_source_candidate_declares_unimplemented_bounded_composition() -
     binding = shape["candidate_binding"]
     assert binding["carrier_route_id"] == "codex.headless.full"
     assert binding["fetch_path"] == "scripts/hapax-primary-source-fetch"
-    assert binding["fetch_path_state"] == "planned"
-    assert binding["receipt_binding_state"] == "producer_absent"
+    assert binding["fetch_path_state"] == "implemented_unexposed"
+    assert binding["receipt_binding_state"] == "implemented_unexposed"
     assert binding["max_documents"] == 12
     assert binding["max_gets"] == 30
     assert binding["max_download_bytes"] == 100 * 1024 * 1024

@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
@@ -431,6 +432,7 @@ class RouteAuthorityReceipt(_PolicyModel):
         "runtime_actuation",
         "connector_mutation",
         "local_inference_entitlement",
+        "read_only_fetch",
     ]
     route_id: str
     issued_at: datetime
@@ -473,6 +475,20 @@ class RouteAuthorityReceipt(_PolicyModel):
                 raise ValueError(f"{self.receipt_type} receipts require task_ids")
             if not self.mutation_surfaces:
                 raise ValueError(f"{self.receipt_type} receipts require mutation_surfaces")
+        if self.receipt_type == "read_only_fetch":
+            if len(self.task_ids) != 1 or not self.task_ids[0].strip():
+                raise ValueError("read_only_fetch requires one task; re-mint for the intended task")
+            if self.mutation_surfaces or self.quality_floors:
+                raise ValueError("read_only_fetch cannot grant mutation or quality; remove them")
+            bindings = [
+                ref
+                for ref in self.evidence_refs
+                if re.fullmatch(r"candidate-binding-sha256:[0-9a-f]{64}", ref)
+            ]
+            if len(bindings) != 1:
+                raise ValueError("bind read_only_fetch to one current candidate-binding-sha256 ref")
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", self.receipt_id):
+                raise ValueError("use a safe read_only_fetch receipt_id without path separators")
         return self
 
 
@@ -1666,6 +1682,31 @@ def route_authority_receipt_reference(receipt: RouteAuthorityReceipt) -> str:
     return f"route-authority-receipt:{receipt.receipt_type}:{route_id}:{receipt.receipt_id}"
 
 
+def check_read_only_fetch_receipt(
+    receipt: RouteAuthorityReceipt,
+    *,
+    task_id: str,
+    route_id: str,
+    binding_sha256: str,
+    now: datetime | None = None,
+) -> str:
+    """Check bounded receipt data, never grant first-exposure authority from its hash."""
+    receipt = RouteAuthorityReceipt.model_validate(receipt.model_dump(mode="json"))
+    if receipt.receipt_type != "read_only_fetch":
+        raise ValueError("obtain a read_only_fetch receipt; other receipt kinds cannot permit GETs")
+    if receipt.task_ids != (task_id,):
+        raise ValueError("receipt task differs; obtain a receipt for this exact task")
+    if receipt.route_id != route_id:
+        raise ValueError("receipt route differs; obtain a receipt for the declared carrier")
+    if f"candidate-binding-sha256:{binding_sha256}" not in receipt.evidence_refs:
+        raise ValueError("candidate binding changed; obtain a receipt for the current declaration")
+    checked = _coerce_utc(now_utc() if now is None else now)
+    issued = _coerce_utc(receipt.issued_at)
+    if not issued <= checked < issued + _parse_duration_spec(receipt.stale_after):
+        raise ValueError("receipt is expired or future-dated; obtain a fresh scoped receipt")
+    return route_authority_receipt_reference(receipt)
+
+
 def _default_route_authority_receipt_id(
     receipt_type: str,
     route_id: str,
@@ -1684,6 +1725,7 @@ def build_route_authority_receipt(
         "runtime_actuation",
         "connector_mutation",
         "local_inference_entitlement",
+        "read_only_fetch",
     ],
     route_id: str,
     evidence_refs: Sequence[str],
@@ -1737,10 +1779,9 @@ def write_route_authority_receipt(
     target_dir = receipt_dir / ROUTE_AUTHORITY_RECEIPT_DIRNAME
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{receipt.receipt_id}.json"
-    target.write_text(
-        json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    mode = "x" if receipt.receipt_type == "read_only_fetch" else "w"
+    with target.open(mode, encoding="utf-8") as handle:
+        handle.write(json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
     return target
 
 
@@ -1760,7 +1801,7 @@ def apply_route_authority_receipts(
     payload = registry.model_dump(mode="json")
     routes_by_id = {route["route_id"]: route for route in payload["routes"]}
     for receipt in authority_receipts:
-        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
+        if receipt.receipt_type in {"runtime_actuation", "connector_mutation", "read_only_fetch"}:
             continue
         route_id = normalize_route_id(receipt.route_id)
         route_payload = routes_by_id.get(route_id)
@@ -1790,7 +1831,7 @@ def _load_fresh_route_authority_receipts(
             raise ValueError(f"invalid route authority receipt at {path}: {exc}") from exc
         if not _route_authority_receipt_is_fresh(receipt, now=checked_now):
             continue
-        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
+        if receipt.receipt_type in {"runtime_actuation", "connector_mutation", "read_only_fetch"}:
             key = (
                 normalize_route_id(receipt.route_id),
                 receipt.receipt_type,
@@ -1904,7 +1945,7 @@ def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[st
             "fresh_capability_evidence_absent",
             "quota_telemetry_unknown",
         }
-    if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
+    if receipt.receipt_type in {"runtime_actuation", "connector_mutation", "read_only_fetch"}:
         return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
 
@@ -3738,6 +3779,7 @@ __all__ = [
     "apply_route_authority_receipts",
     "build_dispatch_request",
     "build_route_authority_receipt",
+    "check_read_only_fetch_receipt",
     "evaluate_dispatch_policy",
     "load_dispatch_policy_sources",
     "route_authority_receipt_payload_hash",

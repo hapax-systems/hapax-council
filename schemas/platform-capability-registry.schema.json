@@ -769,7 +769,7 @@
     "primary_source_candidate_binding": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Candidate data only. The named fetch path and task-bound egress receipt producer are unimplemented; this object cannot authorize execution.",
+      "description": "Candidate data only. The named fetch path and task-bound read-only receipt producer are implemented but unexposed; this object cannot authorize execution.",
       "required": [
         "state", "carrier_route_id", "fetch_path", "fetch_path_state", "receipt_binding_state",
         "authority_contract_ref", "observation_contract_ref", "method", "allowed_domains",
@@ -780,8 +780,8 @@
         "state": {"const": "candidate_only"},
         "carrier_route_id": {"const": "codex.headless.full"},
         "fetch_path": {"const": "scripts/hapax-primary-source-fetch"},
-        "fetch_path_state": {"const": "planned"},
-        "receipt_binding_state": {"const": "producer_absent"},
+        "fetch_path_state": {"const": "implemented_unexposed"},
+        "receipt_binding_state": {"const": "implemented_unexposed"},
         "authority_contract_ref": {"const": "shared/dispatcher_policy.py:RouteAuthorityReceipt"},
         "observation_contract_ref": {"const": "shared/platform_capability_receipts.py:PlatformCapabilityReceipt"},
         "method": {"const": "GET"},
