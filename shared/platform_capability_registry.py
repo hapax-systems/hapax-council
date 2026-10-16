@@ -75,6 +75,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.interactive.full",
         "kimi.interactive.lane",
         "codex.headless.full",
+        "codex.headless.gpt61_shadow",
         "codex.headless.spark",
         "agy.review.direct",
         "glmcp.review.direct",
@@ -171,6 +172,7 @@ class Profile(StrEnum):
     DIRECT = "direct"
     FLASH = "flash"
     FULL = "full"
+    GPT61_SHADOW = "gpt61_shadow"
     HAIKU = "haiku"
     JR = "jr"
     LANE = "lane"
@@ -233,6 +235,7 @@ class ModelId(StrEnum):
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
     GPT_6_ASTRA = "gpt-6-astra"
+    GPT_6_1_SOL = "gpt-6.1-sol"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
@@ -948,6 +951,15 @@ class PlatformCapabilityRoute(StrictModel):
         expected = f"{self.platform.value}.{self.mode.value}.{self.profile.value}"
         if self.route_id != expected:
             raise ValueError(f"route_id must equal platform.mode.profile: {expected}")
+
+        if self.profile is Profile.GPT61_SHADOW and (
+            self.platform is not Platform.CODEX
+            or self.mode is not Mode.HEADLESS
+            or self.execution_descriptor
+            != ExecutionDescriptor(model_id=ModelId.GPT_6_1_SOL, effort=Effort.HIGH)
+            or self.descriptor_variants
+        ):
+            raise ValueError("gpt61_shadow requires its exact measurement descriptor, no variants")
 
         if any(
             is_agentic_trust_supply_evidence_reference(identity)
@@ -2343,6 +2355,7 @@ def _receipt_measures_capability_scores(
     unmeasured_score_blockers = {
         "capability_scores_asserted_not_measured",
         "capabilityio_measurement_absent",
+        "gpt61_quality_measurement_absent",
     }
     return not (capability_blockers | top_blockers) & unmeasured_score_blockers
 

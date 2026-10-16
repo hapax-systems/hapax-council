@@ -45,6 +45,207 @@ IDENTITY_SOURCES = (
 )
 
 
+def _gpt61_shadow_registry(tmp_path):
+    path = tmp_path / "candidate-registry.json"
+    path.write_bytes(REGISTRY.read_bytes())
+    return path
+
+
+def _gpt61_shadow_binding(tmp_path, extra=(), output=None):
+    runtime = tmp_path / "runtime"
+    (runtime / "scripts").mkdir(parents=True)
+    helper = runtime / "scripts/capability-execution.sh"
+    helper.write_bytes((REPO_ROOT / "scripts/capability-execution.sh").read_bytes())
+    for name in ("shared", "config"):
+        (runtime / name).symlink_to(REPO_ROOT / name, target_is_directory=True)
+    python = runtime / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        "#!/bin/bash\n"
+        + (
+            f'if [[ "${{3:-}}" == *runpy.run_module* ]]; then\n'
+            f"printf %s {shlex.quote(output)}; exit 0\nfi\n"
+            if output is not None
+            else ""
+        )
+        + f'exec {shlex.quote(sys.executable)} "$@"\n'
+    )
+    python.chmod(0o755)
+    native = tmp_path / "fake-native.py"
+    native.write_text(
+        "import json,sys,tomllib\nfrom pathlib import Path\n"
+        "Path(__file__).with_suffix('.called').touch()\n"
+        "config=tomllib.loads(Path(sys.argv[1]).read_text())\n"
+        "args=sys.argv[2:]\n"
+        "for i in range(0,len(args),2):\n"
+        " if args[i]=='--disable': continue\n"
+        " key,value=args[i+1].split('=',1)\n"
+        " table=config\n"
+        " for part in key.split('.')[:-1]: table=table.setdefault(part,{})\n"
+        " table[key.split('.')[-1]]=tomllib.loads('value='+value)['value']\n"
+        "config['_argv']=args\nprint(json.dumps(config))\n"
+    )
+    config = tmp_path / "inherited.toml"
+    config.write_text('service_tier="fast"\n[features]\nfast_mode=true\n')
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("HAPAX_", "CODEX_"))}
+    env.update(
+        HOME=str(tmp_path), HAPAX_PLATFORM_CAPABILITY_REGISTRY=str(_gpt61_shadow_registry(tmp_path))
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; shift; EXECUTION_ROUTE=codex.headless.gpt61_shadow; '
+            'CODEX_EXTRA=("$@"); bind_codex_execution || exit $?; '
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(native))} {shlex.quote(str(config))} "
+            '"${CODEX_EXECUTION_ARGS[@]}" "${CODEX_EXTRA[@]}"',
+            "fixture",
+            str(helper),
+            *extra,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return result
+
+
+@pytest.mark.parametrize("extra", [(), ("--disable", "fast_mode")])
+def test_gpt61_shadow_shell_neutralizes_inherited_fast(tmp_path, extra):
+    result = _gpt61_shadow_binding(tmp_path, extra)
+    assert result.returncode == 0, result.stderr
+    config = json.loads(result.stdout)
+    assert config.pop("_argv") == [
+        part
+        for setting in (
+            'model="gpt-6.1-sol"',
+            'model_reasoning_effort="high"',
+            'service_tier="default"',
+            "features.fast_mode=false",
+        )
+        for part in ("-c", setting)
+    ] + list(extra)
+    assert config["service_tier"] == "default"
+    assert config["features"]["fast_mode"] is False
+    assert config["model"] == "gpt-6.1-sol"
+    assert config["model_reasoning_effort"] == "high"
+
+
+@pytest.mark.parametrize("form", ["-c", "--config", "--config=", "attached", "-c="])
+@pytest.mark.parametrize(
+    "setting",
+    [
+        'service_tier="fast"',
+        '"service_tier"="priority"',
+        "'service_tier'='flex'",
+        "features.fast_mode=true",
+        'features."fast_mode"=true',
+        "features={fast_mode=true}",
+        'profiles={trial={service_tier="fast"}}',
+        'profiles.trial.service_tier="fast"',
+        'model="gpt-6-astra"',
+        'model_reasoning_effort="low"',
+        'model_provider="other"',
+        'profile="trial"',
+        'model_providers={openai={base_url="http://127.0.0.1:1"}}',
+        'openai_base_url="http://127.0.0.1:1"',
+        'chatgpt_base_url="http://127.0.0.1:1"',
+        '"openai_base_url"="http://127.0.0.1:1"',
+        "'chatgpt_base_url'='http://127.0.0.1:1'",
+    ],
+)
+def test_gpt61_shadow_config_forms_refuse_before_endpoint(tmp_path, form, setting):
+    extra = [form + setting] if form.endswith("=") else [form, setting]
+    if form == "attached":
+        extra = ["-c" + setting]
+    result = _gpt61_shadow_binding(tmp_path, extra)
+    assert result.returncode == 9, result.stdout + result.stderr
+    assert not result.stdout
+    assert not (tmp_path / "fake-native.called").exists()
+    assert "override" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--enable", "fast_mode"],
+        ["--enable=fast_mode"],
+        ["-mgpt-6-astra"],
+        ["--model=gpt-6-astra"],
+        ["-ptrial"],
+        ["--profile", "trial"],
+        ["--local-provider=ollama"],
+        ["--oss"],
+    ],
+)
+def test_gpt61_shadow_feature_flag_refused(tmp_path, extra):
+    result = _gpt61_shadow_binding(tmp_path, extra)
+    assert result.returncode == 9
+    assert not result.stdout
+    assert not (tmp_path / "fake-native.called").exists()
+    assert "override" in result.stderr
+
+
+def test_gpt61_shadow_guard_preserves_other_routes_fast_semantics():
+    for extra in (
+        ["-c", 'service_tier="fast"'],
+        ["--enable", "fast_mode"],
+        ["-c", 'openai_base_url="http://127.0.0.1:1"'],
+        ["-c", 'chatgpt_base_url="http://127.0.0.1:1"'],
+    ):
+        reject_codex_identity_overrides(extra, route_id="codex.headless.full")
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "extra",
+        "duplicate",
+        "type",
+        "model_id",
+        "effort",
+        "context_mode",
+        "fast_mode",
+        "quantization",
+        "keys",
+        "envelope",
+        "missing",
+        "json_duplicate",
+    ],
+)
+def test_gpt61_shadow_shell_rejects_corrupt_binding(tmp_path, monkeypatch, capsys, defect):
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(REGISTRY))
+    assert execution_main(["--route", "codex.headless.gpt61_shadow", "--with-descriptor"]) == 0
+    binding = json.loads(capsys.readouterr().out)
+    if defect == "extra":
+        binding["argv"] += ["-c", 'service_tier="fast"']
+    if defect == "duplicate":
+        binding["argv"][-1] = binding["argv"][-3]
+    if defect == "type":
+        binding["argv"][-1] = "features.fast_mode=0"
+    if defect in binding["descriptor"]:
+        binding["descriptor"][defect] = "invalid"
+    if defect == "keys":
+        binding["descriptor"]["extra"] = "undeclared"
+    if defect == "envelope":
+        binding["extra"] = "undeclared"
+    if defect == "missing":
+        binding["argv"] = binding["argv"][:-2]
+    output = json.dumps(binding)
+    if defect == "json_duplicate":
+        output = output[:-1] + ',"argv":' + json.dumps(binding["argv"]) + "}"
+    result = _gpt61_shadow_binding(tmp_path, output=output)
+    assert result.returncode == 9, result.stdout + result.stderr
+    assert not result.stdout
+    assert not (tmp_path / "fake-native.called").exists()
+    assert "next action: restore the selected release resolver and retry" in result.stderr
+    if defect == "json_duplicate":
+        assert "duplicate key" in result.stderr
+    elif defect not in {"extra", "missing"}:
+        assert "target descriptor and invocation disagree" in result.stderr
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -105,7 +306,7 @@ def test_codex_config_has_no_identity_defaults():
 def _registry(tmp_path, *, missing=False):
     payload = json.loads(REGISTRY.read_text())
     for route in payload["routes"]:
-        if route["route_id"].startswith("codex."):
+        if route["route_id"] in {"codex.headless.full", "codex.headless.spark"}:
             if missing:
                 route.pop("execution_descriptor")
             else:
