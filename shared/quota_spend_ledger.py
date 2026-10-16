@@ -44,6 +44,7 @@ RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
         "agy.review.direct",
         "glmcp.review.direct",
         "kimi.interactive.lane",
+        "muse.review.direct",
         *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
     }
 )
@@ -54,6 +55,7 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "claude.review.opus": "anthropic-claude-subscription",
     "claude.interactive.full": "anthropic-claude-subscription",
     "kimi.interactive.lane": "moonshot-kimi-code-managed",
+    "muse.review.direct": "meta-muse-code",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
@@ -86,6 +88,33 @@ KIMI_ADMISSION_SECRETISH_RE = re.compile(
     re.IGNORECASE,
 )
 KIMI_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
+# Meta Muse review-seat admission (scripts/hapax-muse-quota-admission -> hapax-quota-telemetry-writer).
+# MUSE_ADMISSION_MODELS is the wrapper pin; it stays empty while the pin is held for the operator's
+# plan answer, so no muse snapshot is trusted until the pin lands. A -contributor id is never
+# admissible (Meta may train on contributor-mode content), and the ref must disclose that the
+# Meta credential env was scrubbed so a stray key cannot switch the seat to metered API billing.
+MUSE_ADMISSION_SUPPORTED_TOOL = "hapax-muse-quota-admission"
+MUSE_ADMISSION_MODELS: frozenset[str] = frozenset()
+MUSE_CONTRIBUTOR_SUFFIX = "-contributor"
+MUSE_ADMISSION_SCRUB_DISCLOSURE = ":credential_env_scrubbed:meta:"
+MUSE_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+# One anchored grammar for the whole ref, in the writer's emission order. No field admits ':', so a
+# duplicated or injected segment (a second model or witness) cannot match.
+_MUSE_ADMISSION_TIMESTAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+MUSE_ADMISSION_EVIDENCE_REF_GRAMMAR = re.compile(
+    r"\Arelay-receipt:"
+    r"(?P<label>[a-z0-9_.+-]*muse-quota-admission[a-z0-9_.+-]*\.yaml"
+    r"|unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:(?P<witness>[a-z0-9][a-z0-9_.+-]{2,239})"
+    rf":supported_tool:{re.escape(MUSE_ADMISSION_SUPPORTED_TOOL)}"
+    r":model:(?P<model>[a-z0-9][a-z0-9_.+-]*)"
+    rf"{re.escape(MUSE_ADMISSION_SCRUB_DISCLOSURE.rstrip(':'))}"
+    rf":observed_at:{_MUSE_ADMISSION_TIMESTAMP}"
+    rf":fresh_until:{_MUSE_ADMISSION_TIMESTAMP}\Z"
+)
 # Claude subscription-quota admission (scripts/hapax-claude-subscription-quota-admission →
 # hapax-quota-telemetry-writer). The composite ledger evidence ref MUST end in the account-live
 # suffix so the availability guarantor's _account_live_quota_observed_ref attests; lane/session
@@ -293,6 +322,7 @@ class ModelId(StrEnum):
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     Z_AI_GLM_5_3 = "z_ai-glm-5.3"
     KIMI_K3 = "kimi-code/k3"
+    MUSE_WONDER_1_0 = "muse-wonder-1.0"
     UNKNOWN = "unknown"
 
 
@@ -1747,6 +1777,8 @@ def _subscription_quota_missing_required_admission_evidence(
         )
     if normalized_route_id == "kimi.interactive.lane":
         return not any(_is_kimi_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "muse.review.direct":
+        return not any(_is_muse_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
 
 
@@ -1760,6 +1792,8 @@ def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnaps
         return "untrusted_claude_admission_evidence"
     if normalized_route_id == "kimi.interactive.lane":
         return "untrusted_kimi_admission_evidence"
+    if normalized_route_id == "muse.review.direct":
+        return "untrusted_muse_admission_evidence"
     return "untrusted_route_admission_evidence"
 
 
@@ -1825,6 +1859,22 @@ def _is_kimi_admission_evidence_ref(ref: str) -> bool:
         and any(f":model:{model}:" in ref for model in KIMI_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
+    )
+
+
+def _is_muse_admission_evidence_ref(ref: str) -> bool:
+    match = MUSE_ADMISSION_EVIDENCE_REF_GRAMMAR.fullmatch(ref)
+    if match is None:
+        return False
+    label, model = match["label"], match["model"]
+    return (
+        MUSE_ADMISSION_SECRETISH_RE.search(match["witness"]) is None
+        and (
+            label.startswith("unsafe-receipt-name-sha256:")
+            or MUSE_ADMISSION_SECRETISH_RE.search(label.removesuffix(".yaml")) is None
+        )
+        and model in MUSE_ADMISSION_MODELS
+        and not model.endswith(MUSE_CONTRIBUTOR_SUFFIX)
     )
 
 

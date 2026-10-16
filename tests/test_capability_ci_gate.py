@@ -153,7 +153,7 @@ class CapabilityCIGateTest(unittest.TestCase):
         self.assertEqual(baseline.schema_version, 2)
         # inventory_baseline() after retiring the five Sonar supply ids.
         self.assertEqual(baseline.count, len(baseline.records))
-        self.assertEqual(baseline.count, 187)
+        self.assertEqual(baseline.count, 188)
         evaluator = baseline.records["local_compute.agentic_trust_evaluator_surface"]
         self.assertEqual(evaluator.inventory_disposition.value, "evidence_only_non_supply")
 
@@ -177,10 +177,13 @@ class CapabilityCIGateTest(unittest.TestCase):
             "litellm.web-scout",
             "perplexity_search_or_sonar",
         }
+        # Supply declared after the v1 snapshot. The historical fixture is NOT rewritten to
+        # contain them; each later addition is named here instead.
+        added_since_v1 = {"muse.review.direct"}
         # The v1 fixture stays the historical supply set. The five Sonar ids
         # are still in that file and are no longer in the live supply plane.
         self.assertEqual(set(legacy["fingerprints"]) - set(current_fingerprints), retired_supply)
-        self.assertTrue(set(current_fingerprints) <= set(legacy["fingerprints"]))
+        self.assertEqual(set(current_fingerprints) - set(legacy["fingerprints"]), added_since_v1)
         # The Claude reviewer declaration has since changed; loading v1 must
         # preserve and report that difference among the ids that remain.
         self.assertEqual(
@@ -198,7 +201,8 @@ class CapabilityCIGateTest(unittest.TestCase):
 
         self.assertEqual(
             set(delta.new_capability_ids),
-            {descriptor.shape_id for descriptor in snapshot.evidence_only_non_supply_descriptors()},
+            {descriptor.shape_id for descriptor in snapshot.evidence_only_non_supply_descriptors()}
+            | added_since_v1,
         )
         self.assertEqual(delta.changed_capability_ids, ["claude.review.opus"])
         self.assertEqual(delta.missing_capability_ids, sorted(retired_supply))

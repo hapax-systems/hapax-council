@@ -1905,6 +1905,30 @@ def test_glmcp_subscription_route_holds_when_route_quota_unknown() -> None:
     assert "route_subscription_quota_state:unknown" in decision.reason_codes
 
 
+def test_muse_subscription_route_holds_when_route_quota_unknown() -> None:
+    """Aggregate subscription freshness must not launch the muse seat: only its own fresh
+    route-specific admission (served model == pin, credential env scrubbed) may."""
+    request = _request(
+        platform="muse",
+        mode="review",
+        profile="direct",
+        route_id="muse.review.direct",
+        capability=_capability(route_id="muse.review.direct"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("quota-snapshot:muse.review.direct:missing",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in decision.reason_codes
+
+
 def test_claude_subscription_route_holds_when_route_quota_unknown() -> None:
     request = _request(
         platform="claude",
