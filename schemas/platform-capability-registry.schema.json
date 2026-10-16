@@ -299,7 +299,8 @@
         "subagent",
         "cockpit_command",
         "cctv_runner",
-        "self_inline"
+        "self_inline",
+        "research"
       ]
     },
     "capability_shape_state": {

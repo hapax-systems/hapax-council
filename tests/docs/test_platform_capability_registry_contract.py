@@ -32,7 +32,7 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
 REGISTRY_BYTE_PIN = (
-    "b7680b6f12e2a7990393374a007fee55813a767002e88842db7539919713d537"  # pragma: allowlist secret
+    "264272f809c4b58774d87bb6c0733d19c379df5fd41b622494688bcb191e0bd0"  # pragma: allowlist secret
 )
 
 
@@ -370,6 +370,7 @@ def test_seed_registry_records_omitted_shapes_as_evidence_only_non_supply() -> N
         "cockpit_command",
         "cctv_runner",
         "self_inline",
+        "research",
     }
     assert required_classes <= {shape["shape_class"] for shape in shapes.values()}
     assert set(typed_shapes) == set(shapes)
@@ -403,6 +404,50 @@ def test_seed_registry_records_omitted_shapes_as_evidence_only_non_supply() -> N
     assert "local-energy-technical-telemetry-only" in evaluator["spend_semantics"]
     assert "no-economic-payback-effect" in evaluator["spend_semantics"]
     assert "production_evidence_absent" in evaluator["blocked_reasons"]
+
+
+def test_capability_shape_class_schema_matches_runtime_enum() -> None:
+    from shared.platform_capability_registry import CapabilityShapeClass
+
+    assert set(_json(SCHEMA)["$defs"]["capability_shape_class"]["enum"]) == {
+        item.value for item in CapabilityShapeClass
+    }
+    assert CapabilityShapeClass.RESEARCH.value == "research"
+
+
+@pytest.mark.parametrize(
+    "surface_id",
+    ("research.external_primary_source_fetch", "surface.research.primary_source_fetch"),
+)
+def test_external_primary_source_research_holds_without_route_supply(surface_id: str) -> None:
+    from shared.platform_capability_registry import (
+        AuthorityCeiling,
+        CapabilityShapeClass,
+        CapabilityShapeState,
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    shape = next(
+        shape
+        for shape in registry.omitted_capability_shapes
+        if shape.shape_id == "research.external_primary_source_fetch"
+    )
+    assert shape.shape_class is CapabilityShapeClass.RESEARCH
+    assert shape.shape_state is CapabilityShapeState.INTAKE_REQUIRED
+    assert shape.authority_ceiling is AuthorityCeiling.READ_ONLY
+    assert shape.demand_eligible is False
+    assert shape.route_ids == []
+
+    disposition = disposition_for_capability_surface_delta(registry, _surface_delta(surface_id))
+    assert disposition.action is CapabilitySurfaceDeltaAction.KNOWN_HOLD_FOR_MEASUREMENT
+    assert disposition.descriptor_id == shape.shape_id
+    assert disposition.demand_eligible is False
+    assert "require:route-binding-with-quota-admission" in disposition.remediation_refs
+    assert "require:read-only-egress-receipt" in disposition.remediation_refs
+    assert "require:source-ledger" in disposition.remediation_refs
 
 
 def test_seed_registry_excises_antigrav_live_route_but_records_deprecated_shape() -> None:
