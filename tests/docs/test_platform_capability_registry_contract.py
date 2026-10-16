@@ -32,7 +32,7 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
 REGISTRY_BYTE_PIN = (
-    "4dfe8a7f2e2e5f5bb9d51605f0d2c65403e7c22ca3e41c4a342632f861295a7a"  # pragma: allowlist secret
+    "8ef998d707ad7fb18ba48b33b0ee7674202d4884d32a10609ae83d6eb67a6335"  # pragma: allowlist secret
 )
 
 
@@ -448,6 +448,237 @@ def test_external_primary_source_research_holds_without_route_supply(surface_id:
     assert "require:route-binding-with-quota-admission" in disposition.remediation_refs
     assert "require:read-only-egress-receipt" in disposition.remediation_refs
     assert "require:source-ledger" in disposition.remediation_refs
+
+
+def _primary_source_request(**changes: Any) -> dict[str, Any]:
+    # Hypothetical input facts, not an authority receipt or an observed HTTP exchange.
+    facts = {
+        "url": "https://arxiv.org/abs/2505.22954",
+        "documents_used": 0,
+        "gets_used": 0,
+        "downloaded_bytes": 0,
+        "request_byte_limit": 1024,
+        "authentication": "none",
+        "billing": "declared_zero_incremental",
+        "endpoint_public": True,
+        "admission_passed": True,
+        "quota_fresh": True,
+    }
+    return facts | changes
+
+
+def _check_primary_source_request(**changes: Any) -> Any:
+    from shared import platform_capability_registry as registry_module
+
+    checker = getattr(registry_module, "check_primary_source_candidate_request", None)
+    assert callable(checker), "candidate request data check is not implemented"
+    shape = next(
+        row
+        for row in _json(REGISTRY)["omitted_capability_shapes"]
+        if row["shape_id"] == "research.external_primary_source_fetch"
+    )
+    return checker(shape["candidate_binding"], _primary_source_request(**changes))
+
+
+@pytest.mark.parametrize(
+    ("changes", "stop"),
+    [
+        ({"documents_used": 12}, "bound_exhausted"),
+        ({"gets_used": 30}, "bound_exhausted"),
+        ({"downloaded_bytes": 100 * 1024 * 1024}, "bound_exhausted"),
+        (
+            {"downloaded_bytes": 100 * 1024 * 1024 - 1023},
+            "bound_exhausted",
+        ),
+        ({"authentication": "required"}, "unexpected_authentication"),
+        ({"authentication": "unknown"}, "unexpected_authentication"),
+        ({"billing": "unknown"}, "unknown_billing"),
+        ({"billing": "paid"}, "unknown_billing"),
+        ({"url": "https://127.0.0.1/paper"}, "unsafe_endpoint"),
+        ({"url": "https://reader@arxiv.org/paper"}, "unsafe_endpoint"),
+        ({"url": "https://arxiv.org.attacker.example/paper"}, "unsafe_endpoint"),
+        ({"url": "http://arxiv.org/paper"}, "unsafe_endpoint"),
+        ({"endpoint_public": False}, "unsafe_endpoint"),
+        ({"endpoint_public": None}, "unsafe_endpoint"),
+        ({"admission_passed": False}, "failed_admission"),
+        ({"quota_fresh": False}, "failed_admission"),
+    ],
+)
+def test_primary_source_candidate_stops_on_unsafe_request_data(
+    changes: dict[str, Any], stop: str
+) -> None:
+    result = _check_primary_source_request(**changes)
+    assert result.stop_reasons == (stop,)
+    assert result.within_declared_constraints is False
+    assert result.execution_authorized is False
+
+
+def test_primary_source_candidate_boundary_pass_is_never_execution_authority() -> None:
+    # The last document/GET and exact remaining byte allowance are still available.
+    result = _check_primary_source_request(
+        documents_used=11,
+        gets_used=29,
+        downloaded_bytes=100 * 1024 * 1024 - 1024,
+    )
+    assert result.stop_reasons == ()
+    assert result.within_declared_constraints is True
+    assert result.execution_authorized is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("https://[arxiv.org/paper", id="malformed-ipv6"),
+        pytest.param("https://arxiv.org:invalid/paper", id="invalid-port"),
+        pytest.param("https://arxiv.org:65536/paper", id="out-of-range-port"),
+        pytest.param("https://arxiv.org:8443/paper", id="non-443-port"),
+        pytest.param("https://arxiv.org/paper?download=1", id="query"),
+        pytest.param("https://arxiv.org/paper#section", id="fragment"),
+        pytest.param("https://arxiv.org/a b", id="space"),
+        pytest.param("https://arxiv.org/a\tb", id="tab"),
+        pytest.param("https://arxiv.org/a\nb", id="newline"),
+        pytest.param("https://arxiv.org/a\rb", id="carriage-return"),
+        pytest.param("https://arxiv.org/a\x00b", id="control-nul"),
+        pytest.param("https://arxiv.org/a\x1fb", id="control-unit-separator"),
+        pytest.param("https://reader@arxiv.org/paper", id="username"),
+        pytest.param("https://@arxiv.org/paper", id="empty-username"),
+        pytest.param("https://:@arxiv.org/paper", id="empty-username-and-password"),
+    ],
+)
+def test_primary_source_candidate_rejects_each_unsafe_url_branch(url: str) -> None:
+    # All other facts pass: rejection must be caused by this next-hop URL alone.
+    result = _check_primary_source_request(url=url)
+    assert result.stop_reasons == ("unsafe_endpoint",)
+    assert result.within_declared_constraints is False
+    assert result.execution_authorized is False
+
+
+@pytest.mark.parametrize("admission_passed", [True, False], ids=["passing", "stopped"])
+def test_primary_source_candidate_never_authorizes_execution(admission_passed: bool) -> None:
+    result = _check_primary_source_request(admission_passed=admission_passed)
+    assert result.stop_reasons == (() if admission_passed else ("failed_admission",))
+    assert result.within_declared_constraints is admission_passed
+    assert result.execution_authorized is False
+
+
+@pytest.mark.parametrize("validator", ["schema", "runtime"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "duplicate-domains",
+        "missing-admission",
+        "duplicate-admission",
+        "unknown-admission",
+        "duplicate-stop",
+        "wrong-shape",
+        "wrong-authority",
+    ],
+)
+def test_primary_source_candidate_rejects_each_invalid_binding_branch(
+    validator: str, case: str
+) -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    shape = next(
+        row
+        for row in payload["omitted_capability_shapes"]
+        if row["shape_id"] == "research.external_primary_source_fetch"
+    )
+    binding = shape["candidate_binding"]
+    if case == "duplicate-domains":
+        binding["allowed_domains"].append(binding["allowed_domains"][0])
+    elif case == "missing-admission":
+        binding["admission_requirements"].pop()
+    elif case == "duplicate-admission":
+        binding["admission_requirements"][-1] = binding["admission_requirements"][0]
+    elif case == "unknown-admission":
+        binding["admission_requirements"][-1] = "unknown_requirement"
+    elif case == "duplicate-stop":
+        binding["stop_conditions"][-1] = binding["stop_conditions"][0]
+    elif case == "wrong-shape":
+        shape["shape_id"] = "research.another_shape"
+    elif case == "wrong-authority":
+        shape["authority_ceiling"] = "support_only"
+    else:
+        raise AssertionError(f"unhandled invalid binding fixture: {case}")
+
+    if validator == "schema":
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(_json(SCHEMA)).validate(payload)
+    else:
+        with pytest.raises(ValidationError):
+            PlatformCapabilityRegistry.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "changes", [{"gets_used": -1}, {"request_byte_limit": 0}, {"quota_fresh": "true"}]
+)
+def test_primary_source_candidate_rejects_malformed_facts(changes: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        _check_primary_source_request(**changes)
+
+
+def test_primary_source_candidate_declares_unimplemented_bounded_composition() -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    shape = next(
+        row
+        for row in payload["omitted_capability_shapes"]
+        if row["shape_id"] == "research.external_primary_source_fetch"
+    )
+    binding = shape["candidate_binding"]
+    assert binding["carrier_route_id"] == "codex.headless.full"
+    assert binding["fetch_path"] == "scripts/hapax-primary-source-fetch"
+    assert binding["fetch_path_state"] == "planned"
+    assert binding["receipt_binding_state"] == "producer_absent"
+    assert binding["max_documents"] == 12
+    assert binding["max_gets"] == 30
+    assert binding["max_download_bytes"] == 100 * 1024 * 1024
+    assert binding["max_incremental_cost_usd"] == 0
+    assert binding["allowed_domains"] == [
+        "arxiv.org",
+        "github.com",
+        "raw.githubusercontent.com",
+        "deepmind.google",
+        "openreview.net",
+        "proceedings.mlr.press",
+    ]
+    assert "task_bound_read_only_egress_receipt" in binding["admission_requirements"]
+    assert "seat_first_exposure_ruling" in binding["admission_requirements"]
+    assert shape["demand_eligible"] is False and shape["route_ids"] == []
+    jsonschema.Draft202012Validator(_json(SCHEMA)).validate(payload)
+    typed = PlatformCapabilityRegistry.model_validate(payload)
+    assert "research.external_primary_source_fetch" not in typed.route_map()
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("max_documents", 13),
+        ("max_gets", 31),
+        ("max_download_bytes", 104857601),
+        ("max_incremental_cost_usd", 1),
+        ("fetch_path_state", "implemented"),
+        ("stop_conditions", ["bound_exhausted"]),
+        ("allowed_domains", ["*.arxiv.org"]),
+    ],
+)
+def test_primary_source_candidate_schema_and_runtime_reject_widening(key: str, value: Any) -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    shape = next(
+        row
+        for row in payload["omitted_capability_shapes"]
+        if row["shape_id"] == "research.external_primary_source_fetch"
+    )
+    shape["candidate_binding"][key] = value
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(_json(SCHEMA)).validate(payload)
+    with pytest.raises(ValidationError):
+        PlatformCapabilityRegistry.model_validate(payload)
 
 
 def test_seed_registry_excises_antigrav_live_route_but_records_deprecated_shape() -> None:
