@@ -27,6 +27,11 @@ Usage::
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
 
+The ``--all`` scan spends only what changed: the open-PR list is fetched once
+per cycle with conditional requests (a 304 is free), and a PR's diff, files
+and dossier inputs are fetched only when its head sha differs from the last
+cycle's record.
+
 A family with live wall evidence from ``shared.quota_headroom`` (a spent window
 before its reset, or a live wall) is never seated: the constitution substitutes
 from the other admitted review families, never below the class's diversity
@@ -103,6 +108,7 @@ LOG = logging.getLogger("cc-pr-review-dispatch")
 DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
+DEFAULT_SCAN_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "scan-state.json"
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
@@ -1728,6 +1734,36 @@ def _packet_redaction_block_status(exc: Exception) -> str:
     if isinstance(exc, review_team.EmptyPrincipalRegistryError):
         return "packet_redaction_registry_empty"
     return "packet_redaction_registry_unreadable"
+
+
+_HTTP_STATUS_LINE_RE = re.compile(r"\AHTTP/[\d.]+\s+(\d{3})\b")
+
+
+def _parse_gh_api_include_output(stdout: str) -> tuple[str | None, dict[str, str], str]:
+    """Split ``gh api -i`` output into ``(status, lowercase headers, verbatim body)``.
+
+    Output without an ``HTTP/`` prefix is returned whole as the body with no
+    headers — the shape every non-``-i`` invocation produces — so ``-i`` can be
+    adopted per call without a matching change at each consumer. Header names are
+    lowercased because GitHub emits mixed case (``Etag``, ``X-Ratelimit-Reset``);
+    the body keeps its exact bytes, which diff consumers require.
+    """
+    if not stdout.startswith("HTTP/"):
+        return None, {}, stdout
+    parts = re.split(r"\r?\n\r?\n", stdout, maxsplit=1)
+    if len(parts) != 2:
+        return None, {}, stdout
+    head, body = parts
+    lines = re.split(r"\r?\n", head)
+    status_match = _HTTP_STATUS_LINE_RE.match(lines[0]) if lines else None
+    status = status_match.group(1) if status_match else None
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if not sep:
+            continue
+        headers[name.strip().lower()] = value.strip()
+    return status, headers, body
 
 
 def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120) -> str:
@@ -5399,6 +5435,194 @@ def release_accepted_artifacts(
     return results
 
 
+SCAN_STATE_SCHEMA = 1
+
+#: Result statuses proving this head sha reached a current-head dossier. A dry-run
+#: plan, a missing task link or a per-PR error must not suppress the next fetch.
+_SCAN_HEAD_RECORDING_STATUSES = frozenset(
+    {
+        "dispatched",
+        "multi_dispatched",
+        "skipped_fresh",
+        "multi_skipped_fresh",
+        "skipped_blocked",
+        "multi_skipped_blocked",
+    }
+)
+
+#: Safety cap for the scan's open-PR listing; pagination is driven by the short
+#: terminal page, not by this number. ~10x the estate's peak open-PR count.
+_SCAN_LIST_LIMIT = 1000
+
+
+def _fresh_scan_state() -> dict[str, Any]:
+    return {"schema": SCAN_STATE_SCHEMA, "heads": {}, "list_pages": {}}
+
+
+def _load_scan_state(path: Path) -> dict[str, Any]:
+    """Load the scan's cross-cycle state; a corrupt file fails OPEN to fresh.
+
+    Failing open costs one ungated cycle — every PR fetched once, the pre-change
+    behavior — while failing closed would stall the scan on damaged JSON.
+    """
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _fresh_scan_state()
+    if not isinstance(state, dict) or state.get("schema") != SCAN_STATE_SCHEMA:
+        return _fresh_scan_state()
+    heads = state.get("heads")
+    pages = state.get("list_pages")
+    if not isinstance(heads, dict):
+        heads = {}
+    if not isinstance(pages, dict):
+        pages = {}
+    return {"schema": SCAN_STATE_SCHEMA, "heads": heads, "list_pages": pages}
+
+
+def _write_scan_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _scan_listing_rows(items: list[Any]) -> list[dict[str, Any]]:
+    """Normalize raw REST list rows to the three fields the scan loop reads.
+
+    ``list_open_pr_statuses`` already returns this shape for its rows
+    (``number``/``isDraft``/``headRefOid``); the conditional listing returns raw
+    items (``number``/``draft``/``head.sha``), so both shapes reach the loop as one.
+    """
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("number") is None:
+            continue
+        head = item.get("head") if isinstance(item.get("head"), dict) else {}
+        rows.append(
+            {
+                "number": item["number"],
+                "isDraft": bool(item.get("draft")),
+                "headRefOid": str(head.get("sha") or ""),
+            }
+        )
+    return rows
+
+
+def _list_open_prs_conditional(
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    state: dict[str, Any],
+    limit: int = _SCAN_LIST_LIMIT,
+) -> tuple[list[dict[str, Any]], ListingRoute]:
+    """List open PRs over REST with per-page conditional requests.
+
+    A 304 answer does not count against the account-wide budget, so each page's
+    ETag is retained in the scan state and echoed as ``If-None-Match`` next cycle.
+    ``gh`` exits NONZERO on 304 (headers on stdout, ``gh: HTTP 304`` on stderr),
+    so this runs the command directly rather than through ``_run_gh``, whose
+    nonzero path is an error boundary. Any failure raises ``RuntimeError`` so
+    the caller can fall back to the transport chooser, which re-measures both
+    pools before spending anything.
+    """
+    pages_key = f"repos/{repo}/pulls|state=open"
+    pages: dict[str, Any] = state["list_pages"].get(pages_key, {})
+    per_page = 100
+    rows: list[dict[str, Any]] = []
+    page_number = 1
+    last_page: int | None = None
+    while len(rows) < limit:
+        page_key = str(page_number)
+        cached = pages.get(page_key)
+        cached = cached if isinstance(cached, dict) else None
+        etag = str(cached.get("etag") or "") if cached else ""
+        cmd = [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "-H",
+            "Accept: application/vnd.github+json",
+            f"repos/{repo}/pulls",
+            "-f",
+            "state=open",
+            "-f",
+            f"per_page={per_page}",
+            "-f",
+            f"page={page_number}",
+            "-i",
+        ]
+        if etag:
+            cmd += ["-H", f"If-None-Match: {etag}"]
+        try:
+            proc = runner(
+                cmd,
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise RuntimeError(f"gh api pulls could not run: {exc}") from exc
+        status, headers, body = _parse_gh_api_include_output(proc.stdout)
+        # The parsed status decides; stderr ("HTTP 304" verbatim) is consulted only
+        # without one, so a 403's hex request ID containing "304" cannot read as a 304.
+        not_modified = status == "304" or (
+            status is None and proc.returncode != 0 and "HTTP 304" in proc.stderr
+        )
+        if not_modified:
+            items = cached.get("items") if cached else None
+            if not isinstance(items, list):
+                raise RuntimeError(
+                    f"open-PR page {page_number} answered 304 without a cached copy to reuse"
+                )
+            new_etag = headers.get("etag")
+            if new_etag:
+                pages[page_key] = {"etag": new_etag, "items": items}
+            page_rows = _scan_listing_rows(items)
+            rows.extend(page_rows)
+            if len(items) < per_page:
+                last_page = page_number
+                break
+            page_number += 1
+            continue
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"gh api pulls failed (rc={proc.returncode}): {proc.stderr.strip()[:300]}"
+            )
+        try:
+            items = json.loads(body or "")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("open-PR listing returned non-json") from exc
+        if not isinstance(items, list):
+            raise RuntimeError("open-PR listing returned a non-list payload")
+        new_etag = headers.get("etag")
+        if new_etag:
+            pages[page_key] = {"etag": new_etag, "items": items}
+        else:
+            # Nothing to condition on; a stale etag would only invite page-2
+            # fetches the response cannot make free.
+            pages.pop(page_key, None)
+        rows.extend(_scan_listing_rows(items))
+        if len(items) < per_page:
+            last_page = page_number
+            break
+        page_number += 1
+    if last_page is not None:
+        # The open set shrank: cached pages beyond the terminal one are stale.
+        for stale in [k for k in pages if k.isdigit() and int(k) > last_page]:
+            del pages[stale]
+    state["list_pages"][pages_key] = pages
+    return rows, ListingRoute(
+        transport="rest",
+        rest_blocked=False,
+        reason="scan_conditional_rest_listing_served",
+    )
+
+
 def review_all_open_prs(
     *,
     repo: str = DEFAULT_REPO,
@@ -5411,58 +5635,122 @@ def review_all_open_prs(
     wake_dir: Path = DEFAULT_WAKE_DIR,
     send_runner: Any = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+    scan_state_path: Path | None = None,
 ) -> list[dict[str, Any]]:
+    """Scan every open PR, fetching only what changed since the last cycle.
+
+    ``scan_state_path=None`` keeps the exact legacy behavior: list via the transport
+    chooser and review every PR every cycle. With a path, the listing goes through
+    conditional requests (a 304 is free) and a PR whose head sha matches the last
+    cycle's recorded dispatch is skipped without any per-PR fetch.
+    """
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
-    try:
-        # The scan needs only PR numbers and draft flags; fetching statuses here would
-        # couple every review to one row's rollup availability.
-        open_prs, route = list_open_pr_statuses(
-            repo=repo,
-            repo_root=repo_root,
-            runner=gh_runner,
-            limit=100,
-            include_status=False,
-        )
-    except PrListingUnavailable as exc:
-        # Skip this scan rather than spending it into guaranteed 403s. Returning an empty
-        # result set is safe here — the next scan re-evaluates every open PR from scratch,
-        # so nothing is lost by sitting out a cycle. Logged loudly so an empty scan is
-        # never mistaken for "no PRs needed review".
-        LOG.warning(
-            "review-team dispatch scan skipped: %s%s",
-            exc.reason,
-            listing_unavailable_detail(exc),
-        )
-        return []
-    # The cycle's transport comes from the chooser, not from scanning rows for a stamp. Routing
-    # only the bulk listing spared almost nothing anyway — the listing is one call and the
-    # per-PR work below is N — so `route` is threaded all the way down.
+
+    def _chooser_listing() -> tuple[list[dict[str, Any]], ListingRoute] | None:
+        try:
+            # The scan needs only PR numbers, draft flags and head shas; statuses would
+            # couple every review to one row's rollup availability.
+            return list_open_pr_statuses(
+                repo=repo,
+                repo_root=repo_root,
+                runner=gh_runner,
+                limit=_SCAN_LIST_LIMIT,
+                include_status=False,
+            )
+        except PrListingUnavailable as exc:
+            # Skipping is safe: the next scan re-evaluates every open PR from scratch.
+            # Logged loudly so an empty scan is never mistaken for "no PRs needed review".
+            LOG.warning(
+                "review-team dispatch scan skipped: %s%s",
+                exc.reason,
+                listing_unavailable_detail(exc),
+            )
+            return None
+
+    state: dict[str, Any] | None = None
+    if scan_state_path is not None:
+        state = _load_scan_state(scan_state_path)
+    if state is not None:
+        try:
+            open_prs, route = _list_open_prs_conditional(
+                repo=repo,
+                repo_root=repo_root,
+                runner=gh_runner,
+                state=state,
+                limit=_SCAN_LIST_LIMIT,
+            )
+        except RuntimeError as exc:
+            LOG.warning(
+                "conditional open-PR listing unavailable (%s); falling back to the "
+                "transport chooser. If this repeats, read the REST budget with a "
+                "real `gh api -i` call and check `gh auth status`",
+                exc,
+            )
+            listed = _chooser_listing()
+            if listed is None:
+                return []
+            open_prs, route = listed
+    else:
+        listed = _chooser_listing()
+        if listed is None:
+            return []
+        open_prs, route = listed
+    # `route` is the cycle's measured transport decision (conditional listing or
+    # chooser fallback pick), threaded down so per-PR fetches never re-probe.
     results: list[dict[str, Any]] = []
     for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):
             continue
         pr_number = int(item["number"])
-        try:
+        head_sha = str(item.get("headRefOid") or "")
+        if (
+            state is not None
+            and not force
+            and head_sha
+            and str(state["heads"].get(str(pr_number))) == head_sha
+        ):
             results.append(
-                review_pr(
-                    pr_number,
-                    repo=repo,
-                    repo_root=repo_root,
-                    vault_root=vault_root,
-                    apply=apply,
-                    force=force,
-                    gh_runner=gh_runner,
-                    reviewer_runner=reviewer_runner,
-                    wake_dir=wake_dir,
-                    send_runner=send_runner,
-                    route_blocked_families=route_blocked_families,
-                    route=route,
-                )
+                {"status": "skipped_unchanged_head", "pr": pr_number, "head_sha": head_sha}
+            )
+            continue
+        try:
+            result = review_pr(
+                pr_number,
+                repo=repo,
+                repo_root=repo_root,
+                vault_root=vault_root,
+                apply=apply,
+                force=force,
+                gh_runner=gh_runner,
+                reviewer_runner=reviewer_runner,
+                wake_dir=wake_dir,
+                send_runner=send_runner,
+                route_blocked_families=route_blocked_families,
+                route=route,
             )
         except Exception as exc:  # noqa: BLE001 — one PR must not starve the scan
             LOG.warning("review-team scan failed for PR #%d: %s", pr_number, exc)
             results.append({"status": "error", "pr": pr_number, "error": str(exc)})
+            continue
+        results.append(result)
+        if (
+            state is not None
+            and apply
+            and head_sha
+            and result.get("status") in _SCAN_HEAD_RECORDING_STATUSES
+        ):
+            state["heads"][str(pr_number)] = head_sha
+    if state is not None:
+        open_numbers = {
+            str(item["number"])
+            for item in open_prs
+            if isinstance(item, dict) and item.get("number") is not None
+        }
+        state["heads"] = {
+            number: sha for number, sha in state["heads"].items() if number in open_numbers
+        }
+        _write_scan_state(scan_state_path, state)
     return results
 
 
@@ -5576,6 +5864,7 @@ def main(argv: list[str] | None = None) -> int:
             vault_root=args.vault_root,
             apply=args.apply,
             force=args.force,
+            scan_state_path=DEFAULT_SCAN_STATE,
         )
     else:
         results = review_pr(
