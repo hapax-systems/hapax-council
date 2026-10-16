@@ -10,7 +10,8 @@
     "fresh-platform-surface-research:2026-05-17T18:38Z",
     "cc-task-register-omitted-demand-shape-routes-20260630",
     "cc-task-onboard-r1-openrouter-substitute-frontier-20260705",
-    "cc-task-agentic-trust-evidence-only-onboarding-20260804"
+    "cc-task-agentic-trust-evidence-only-onboarding-20260804",
+    "measurement:local-fleet-vram-demand-map-20260927"
   ],
   "required_route_ids": [
     "api.headless.api_frontier",
@@ -28,6 +29,12 @@
     "agy.review.direct",
     "glmcp.review.direct",
     "local_tool.local.worker",
+    "local_tool.headless.worker",
+    "local_tool.local.lite",
+    "local_tool.review.direct",
+    "local_tool.local.full",
+    "local_tool.headless.flash",
+    "local_tool.headless.lane",
     "vibe.headless.full"
   ],
   "omitted_capability_shapes": [
@@ -5355,7 +5362,8 @@
       "known_unknowns": [
         "Local-inference capability scores are seed estimates anchored to the Sonnet worker baseline adjusted for a local Command-R 35B.",
         "No local GPU quota/utilization telemetry source is wired; quota stays unknown until a local_probe-class QuotaSource lands.",
-        "Command-R 35B EXL3 context window at 24GB/32GB is unverified; max_context_class=medium is conservative."
+        "Command-R 35B EXL3 context window at 24GB/32GB is unverified; max_context_class=medium is conservative.",
+        "Measured 2026-09-27: appendix :5000 answers qwen3.6-35b-a3b, not command-r-08-2024. This route's model id is the June 2026 seed and is not the live process. See measurement:local-fleet-vram-demand-map-20260927."
       ],
       "capability_scores": {
         "grounding": {
@@ -5495,6 +5503,1549 @@
           "observed_at": "2026-06-19T00:00:00Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:local_tool.local.worker:tool_access.filesystem"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
+    }
+,
+    {
+      "registry_schema": 1,
+      "route_id": "local_tool.headless.worker",
+      "platform": "local_tool",
+      "mode": "headless",
+      "profile": "worker",
+      "launcher": "OpenAI-compatible POST http://127.0.0.1:5000/v1 model qwen3.6-35b-a3b. No spawnable lane. Direct HTTP was the measured caller.",
+      "summary": "Appendix RTX 3090 discrete VRAM, llama-server :5000, qwen3.6-35b-a3b",
+      "notes": "Declared from the 2026-09-27 VRAM demand map so the shape is no longer an undeclared option. It is blocked. Inbox heading words 6/20. Floor was 16/20. GGUF on the 3090. Quantization enum has no GGUF member; quantization is not_applicable and the file quant is not claimed as EXL3. VRAM kind: discrete-nvidia. capability_scores are the command-r seed copy, not a measurement of this model. A local_inference_entitlement receipt does not clear measured_demand_fit_below_floor_20260927.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown",
+        "measured_demand_fit_below_floor_20260927"
+      ],
+      "model_or_engine": "qwen3.6-35b-a3b",
+      "execution_descriptor": {
+        "model_id": "qwen3.6-35b-a3b",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "not_applicable"
+      },
+      "descriptor_variants": [],
+      "auth_surface": "local",
+      "capacity_pool": "local_compute",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "support_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "local_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required",
+          "frontier_review_required",
+          "governance_authority_case",
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "privacy_secret_sensitive",
+          "public_release_without_gate",
+          "inbox_heading_digest",
+          "review_dossier_verdict",
+          "pr_title_from_paths",
+          "abandon_vs_review_triage"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "none",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-09-27T04:56:43Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-06-19T00:00:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "measurement:local-fleet-vram-demand-map/seal-ac329abe516df76939f94622428e83790163f11f867d13919702a99172c9b04b",
+              "endpoint:http://127.0.0.1:5000/v1:model:qwen3.6-35b-a3b:vram:discrete-nvidia"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "local:CLAUDE.md:local-command-r-35b-exl3-tabbyapi-5000"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "capability_scores are copied from the command-r seed on local_tool.local.worker and are not a measurement of this model.",
+        "Inbox heading words 6/20. Floor was 16/20.",
+        "GGUF on the 3090. Quantization enum has no GGUF member; quantization is not_applicable and the file quant is not claimed as EXL3."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:governance_reasoning:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:source_editing:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:architecture:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:ambiguity_resolution:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:long_context:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:current_docs_grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:multimodal_verification:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:runtime_debugging:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:test_authoring:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:coordination_reliability:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:privacy_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:public_claim_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.worker:dimensional-score:local_calibration:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:local_tool.headless.worker:tool_access.filesystem"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "local_tool.local.lite",
+      "platform": "local_tool",
+      "mode": "local",
+      "profile": "lite",
+      "launcher": "OpenAI-compatible POST http://127.0.0.1:5001/v1 model gpt-oss-20b. No spawnable lane. Direct HTTP was the measured caller.",
+      "summary": "Appendix RTX 5060 Ti discrete VRAM, llama-server :5001, gpt-oss-20b",
+      "notes": "Declared from the 2026-09-27 VRAM demand map so the shape is no longer an undeclared option. It is blocked. Inbox heading words 2/20, including 2 non-JSON replies. GGUF on the 5060 Ti. quantization is not_applicable. VRAM kind: discrete-nvidia. capability_scores are the command-r seed copy, not a measurement of this model. A local_inference_entitlement receipt does not clear measured_demand_fit_below_floor_20260927.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown",
+        "measured_demand_fit_below_floor_20260927"
+      ],
+      "model_or_engine": "gpt-oss-20b",
+      "execution_descriptor": {
+        "model_id": "gpt-oss-20b",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "not_applicable"
+      },
+      "descriptor_variants": [],
+      "auth_surface": "local",
+      "capacity_pool": "local_compute",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "support_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "local_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required",
+          "frontier_review_required",
+          "governance_authority_case",
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "privacy_secret_sensitive",
+          "public_release_without_gate",
+          "inbox_heading_digest",
+          "review_dossier_verdict",
+          "pr_title_from_paths",
+          "abandon_vs_review_triage"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "none",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-09-27T04:56:43Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-06-19T00:00:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "measurement:local-fleet-vram-demand-map/seal-ac329abe516df76939f94622428e83790163f11f867d13919702a99172c9b04b",
+              "endpoint:http://127.0.0.1:5001/v1:model:gpt-oss-20b:vram:discrete-nvidia"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "local:CLAUDE.md:local-command-r-35b-exl3-tabbyapi-5000"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "capability_scores are copied from the command-r seed on local_tool.local.worker and are not a measurement of this model.",
+        "Inbox heading words 2/20, including 2 non-JSON replies.",
+        "GGUF on the 5060 Ti. quantization is not_applicable."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:governance_reasoning:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:source_editing:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:architecture:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:ambiguity_resolution:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:long_context:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:current_docs_grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:multimodal_verification:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:runtime_debugging:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:test_authoring:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:coordination_reliability:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:privacy_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:public_claim_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.lite:dimensional-score:local_calibration:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:local_tool.local.lite:tool_access.filesystem"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "local_tool.review.direct",
+      "platform": "local_tool",
+      "mode": "review",
+      "profile": "direct",
+      "launcher": "OpenAI-compatible POST http://evo-x2:8080/v1 model qwen3-30b-a3b-instruct-2507. No spawnable lane. Direct HTTP was the measured caller.",
+      "summary": "Strix Halo GTT fleet-review, Qwen3-30B-A3B-Instruct-2507, evo-x2:8080 and evo-x2-2:8080",
+      "notes": "Declared from the 2026-09-27 VRAM demand map so the shape is no longer an undeclared option. It is blocked. Dossier verdict 10/20 on evo-x2, every reply quorum-accept. Path-list titles 1/20 on evo-x2-2. Q4_K_M GGUF. quantization is not_applicable. Aperture also answers the alias fleet-review on :8080 with gpu-layers 0; that binding is CPU, not this GTT route. VRAM kind: strix-halo-gtt. capability_scores are the command-r seed copy, not a measurement of this model. A local_inference_entitlement receipt does not clear measured_demand_fit_below_floor_20260927.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown",
+        "measured_demand_fit_below_floor_20260927"
+      ],
+      "model_or_engine": "qwen3-30b-a3b-instruct-2507",
+      "execution_descriptor": {
+        "model_id": "qwen3-30b-a3b-instruct-2507",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "not_applicable"
+      },
+      "descriptor_variants": [],
+      "auth_surface": "local",
+      "capacity_pool": "local_compute",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "support_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "local_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required",
+          "frontier_review_required",
+          "governance_authority_case",
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "privacy_secret_sensitive",
+          "public_release_without_gate",
+          "inbox_heading_digest",
+          "review_dossier_verdict",
+          "pr_title_from_paths",
+          "abandon_vs_review_triage"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "none",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-09-27T04:56:43Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-06-19T00:00:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "measurement:local-fleet-vram-demand-map/seal-ac329abe516df76939f94622428e83790163f11f867d13919702a99172c9b04b",
+              "endpoint:http://evo-x2:8080/v1:model:qwen3-30b-a3b-instruct-2507:vram:strix-halo-gtt"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "local:CLAUDE.md:local-command-r-35b-exl3-tabbyapi-5000"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "capability_scores are copied from the command-r seed on local_tool.local.worker and are not a measurement of this model.",
+        "Dossier verdict 10/20 on evo-x2, every reply quorum-accept. Path-list titles 1/20 on evo-x2-2.",
+        "Q4_K_M GGUF. quantization is not_applicable. Aperture also answers the alias fleet-review on :8080 with gpu-layers 0; that binding is CPU, not this GTT route."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:governance_reasoning:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:source_editing:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:architecture:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:ambiguity_resolution:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:long_context:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:current_docs_grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:multimodal_verification:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:runtime_debugging:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:test_authoring:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:coordination_reliability:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:privacy_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:public_claim_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.review.direct:dimensional-score:local_calibration:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:local_tool.review.direct:tool_access.filesystem"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "local_tool.local.full",
+      "platform": "local_tool",
+      "mode": "local",
+      "profile": "full",
+      "launcher": "OpenAI-compatible POST http://evo-x2:8081/v1 model gpt-oss-120b. No spawnable lane. Direct HTTP was the measured caller.",
+      "summary": "Strix Halo GTT fleet-heavy, gpt-oss-120b, evo-x2:8081 and evo-x2-2:8081",
+      "notes": "Declared from the 2026-09-27 VRAM demand map so the shape is no longer an undeclared option. It is blocked. Not scored on the four demand classes. Health witness returned content pong at max_tokens 80. A 16-token call finished on length inside the reasoning channel. MXFP4. quantization is not_applicable. VRAM kind: strix-halo-gtt. capability_scores are the command-r seed copy, not a measurement of this model. A local_inference_entitlement receipt does not clear measured_demand_fit_below_floor_20260927.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown",
+        "measured_demand_fit_below_floor_20260927"
+      ],
+      "model_or_engine": "gpt-oss-120b",
+      "execution_descriptor": {
+        "model_id": "gpt-oss-120b",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "not_applicable"
+      },
+      "descriptor_variants": [],
+      "auth_surface": "local",
+      "capacity_pool": "local_compute",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "support_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "local_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required",
+          "frontier_review_required",
+          "governance_authority_case",
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "privacy_secret_sensitive",
+          "public_release_without_gate",
+          "inbox_heading_digest",
+          "review_dossier_verdict",
+          "pr_title_from_paths",
+          "abandon_vs_review_triage"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "none",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-09-27T04:56:43Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-06-19T00:00:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "measurement:local-fleet-vram-demand-map/seal-ac329abe516df76939f94622428e83790163f11f867d13919702a99172c9b04b",
+              "endpoint:http://evo-x2:8081/v1:model:gpt-oss-120b:vram:strix-halo-gtt"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "local:CLAUDE.md:local-command-r-35b-exl3-tabbyapi-5000"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "capability_scores are copied from the command-r seed on local_tool.local.worker and are not a measurement of this model.",
+        "Not scored on the four demand classes. Health witness returned content pong at max_tokens 80. A 16-token call finished on length inside the reasoning channel.",
+        "MXFP4. quantization is not_applicable."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:governance_reasoning:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:source_editing:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:architecture:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:ambiguity_resolution:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:long_context:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:current_docs_grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:multimodal_verification:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:runtime_debugging:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:test_authoring:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:coordination_reliability:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:privacy_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:public_claim_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.full:dimensional-score:local_calibration:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:local_tool.local.full:tool_access.filesystem"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "local_tool.headless.flash",
+      "platform": "local_tool",
+      "mode": "headless",
+      "profile": "flash",
+      "launcher": "OpenAI-compatible POST http://spark-01df:8000/v1 model qwen3.8-flash-next. No spawnable lane. Direct HTTP was the measured caller.",
+      "summary": "GB10 unified pair, vLLM qwen3.8-flash-next, spark-01df:8000 (gx10-b941 is the tensor-parallel peer and does not listen on :8000)",
+      "notes": "Declared from the 2026-09-27 VRAM demand map so the shape is no longer an undeclared option. It is blocked. Path-list titles 2/20. Served by vLLM. nvidia-smi memory reads N/A on GB10. quantization is not_applicable. VRAM kind: gb10-unified. capability_scores are the command-r seed copy, not a measurement of this model. A local_inference_entitlement receipt does not clear measured_demand_fit_below_floor_20260927.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown",
+        "measured_demand_fit_below_floor_20260927"
+      ],
+      "model_or_engine": "qwen3.8-flash-next",
+      "execution_descriptor": {
+        "model_id": "qwen3.8-flash-next",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "not_applicable"
+      },
+      "descriptor_variants": [],
+      "auth_surface": "local",
+      "capacity_pool": "local_compute",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "support_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "local_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required",
+          "frontier_review_required",
+          "governance_authority_case",
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "privacy_secret_sensitive",
+          "public_release_without_gate",
+          "inbox_heading_digest",
+          "review_dossier_verdict",
+          "pr_title_from_paths",
+          "abandon_vs_review_triage"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "none",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-09-27T04:56:43Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-06-19T00:00:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "measurement:local-fleet-vram-demand-map/seal-ac329abe516df76939f94622428e83790163f11f867d13919702a99172c9b04b",
+              "endpoint:http://spark-01df:8000/v1:model:qwen3.8-flash-next:vram:gb10-unified"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "local:CLAUDE.md:local-command-r-35b-exl3-tabbyapi-5000"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "capability_scores are copied from the command-r seed on local_tool.local.worker and are not a measurement of this model.",
+        "Path-list titles 2/20.",
+        "Served by vLLM. nvidia-smi memory reads N/A on GB10. quantization is not_applicable."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:governance_reasoning:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:source_editing:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:architecture:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:ambiguity_resolution:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:long_context:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:current_docs_grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:multimodal_verification:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:runtime_debugging:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:test_authoring:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:coordination_reliability:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:privacy_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:public_claim_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.flash:dimensional-score:local_calibration:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:local_tool.headless.flash:tool_access.filesystem"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "local_tool.headless.lane",
+      "platform": "local_tool",
+      "mode": "headless",
+      "profile": "lane",
+      "launcher": "OpenAI-compatible POST http://hapax-podium.local:5100/v1 model qwen38-27b-coder. No spawnable lane. Direct HTTP was the measured caller.",
+      "summary": "Podium RTX 5090 discrete VRAM, llama-server :5100, qwen38-27b-coder",
+      "notes": "Declared from the 2026-09-27 VRAM demand map so the shape is no longer an undeclared option. It is blocked. Dossier verdict 5/20. Abandon-vs-review 10/20, every reply review, tied with a 21-day age script. GGUF on the 5090. quantization is not_applicable. The empty-looking 5060 Ti holds an ollama footprint and is not this route. VRAM kind: discrete-nvidia. capability_scores are the command-r seed copy, not a measurement of this model. A local_inference_entitlement receipt does not clear measured_demand_fit_below_floor_20260927.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown",
+        "measured_demand_fit_below_floor_20260927"
+      ],
+      "model_or_engine": "qwen38-27b-coder",
+      "execution_descriptor": {
+        "model_id": "qwen38-27b-coder",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "not_applicable"
+      },
+      "descriptor_variants": [],
+      "auth_surface": "local",
+      "capacity_pool": "local_compute",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "support_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "local_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required",
+          "frontier_review_required",
+          "governance_authority_case",
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "privacy_secret_sensitive",
+          "public_release_without_gate",
+          "inbox_heading_digest",
+          "review_dossier_verdict",
+          "pr_title_from_paths",
+          "abandon_vs_review_triage"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "none",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-09-27T04:56:43Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-06-19T00:00:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "measurement:local-fleet-vram-demand-map/seal-ac329abe516df76939f94622428e83790163f11f867d13919702a99172c9b04b",
+              "endpoint:http://hapax-podium.local:5100/v1:model:qwen38-27b-coder:vram:discrete-nvidia"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "local:CLAUDE.md:local-command-r-35b-exl3-tabbyapi-5000"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "capability_scores are copied from the command-r seed on local_tool.local.worker and are not a measurement of this model.",
+        "Dossier verdict 5/20. Abandon-vs-review 10/20, every reply review, tied with a 21-day age script.",
+        "GGUF on the 5090. quantization is not_applicable. The empty-looking 5060 Ti holds an ollama footprint and is not this route."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:governance_reasoning:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:source_editing:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:architecture:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:ambiguity_resolution:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:long_context:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:current_docs_grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:multimodal_verification:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:runtime_debugging:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:test_authoring:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:coordination_reliability:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:privacy_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:public_claim_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.headless.lane:dimensional-score:local_calibration:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:local_tool.headless.lane:tool_access.filesystem"
         }
       ],
       "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
