@@ -1,4 +1,5 @@
-# Hapax-Auto-Enable: true
+# Hapax-Parked: true
+# Retired 2026-10-16: the heartbeat waits for governed activation of the livestream vector.
 [Unit]
 Description=Check segment-prep emitted at least one segment after the daily run
 

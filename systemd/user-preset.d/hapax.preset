@@ -47,7 +47,7 @@ enable hapax-daimonion-quarantine-watchdog.timer
 enable hapax-audio-topology-verify.timer
 enable hapax-s4-arm.timer
 enable hapax-segment-prep.timer
-enable hapax-segment-prep-emit-health.timer
+# Segment-prep emit health stays parked until the livestream vector is activated.
 enable hapax-worktree-gc.timer
 enable hapax-backup-watchdog.timer
 enable hapax-container-cleanup.timer

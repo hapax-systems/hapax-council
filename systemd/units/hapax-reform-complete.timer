@@ -1,8 +1,5 @@
-# Hapax-Auto-Enable: true
-# hapax-post-merge-deploy `enable --now`s units carrying this marker, so the
-# reform-complete regression detector goes live on merge instead of installing-
-# but-sleeping (a never-enabled timer never fires). The marker requires the
-# [Install] section below.
+# Hapax-Parked: true
+# Retired 2026-10-16: the watermark requires the deliberately disabled lane supervisor.
 [Unit]
 Description=Reform-complete regression detector — re-verify every reform realization every 6h
 

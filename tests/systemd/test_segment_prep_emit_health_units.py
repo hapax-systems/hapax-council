@@ -26,7 +26,8 @@ def test_segment_prep_emit_health_service_routes_failure_to_notify_intake() -> N
 def test_segment_prep_emit_health_timer_runs_after_daily_prep_window() -> None:
     text = (UNITS / "hapax-segment-prep-emit-health.timer").read_text(encoding="utf-8")
 
-    assert "# Hapax-Auto-Enable: true" in text
+    assert "# Hapax-Parked: true" in text
+    assert "# Hapax-Auto-Enable: true" not in text
     assert "OnCalendar=*-*-* 06:20:00 UTC" in text
     assert "Persistent=true" in text
     assert "RandomizedDelaySec=300" in text
@@ -34,11 +35,11 @@ def test_segment_prep_emit_health_timer_runs_after_daily_prep_window() -> None:
     assert "WantedBy=timers.target" in text
 
 
-def test_segment_prep_emit_health_timer_is_preset_enabled() -> None:
+def test_segment_prep_emit_health_timer_is_not_preset_enabled() -> None:
     preset_lines = {
         line.strip()
         for line in PRESET.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.strip().startswith("#")
     }
 
-    assert "enable hapax-segment-prep-emit-health.timer" in preset_lines
+    assert "enable hapax-segment-prep-emit-health.timer" not in preset_lines
