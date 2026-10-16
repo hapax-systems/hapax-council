@@ -1,5 +1,6 @@
 """The git-validated billing scanner, through its full entry point: the ported detectors, marker
-and proxy contracts, and every malformed-input shape, which must exit nonzero."""
+and proxy contracts, and the strict refusal of a supplied diff file. Malformed diff text, which
+only an advisory caller can still supply, must never scan clean through the library."""
 
 from __future__ import annotations
 
@@ -64,11 +65,8 @@ def _run(
     *,
     diff_text: str | None = None,
     diff_file: Path | None = None,
-    report_only: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base]
-    if report_only:
-        argv.append("--report-only")
     if diff_file is not None:
         argv += ["--diff-file", str(diff_file)]
     else:
@@ -76,30 +74,19 @@ def _run(
     return subprocess.run(argv, capture_output=True, text=True, check=False)
 
 
-def test_report_only_findings_are_visible_without_credential_text(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    result = _run(repo, base, report_only=True)
-
-    assert result.returncode == 0
-    assert "REPORT-ONLY: findings" in result.stdout
-    assert "api-key-route" in result.stdout
-    assert "OPENAI_API_KEY" not in result.stdout
-
-
-def test_report_only_unusable_input_is_inconclusive_without_failing(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    bad_diff = tmp_path / "bad.diff"
-    bad_diff.write_text("not a diff\n")
-    result = _run(repo, base, diff_file=bad_diff, report_only=True)
-
-    assert result.returncode == 0
-    assert "REPORT-ONLY: unusable-input" in result.stdout
-
-
 def _run_text(repo: Path, base: str, tmp_path: Path, text: str) -> subprocess.CompletedProcess[str]:
     path = tmp_path / "case.diff"
     path.write_text(text, encoding="utf-8")
     return _run(repo, base, diff_file=path)
+
+
+def _scan_text(repo: Path, base: str, text: str) -> int:
+    """The library path supplied diff text still takes off the gate: 0 clean, 1 findings, 2 unusable."""
+    try:
+        result, _error = scanner.scan_git_validated(text, repo=repo, base=base)
+    except scanner.UnusableInput:
+        return 2
+    return 2 if result is None else int(bool(result.findings))
 
 
 # ── detectors, marker contract, proxy exemption (ported)
@@ -271,7 +258,7 @@ def test_a_dynamic_proxy_target_is_not_a_binding(tmp_path: Path) -> None:
     assert "api-key-route" in result.stdout
 
 
-# ── malformed input: every shape must exit NONZERO
+# ── malformed diff text: never a clean scan
 
 
 @pytest.mark.parametrize(
@@ -282,8 +269,7 @@ def test_a_dynamic_proxy_target_is_not_a_binding(tmp_path: Path) -> None:
 def test_a_stripped_header_is_never_a_clean_scan(tmp_path: Path, prefixes: tuple[str, ...]) -> None:
     repo, base, _head, diff = _fixture(tmp_path)
     stripped = "\n".join(l for l in diff.splitlines() if not l.startswith(prefixes))
-    result = _run_text(repo, base, tmp_path, stripped + "\n")
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert _scan_text(repo, base, stripped + "\n") != 0
 
 
 def test_a_binary_note_after_a_hunk_is_never_a_clean_scan(tmp_path: Path) -> None:
@@ -296,11 +282,20 @@ def test_a_binary_note_after_a_hunk_is_never_a_clean_scan(tmp_path: Path) -> Non
         + "\n".join(lines[3:])
         + "\n"
     )
-    result = _run_text(repo, base, tmp_path, poisoned)
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert _scan_text(repo, base, poisoned) != 0
     trailing = "\n".join(lines) + "\nBinary files a/app.py and b/app.py differ\n"
-    result = _run_text(repo, base, tmp_path, trailing)
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert _scan_text(repo, base, trailing) != 0
+
+
+def test_strict_mode_refuses_any_diff_file_with_a_next_action(tmp_path: Path) -> None:
+    """The gate reads only git's own diff: a supplied file is untrusted text, honest or not."""
+    repo, base, _head, diff = _fixture(tmp_path)
+    clean = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -3,0 +4 @@\n+more = 2\n"
+    trailing = f"\nBinary files a/app.py and b/app.py differ\n+{KEY_LINE}\n"
+    for text in (diff, clean + trailing):
+        result = _run_text(repo, base, tmp_path, text)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "unusable for a gate" in result.stderr and "--head" in result.stderr
 
 
 def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
@@ -315,8 +310,7 @@ def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
     for stride in range(0, len(diff), 11):
         corpus.append(diff[:stride])
     for text in corpus:
-        result = _run_text(repo, base, tmp_path, text)
-        if result.returncode == 0:
+        if _scan_text(repo, base, text) == 0:
             assert "OPENAI_API_KEY" not in text, f"scanned clean over a key line:\n{text}"
 
 
@@ -324,38 +318,30 @@ def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("args", "diff_text"),
+    "args",
     [
-        (["--repo", "{R}", "--base", "{B}", "--diff-file", "{T}/absent.diff"], None),
-        (["--repo", "{R}", "--head", "HEAD"], None),
-        (["--repo", "{R}", "--base", "no-such-revision", "--head", "HEAD"], None),
-        (["--repo", "{R}", "--base", "{B}", "--head", "no-such-head"], None),
-        (["--repo", "{T}/plain", "--base", "abcdef0", "--diff-file", "{F}"], "not a diff at all\n"),
-        (["--repo", "{R}", "--base", "{B}", "--diff-file", "{F}"], ""),
-        (["--repo", "{T}/no-such-repo", "--base", "main", "--head", "HEAD"], None),
-        (["--repo", "{R}", "--base", "{B}", "--diff-file", "{F}"], b"\xff\xfe\x00binary"),
+        ["--repo", "{R}", "--base", "{B}", "--diff-file", "{T}/absent.diff"],
+        ["--repo", "{R}", "--head", "HEAD"],
+        ["--repo", "{R}", "--base", "no-such-revision", "--head", "HEAD"],
+        ["--repo", "{R}", "--base", "{B}", "--head", "no-such-head"],
+        ["--repo", "{T}/plain", "--base", "abcdef0", "--head", "HEAD"],
+        ["--repo", "{R}", "--base", "{B}", "--head", "{B}"],
+        ["--repo", "{T}/no-such-repo", "--base", "main", "--head", "HEAD"],
     ],
     ids=[
-        "missing-diff-file",
+        "diff-file-refused",
         "missing-base",
         "unresolvable-base",
         "unresolvable-head",
         "not-a-repository",
-        "empty-diff-file",
+        "empty-generated-diff",
         "nonexistent-repo",
-        "binary-diff-file",
     ],
 )
-def test_an_unusable_invocation_refuses_with_a_next_action(
-    tmp_path: Path, args: list[str], diff_text: str | bytes | None
-) -> None:
+def test_an_unusable_invocation_refuses_with_a_next_action(tmp_path: Path, args: list[str]) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     (tmp_path / "plain").mkdir()
-    if isinstance(diff_text, bytes):
-        (tmp_path / "case.diff").write_bytes(diff_text)
-    elif diff_text is not None:
-        (tmp_path / "case.diff").write_text(diff_text, encoding="utf-8")
-    subs = {"{R}": str(repo), "{B}": base, "{T}": str(tmp_path), "{F}": str(tmp_path / "case.diff")}
+    subs = {"{R}": str(repo), "{B}": base, "{T}": str(tmp_path)}
     for key, value in subs.items():
         args = [arg.replace(key, value) for arg in args]
     result = subprocess.run(
