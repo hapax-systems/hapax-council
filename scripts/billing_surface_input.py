@@ -1,8 +1,9 @@
 """Git-owned input validation for the billing surface scan.
 
 Callers may inspect added lines only after ``materialise_post_image`` has
-validated the input against the named base. Git then regenerates a diff from
-that temporary index; a closed grammar reads only its added lines.
+validated the input against the named base. Git then lists the paths that
+temporary index changes and regenerates one diff per path; a closed grammar
+reads only each path's added lines, so no diff text can name a file.
 """
 
 from __future__ import annotations
@@ -119,62 +120,40 @@ def materialise_post_image(
         yield index_path, env
 
 
-def parse_git_added_lines(text: str) -> tuple[dict[str, dict[int, str]], str | None]:
-    """Read added lines from Git's own zero-context diff, rejecting unknown shapes."""
-    files: dict[str, dict[int, str]] = {}
-    pending_path: str | None = None
-    path: str | None = None
+_PREAMBLE_PREFIXES: tuple[str, ...] = ("diff --git ", "--- ", "+++ ", *_SECTION_META_PREFIXES)
+
+
+def parse_path_added_lines(text: str) -> tuple[dict[int, str], str | None]:
+    """Read one path's added lines from Git's zero-context diff of that path alone.
+
+    The file is the path Git was asked about, never text in the output: before the first hunk
+    header only Git's own preamble is accepted, and after it no header is recognised, so an
+    added line shaped like one (`++ b/docs/x` renders `+++ b/docs/x`) is content. A binary note
+    before any hunk is opaque; any other shape fails closed.
+    """
+    added: dict[int, str] = {}
     new_line = 0
-    in_hunk = False
-    deleted_file = False
+    in_hunks = False
     for raw in text.splitlines():
-        if raw.startswith("diff --git "):
-            pending_path = None
-            path = None
-            in_hunk = False
-            deleted_file = False
-            continue
-        if raw.startswith(_SECTION_META_PREFIXES):
-            continue
-        if raw.startswith("--- ") or raw.startswith("+++ "):
-            candidate = raw[4:].strip()
-            if raw.startswith("--- "):
-                continue
-            if candidate == "/dev/null":
-                pending_path = None
-                deleted_file = True
-            elif candidate.startswith("b/"):
-                pending_path = candidate[2:]
-                deleted_file = False
-            else:
-                return {}, f"a '+++ ' header git would not emit: {raw!r}"
-            continue
-        if raw.startswith(("Binary files ", "GIT binary patch")):
-            pending_path = None
-            in_hunk = False
-            continue
-        header = _HUNK_HEADER_RE.match(raw)
-        if header is not None:
-            if pending_path is None and not deleted_file:
-                return {}, "a hunk header arrived before any '+++ b/<path>' header"
-            path = pending_path
+        if raw.startswith("@@"):
+            header = _HUNK_HEADER_RE.match(raw)
+            if header is None:
+                return {}, f"a malformed hunk header in git's own diff output: {raw!r}"
             new_line = int(header.group(3))
-            in_hunk = True
-            continue
-        if raw.startswith("\\"):
-            continue
-        if in_hunk and raw.startswith("+"):
-            if path is None:
-                return {}, "an added line arrived with no post-image path"
-            files.setdefault(path, {})[new_line] = raw[1:]
+            in_hunks = True
+        elif not in_hunks:
+            if raw.startswith(("Binary files ", "GIT binary patch")):
+                return {}, None
+            if not raw.startswith(_PREAMBLE_PREFIXES):
+                return {}, f"an unrecognised line before git's first hunk: {raw!r}"
+        elif raw.startswith("+"):
+            added[new_line] = raw[1:]
             new_line += 1
-            continue
-        if in_hunk and raw.startswith(("-", " ")):
-            if raw.startswith(" "):
-                new_line += 1
-            continue
-        return {}, f"an unrecognised line in git's own diff output: {raw!r}"
-    return files, None
+        elif raw.startswith(" "):
+            new_line += 1
+        elif not raw.startswith(("-", "\\")):
+            return {}, f"an unrecognised line in git's own diff output: {raw!r}"
+    return added, None
 
 
 def post_image_blob(path: str, *, repo: Path, env: dict[str, str]) -> str | None:
@@ -195,21 +174,51 @@ def post_image_blob(path: str, *, repo: Path, env: dict[str, str]) -> str | None
 def regenerated_added_lines(
     *, repo: Path, base: str, env: dict[str, str]
 ) -> tuple[dict[str, dict[int, str]], str | None]:
-    """Ask Git for the validated index diff, then read only its added lines."""
-    regenerated = _run_git(
-        ["diff", "--cached", "--no-color", "--no-ext-diff", "--unified=0", f"{base}^{{commit}}"],
-        repo=repo,
-        env=env,
+    """Ask Git which paths the validated index changes, then each path's own added lines.
+
+    Attribution comes from Git's structure: the NUL-separated path list, then one diff per
+    path with literal pathspecs. No line of diff text ever names a file.
+    """
+    literal = {**env, "GIT_LITERAL_PATHSPECS": "1"}
+    commit = f"{base}^{{commit}}"
+    listed = _run_git(
+        ["diff", "--cached", "--no-renames", "--name-only", "-z", commit], repo=repo, env=literal
     )
-    if regenerated.returncode != 0:
+    if listed.returncode != 0:
         return {}, (
-            "FAIL-CLOSED: git could not regenerate the diff from the validated index: "
-            f"{_git_out(regenerated)}. Next action: rerun in the repository whose base it names"
+            "FAIL-CLOSED: git could not list the paths the validated index changes: "
+            f"{_git_out(listed)}. Next action: rerun in the repository whose base it names"
         )
-    files, error = parse_git_added_lines(regenerated.stdout)
-    if error is not None:
-        return {}, (
-            f"FAIL-CLOSED: {error}. Next action: this shape is not one git emits for a text diff, "
-            "so nothing is scanned; regenerate the input with `git diff <base>...HEAD` and rerun"
+    files: dict[str, dict[int, str]] = {}
+    for path in (name for name in listed.stdout.split("\0") if name):
+        regenerated = _run_git(
+            [
+                "diff",
+                "--cached",
+                "--no-renames",
+                "--no-color",
+                "--no-ext-diff",
+                "--unified=0",
+                commit,
+                "--",
+                path,
+            ],
+            repo=repo,
+            env=literal,
         )
+        if regenerated.returncode != 0:
+            return {}, (
+                f"FAIL-CLOSED: git could not regenerate the diff of {path!r} from the validated "
+                f"index: {_git_out(regenerated)}. Next action: rerun in the repository whose base "
+                "it names"
+            )
+        added, error = parse_path_added_lines(regenerated.stdout)
+        if error is not None:
+            return {}, (
+                f"FAIL-CLOSED: {error} (path {path!r}). Next action: this shape is not one git "
+                "emits for a text diff, so nothing is scanned; regenerate the input with "
+                "`git diff <base>...HEAD` and rerun"
+            )
+        if added:
+            files[path] = added
     return files, None
