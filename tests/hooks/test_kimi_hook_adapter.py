@@ -154,6 +154,8 @@ def launched(tmp_path: Path):
     (release / "scripts/lib").mkdir(parents=True)
     (release / "hooks/scripts").mkdir(parents=True)
     shutil.copy2(ROOT / "scripts/lib/secret.sh", release / "scripts/lib/secret.sh")
+    shutil.copy2(ROOT / "scripts/lane_environment.py", release / "scripts/lane_environment.py")
+    (release / "shared").symlink_to(ROOT / "shared", target_is_directory=True)
     for name in ("kimi-hook-adapter.sh", "codex-hook-adapter.sh"):
         shutil.copy2(HOOKS / name, release / "hooks/scripts" / name)
     bin_dir = tmp_path / "bin"
@@ -165,6 +167,9 @@ def launched(tmp_path: Path):
         "kimi": 'printf "%s\\n%s\\n" "$KIMI_CODE_HOME" "$HAPAX_SESSION_ID" >"$LAUNCH_TRACE"\n',
     }.items():
         p = bin_dir / name
+        body = body.replace("$SECRET_TRACE", str(tmp_path / "secrets")).replace(
+            "$LAUNCH_TRACE", str(tmp_path / "launch")
+        )
         p.write_text("#!/bin/bash\n" + body)
         p.chmod(0o755)
     env = clean_env(home)

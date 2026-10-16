@@ -180,6 +180,9 @@ def _hard_nofile() -> int:
 
 def _executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name in {"claude", "claude-recorder", "tmux", "foot", "footclient"}:
+        first, rest = body.split("\n", 1)
+        body = first + '\nsource "$HOME/.fixture-native-env.sh"\n' + rest
     path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -269,6 +272,13 @@ class Launch:
     def run(
         self, *args: str, nofile: tuple[int, int] | None = None, **env: str
     ) -> subprocess.CompletedProcess[str]:
+        # Test controls are native-fixture inputs, not inherited lane bindings.
+        fixture_env = {
+            key: value for key, value in {**self.env, **env}.items() if key.startswith("FAKE_")
+        }
+        (self.home / ".fixture-native-env.sh").write_text(
+            "".join(f"export {key}={shlex.quote(value)}\n" for key, value in fixture_env.items())
+        )
         return subprocess.run(
             [str(SCRIPT), "--cd", str(self.work), *args],
             env={**self.env, **env},
@@ -421,16 +431,15 @@ def test_a_missing_config_is_not_created(tmp_path: Path) -> None:
     assert "does not exist" in res.stderr
 
 
-def test_claude_config_dir_is_honoured(tmp_path: Path) -> None:
+def test_parent_claude_config_dir_is_not_inherited(tmp_path: Path) -> None:
     launch = Launch(tmp_path)
     cfg_dir = tmp_path / "claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".claude.json").write_text(json.dumps(_seed_config()), encoding="utf-8")
-    home_raw = launch.config_path.read_bytes()
+    foreign_raw = (cfg_dir / ".claude.json").read_bytes()
     assert _trust_launch(launch, CLAUDE_CONFIG_DIR=str(cfg_dir)).returncode == 0
-    moved = json.loads((cfg_dir / ".claude.json").read_text(encoding="utf-8"))
-    assert moved["projects"][str(launch.work.resolve())]["hasTrustDialogAccepted"] is True
-    assert launch.config_path.read_bytes() == home_raw
+    assert (cfg_dir / ".claude.json").read_bytes() == foreign_raw
+    assert launch.config()["projects"][str(launch.work.resolve())]["hasTrustDialogAccepted"] is True
 
 
 def test_home_itself_is_not_marked_trusted(tmp_path: Path) -> None:
@@ -719,7 +728,6 @@ def test_a_parents_dispatch_task_is_never_claimed(tmp_path: Path) -> None:
     assert launch.cc_claim_calls() == [], "the parent's task was claimed for the child"
     runner = launch.runner()
     assert "coordinator-seat-charter-20260924" not in runner.split("unset ", 1)[1]
-    assert "ignoring inherited HAPAX_METHODOLOGY_DISPATCH_TASK" in res.stderr
 
 
 def test_an_inherited_task_does_not_satisfy_a_greek_lanes_binding(tmp_path: Path) -> None:

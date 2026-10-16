@@ -5562,6 +5562,17 @@ _ = (
 pipeline_state
 drop_to_inbox
 
+# The extensionless hapax-methodology-dispatch imports these directly. Both
+# Codex remote runners also call them through runpy's result dictionary.
+from scripts.lane_environment import (  # noqa: E402
+    clean_environment as _lane_clean_environment,
+)
+from scripts.lane_environment import (  # noqa: E402
+    raise_nofile as _lane_raise_nofile,
+)
+
+_ = (_lane_clean_environment, _lane_raise_nofile)
+
 # split-A-of-5109: the producer's runner (agents/discourse_sensing/run.py and __main__.py) is
 # the production caller of these foundation entrypoints and lands in the stacked PR B of the
 # same seat split (#5112, row discourse-sensing-producer-slice1b-runner-20261011), so this

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import textwrap
 import time
@@ -21,6 +22,7 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     env = os.environ.copy()
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["HOME"] = str(tmp_path / "home")
     return env, bin_dir
@@ -137,7 +139,7 @@ def test_exec_path_preserves_claude_arguments(tmp_path: Path) -> None:
 
 def test_launcher_uses_exact_positional_argument_expansion() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
-    assert 'exec claude "$@"' in text
+    assert 'exec claude "${CLAUDE_ARGS[@]}"' in text
     assert '"$ @"' not in text
 
 
@@ -437,6 +439,7 @@ def test_help_exits_before_dependency_checks(tmp_path: Path) -> None:
 def test_missing_pass_reports_next_action(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
     env["PATH"] = str(bin_dir)
+    (bin_dir / "python3").symlink_to(shutil.which("python3"))
 
     result = subprocess.run(
         ["/usr/bin/bash", str(SCRIPT), "--check"],
@@ -454,6 +457,7 @@ def test_missing_pass_reports_next_action(tmp_path: Path) -> None:
 def test_missing_claude_reports_next_action(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
     env["PATH"] = str(bin_dir)
+    (bin_dir / "python3").symlink_to(shutil.which("python3"))
     _install_secret_stub(bin_dir)
 
     result = subprocess.run(

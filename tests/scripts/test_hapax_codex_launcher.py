@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -20,6 +22,11 @@ LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
 SENDER = REPO_ROOT / "scripts" / "hapax-codex-send"
 HEALTH = REPO_ROOT / "scripts" / "hapax-codex-health"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "codex"
+
+
+@pytest.fixture(autouse=True)
+def _launcher_source(monkeypatch):
+    monkeypatch.setenv("HAPAX_COUNCIL_DIR", str(REPO_ROOT))
 
 
 def _env_with_fake_codex(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
@@ -85,6 +92,7 @@ printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
 
 def _write_descriptor_runtime(path: Path) -> None:
     (path / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "scripts/lane_environment.py", path / "scripts/lane_environment.py")
     for directory in ("shared", "config"):
         (path / directory).symlink_to(REPO_ROOT / directory, target_is_directory=True)
     runtime = Path(sys.executable).parent.parent
@@ -200,7 +208,9 @@ exit 0
     return fake_tmux
 
 
-def _write_fake_ssh_eval(bin_dir: Path) -> None:
+def _write_fake_ssh_eval(
+    bin_dir: Path, *, commands: Path | None = None, environment: Path | None = None
+) -> None:
     fake_ssh = bin_dir / "ssh"
     fake_ssh.write_text(
         """#!/usr/bin/env bash
@@ -230,6 +240,10 @@ fi
 exec bash -c "$remote_cmd"
 """,
         encoding="utf-8",
+    )
+    fixture = f"HAPAX_FAKE_SSH_REMOTE_CMDS={shlex.quote(str(commands or ''))}\nHAPAX_FAKE_SSH_ENV_LOG={shlex.quote(str(environment or ''))}\n"
+    fake_ssh.write_text(
+        fake_ssh.read_text().replace('remote_cmd="${@: -1}"', fixture + 'remote_cmd="${@: -1}"', 1)
     )
     fake_ssh.chmod(0o755)
 
@@ -624,10 +638,6 @@ def test_launcher_ignores_inherited_codex_auth_env_without_published_token(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "ignoring inherited CODEX_ACCESS_TOKEN" in result.stderr
-    assert "ignoring inherited CODEX_HOME" in result.stderr
-    assert "ignoring inherited CODEX_API_KEY" in result.stderr
-    assert "ignoring inherited OPENAI_API_KEY" in result.stderr
     env_text = env_file.read_text(encoding="utf-8")
     assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_text
     assert "CODEX_HOME_PRESENT=\n" in env_text
@@ -1097,8 +1107,8 @@ def test_appendix_codex_remote_preflight_strips_auth_env_before_first_ssh(
 ) -> None:
     env, args_file, env_file = _env_with_fake_codex(tmp_path)
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
-    _write_fake_ssh_eval(tmp_path / "bin")
     ssh_env_log = tmp_path / "ssh-env.txt"
+    _write_fake_ssh_eval(tmp_path / "bin", environment=ssh_env_log)
     env["HAPAX_DISPATCH_HOST"] = "appendix"
     env["HAPAX_FAKE_SSH_ENV_LOG"] = str(ssh_env_log)
     env["CODEX_ACCESS_TOKEN"] = "token-secret"
@@ -1270,9 +1280,9 @@ def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
     env, args_file, env_file = _env_with_fake_codex(tmp_path)
     _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
-    _write_fake_ssh_eval(tmp_path / "bin")
     exploit = tmp_path / "dispatch-host-shell-injection"
     remote_cmds = tmp_path / "ssh-remote-commands.txt"
+    _write_fake_ssh_eval(tmp_path / "bin", commands=remote_cmds)
     env["HAPAX_DISPATCH_HOST"] = "appendix"
     env["HAPAX_DISPATCH_LOGOS_URL"] = f"http://podium.invalid/api; touch {exploit}"
     env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
@@ -1540,7 +1550,7 @@ def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_
     )
     assert len(bootstrap_files) == 1
     bootstrap = bootstrap_files[0].read_text()
-    assert "parent_session: cx-red" in bootstrap
+    assert "parent_session: unknown" in bootstrap
     assert "session: cx-green" in bootstrap
     assert "task_id: demo-task" in bootstrap
     assert "idle_update_seconds: 270" in bootstrap
@@ -2082,7 +2092,9 @@ def _assert_remain_on_exit_set_after_new_session(tmux_args: Path) -> None:
     )
 
 
-def _recording_tmux(tmp_path: Path, tmux_args: Path) -> None:
+def _recording_tmux(
+    tmp_path: Path, tmux_args: Path, *, new_session_rc: int = 0, set_option_rc: int = 0
+) -> None:
     """A tmux that records every invocation and exits with the status the test
     injects for ``new-session`` / ``set-option``, so the launcher's own handling of
     those failures is what runs."""
@@ -2092,8 +2104,8 @@ def _recording_tmux(tmp_path: Path, tmux_args: Path) -> None:
 printf '%s\\n' -- "$@" >> {tmux_args}
 case "${{1:-}}" in
   has-session) exit 1 ;;
-  new-session) exit "${{FAKE_TMUX_NEW_SESSION_RC:-0}}" ;;
-  set-option)  exit "${{FAKE_TMUX_SET_OPTION_RC:-0}}" ;;
+  new-session) exit "{new_session_rc}" ;;
+  set-option)  exit "{set_option_rc}" ;;
   *) exit 0 ;;
 esac
 """
@@ -2147,7 +2159,7 @@ def test_terminal_tmux_fails_open_when_set_option_fails(tmp_path: Path) -> None:
     _write_active_task(env, "demo-task")
     tmux_args = tmp_path / "tmux-args.txt"
     _recording_tmux(tmp_path, tmux_args)
-    env["FAKE_TMUX_SET_OPTION_RC"] = "1"
+    _recording_tmux(tmp_path, tmux_args, set_option_rc=1)
     result = _run_terminal_launch(env, "tmux")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "hapax-codex-cx-amber"
@@ -2162,7 +2174,7 @@ def test_terminal_tmux_propagates_new_session_failure(tmp_path: Path) -> None:
     _write_active_task(env, "demo-task")
     tmux_args = tmp_path / "tmux-args.txt"
     _recording_tmux(tmp_path, tmux_args)
-    env["FAKE_TMUX_NEW_SESSION_RC"] = "7"
+    _recording_tmux(tmp_path, tmux_args, new_session_rc=7)
     result = _run_terminal_launch(env, "tmux")
     assert result.returncode != 0, "a failed new-session was reported as a successful launch"
     assert result.stdout.strip() != "hapax-codex-cx-amber"
@@ -2255,6 +2267,13 @@ esac
     )
     fake_tmux.chmod(0o755)
 
+    claim_workdir = tmp_path / "claim-workdir"
+    claim_script = claim_workdir / "scripts/cc-claim"
+    claim_script.parent.mkdir(parents=True)
+    claim_script.write_text(
+        f'#!/bin/bash\nexport HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1\nexec {shlex.quote(str(REPO_ROOT / "scripts/cc-claim"))} "$@"\n'
+    )
+    claim_script.chmod(0o755)
     result = subprocess.run(
         [
             str(LAUNCHER),
@@ -2263,7 +2282,7 @@ esac
             "--slot",
             "alpha",
             "--cd",
-            str(REPO_ROOT),
+            str(claim_workdir),
             "--task",
             "demo-task",
             "--terminal",
@@ -2312,7 +2331,7 @@ def test_terminal_none_remote_reruns_saved_auth_preflight_after_claim(tmp_path: 
     _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
     remote_cmds = tmp_path / "remote-cmds.txt"
-    _write_fake_ssh_eval(tmp_path / "bin")
+    _write_fake_ssh_eval(tmp_path / "bin", commands=remote_cmds)
     env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
     env["HAPAX_DISPATCH_HOST"] = _remote_dispatch_host()
 
@@ -2366,12 +2385,11 @@ def test_terminal_tmux_remote_runner_refuses_handoff_when_self_delete_fails(
     _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
     _write_active_task(env, "demo-task")
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
-    _write_fake_ssh_eval(tmp_path / "bin")
     _write_fake_rm_refuses_runner_unlink(tmp_path / "bin")
     session_id = f"runner-delete-fail-{os.getpid()}-{tmp_path.name}"
     remote_cmds = tmp_path / "remote-cmds.txt"
+    _write_fake_ssh_eval(tmp_path / "bin", commands=remote_cmds)
     env["HAPAX_DISPATCH_HOST"] = "appendix"
-    env["HAPAX_SESSION_ID"] = session_id
     env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
     _clear_handoff_glob(session_id)
 
@@ -2395,15 +2413,24 @@ esac
     )
     fake_tmux.chmod(0o755)
 
+    claim_workdir = tmp_path / "claim-workdir"
+    claim_script = claim_workdir / "scripts/cc-claim"
+    claim_script.parent.mkdir(parents=True)
+    claim_script.write_text(
+        f'#!/bin/bash\nexport HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1\nexec {shlex.quote(str(REPO_ROOT / "scripts/cc-claim"))} "$@"\n'
+    )
+    claim_script.chmod(0o755)
     result = subprocess.run(
         [
             str(LAUNCHER),
+            "--session-id",
+            session_id,
             "--session",
             "cx-amber",
             "--slot",
             "alpha",
             "--cd",
-            str(REPO_ROOT),
+            str(claim_workdir),
             "--task",
             "demo-task",
             "--terminal",
@@ -2419,6 +2446,7 @@ esac
     assert result.returncode == 0, result.stderr
     runner = Path(_new_session_args(tmux_args)[-1])
     try:
+        assert f"export HAPAX_SESSION_ID={shlex.quote(session_id)}\n" in runner.read_text()
         runner_result = subprocess.run(
             [str(runner)],
             capture_output=True,
