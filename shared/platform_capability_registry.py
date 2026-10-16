@@ -263,6 +263,7 @@ class CapabilityShapeClass(StrEnum):
     COCKPIT_COMMAND = "cockpit_command"
     CCTV_RUNNER = "cctv_runner"
     SELF_INLINE = "self_inline"
+    RESEARCH = "research"
 
 
 class CapabilityShapeState(StrEnum):

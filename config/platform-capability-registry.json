@@ -330,6 +330,31 @@
       "freshness_state": "asserted_only",
       "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
       "blocked_reasons": ["deprecated_antigrav_route_retired", "measured_supply_leaf_absent"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "research.external_primary_source_fetch",
+      "shape_class": "research",
+      "carrier_family": "declared_lane_tool_access",
+      "summary": "Read-only retrieval and close reading of external primary sources (papers, official docs, repositories) for estate research programmes; outputs are evidence with BACKED/UNBACKED disposition, never outward contact.",
+      "harness_shape": "bounded-fetch-plus-source-ledger-plus-evidence-disposition",
+      "authority_ceiling": "read_only",
+      "shape_state": "intake_required",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["read-only-egress", "no-posting", "no-outward-contact", "no-credentials-in-requests", "primary-source-preferred"],
+      "spend_semantics": ["token-cost", "provider-search-cost-if-any-must-be-declared"],
+      "observability": ["fetched-url-ledger", "source-tier-label", "evidence-disposition"],
+      "failure_classes": ["secondary_source_treated_as_primary", "fetch_without_ledger", "outward_contact_attempted", "search_billing_undeclared"],
+      "measurement_plan_refs": ["task:acceleration-programme-act-2b-external-prior-art-model-externals-20261016"],
+      "remediation_refs": ["require:route-binding-with-quota-admission", "require:read-only-egress-receipt", "require:source-ledger"],
+      "surface_delta_signal": "capability_surface_delta:research",
+      "observation_receipt_class": null,
+      "observed_at": "2026-10-16T15:41:39Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["lanebus:dev47/20261016T152000Z-dev1-acceleration-2b-route.md"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "route_binding_absent", "read_only_egress_receipt_absent"]
     }
   ],
   "routes": [
