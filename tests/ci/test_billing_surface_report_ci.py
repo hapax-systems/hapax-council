@@ -1,7 +1,4 @@
-"""Pin the gate invocation a CI consumer runs: strict, on the diff git generates itself.
-
-The every-PR CI step (and the advisory report-only mode) land in the follow-up PR (#4844b).
-"""
+"""Pin the strict gate invocation CI runs; the CI step lands in #4844b."""
 
 import subprocess
 import sys

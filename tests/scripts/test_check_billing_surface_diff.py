@@ -1,6 +1,4 @@
-"""The git-validated billing scanner, through its full entry point: the ported detectors, marker
-and proxy contracts, and the strict refusal of a supplied diff file. The gate generates its own
-diff; no entry accepts diff text."""
+"""The billing scanner's entry point."""
 
 from __future__ import annotations
 
@@ -23,8 +21,7 @@ _spec = importlib.util.spec_from_file_location(
 )
 assert _spec and _spec.loader
 scanner = importlib.util.module_from_spec(_spec)
-# Register before executing: the module's dataclasses resolve their own ``__module__`` through
-# ``sys.modules``, and an unregistered module makes that lookup fail at class creation.
+# Dataclasses resolve __module__ via sys.modules.
 sys.modules[_spec.name] = scanner
 _spec.loader.exec_module(scanner)
 
@@ -47,7 +44,6 @@ def _commit(repo: Path, message: str) -> str:
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, str, str, str]:
-    """A repo with a base commit and a head that adds a credential route. Returns repo/base/head/diff."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", ".")
@@ -75,8 +71,7 @@ def _run(
     return subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
 
 
-# ── detectors, marker contract, proxy exemption (ported): id -> (path, pre-image or None for
-# the fixture base, post-image, exit, required stdout fragments, forbidden stdout fragments)
+# id -> (path, pre-image or None, post-image, exit, stdout has, stdout lacks)
 
 _PROXY = 'base_url="http://127.0.0.1:4000"'
 _HEADER_PRE = 'import os\nNOTE = """\nfirst\n"""\n\nvalue = 1\n'
@@ -124,7 +119,7 @@ _CASES = {
         (),
     ),
     "no-billing-surface": ("app.py", None, "import os\n\nvalue = 2\n", 0, ("OK",), ()),
-    # unparseable-python fails closed, and never echoes a key read it could not place
+    # fails closed; never echoes an unplaced key read
     "unparseable": ("app.py", None, "import os\nvalues = (\n", 1, ("unparseable-python",), ()),
     "unparseable-multiline-read": (
         "app.py",
@@ -134,7 +129,7 @@ _CASES = {
         ("unparseable-python",),
         ("OPENAI_API_KEY",),
     ),
-    # an added line shaped like a header cannot hide a later hunk
+    # a header-shaped line hides no hunk
     "header-shaped-line": (
         "app.py",
         _HEADER_PRE,
@@ -144,7 +139,7 @@ _CASES = {
         (),
     ),
     "doc-skipped": ("notes.md", None, f"{KEY_LINE}\n", 0, (), ()),
-    # #4808 r2/r3: a marker on one line never speaks for another line's finding
+    # #4808 r2/r3: a marker speaks only for its line
     "neighbour-marker": (
         "tests/gen.py",
         None,
@@ -169,7 +164,7 @@ _CASES = {
         ("governed-proxy-route",),
         (),
     ),
-    # the exemption is per call for the api-key class; the credential READ is its own node
+    # the exemption is per call; the env read is its own node
     "proxy-env-read": (
         "app.py",
         None,
@@ -186,7 +181,7 @@ _CASES = {
         ("api-key-route",),
         (),
     ),
-    # the marker is decided from the ADDED lines a finding covers
+    # decided by the covered ADDED lines
     "marker-on-unchanged-opening-line": (
         "tests/gen.py",
         f"c = OpenAI({ALLOW}\n)\n",
@@ -240,8 +235,8 @@ def test_a_scan_case_through_the_entry_point(tmp_path: Path, case: str) -> None:
     assert not any(a in result.stdout for a in absent), result.stdout
 
 
-def test_an_advanced_base_cannot_misplace_the_prs_added_line(tmp_path: Path) -> None:
-    # Applied to main's tree, the PR's zero-context hunk would land inside the string.
+def test_an_advanced_base_keeps_the_added_line(tmp_path: Path) -> None:
+    # On main's tree the hunk would land inside the string.
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
     _git(repo, "checkout", "-q", "-b", "pr")
@@ -256,11 +251,8 @@ def test_an_advanced_base_cannot_misplace_the_prs_added_line(tmp_path: Path) -> 
     assert "app.py:2: api-key-route" in result.stdout
 
 
-# ── untrusted diff text has no entry; git's own diff is generated without drivers
-
-
-def test_the_gate_module_offers_no_text_accepting_entry() -> None:
-    """muse r7: the library entry took diff text; the gate entry now generates its own diff."""
+def test_no_text_accepting_entry() -> None:
+    """muse r7."""
     entry = inspect.signature(scanner.scan_git_validated)
     assert list(entry.parameters) == ["repo", "base", "head"]
     for name, fn in vars(scanner).items():
@@ -299,10 +291,8 @@ _BINARY = "Binary files a/app.py and b/app.py differ"
         "trailing-credential-after-valid-hunk",
     ],
 )
-def test_every_fail_open_reproduction_is_refused_at_the_strict_entry(
-    tmp_path: Path, shape: object
-) -> None:
-    """#4795 r5-r7 / #4808 r1-r3 shapes and muse r7's: untrusted diff text is not accepted."""
+def test_a_supplied_diff_file_is_refused(tmp_path: Path, shape: object) -> None:
+    """#4795 r5-r7, #4808 r1-r3, muse r7."""
     repo, base, _head, diff = _fixture(tmp_path)
     case = tmp_path / "case.diff"
     case.write_text(shape(diff, diff.splitlines()), encoding="utf-8")  # type: ignore[operator]
@@ -312,10 +302,8 @@ def test_every_fail_open_reproduction_is_refused_at_the_strict_entry(
 
 
 @pytest.mark.parametrize("driver", ["external-diff", "textconv"])
-def test_a_configured_diff_driver_cannot_substitute_a_clean_patch(
-    tmp_path: Path, driver: str
-) -> None:
-    """codex r7: a repo's diff driver or textconv must not decide what the gate scans."""
+def test_a_diff_driver_cannot_substitute_a_patch(tmp_path: Path, driver: str) -> None:
+    """codex r7."""
     repo, base, _head, _diff = _fixture(tmp_path)
     tool = tmp_path / "driver.sh"
     if driver == "external-diff":
@@ -334,10 +322,8 @@ def test_a_configured_diff_driver_cannot_substitute_a_clean_patch(
 
 
 @pytest.mark.parametrize("worktree_at", ["base", "head"])
-def test_a_heads_binary_attribute_cannot_hide_its_text_change(
-    tmp_path: Path, worktree_at: str
-) -> None:
-    """Attributes come from the base tree: the PR's own `.gitattributes` cannot mark a key opaque."""
+def test_a_head_attribute_hides_no_change(tmp_path: Path, worktree_at: str) -> None:
+    """Attributes come from the base tree."""
     repo, base, _head, _diff = _fixture(tmp_path)
     (repo / ".gitattributes").write_text("*.py -diff\n")
     head = _commit(repo, "head marks python binary")
@@ -361,7 +347,7 @@ _PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08
 def test_no_opaque_change_passes_the_strict_gate(
     tmp_path: Path, case: str, code: int, said: str
 ) -> None:
-    """codex r9: a base `-diff` text change is scanned as text; a non-text change refuses."""
+    """codex r9."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", ".")
@@ -377,9 +363,6 @@ def test_no_opaque_change_passes_the_strict_gate(
     result = _run(repo, base, head=head)
     assert result.returncode == code, result.stdout + result.stderr
     assert said in result.stdout + result.stderr
-
-
-# ── diff-read errors carry next actions
 
 
 @pytest.mark.parametrize(
@@ -428,7 +411,7 @@ def test_an_unusable_invocation_refuses_with_a_next_action(tmp_path: Path, args:
 def test_an_unusable_git_refuses_with_a_next_action(
     tmp_path: Path, version: str | None, refusal: str
 ) -> None:
-    """No git, or one below 2.41 that would silently ignore GIT_ATTR_SOURCE, refuses."""
+    """git < 2.41 ignores GIT_ATTR_SOURCE."""
     repo, base, _head, _diff = _fixture(tmp_path)
     stub = tmp_path / "bin" / "git"
     stub.parent.mkdir()

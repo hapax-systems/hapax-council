@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """Git-validated provider-billing surface scan.
 
-Exits 0 clean, 1 on findings, 2 on unusable input. The gate reads only the diff it has git
-generate from --base/--head, drivers off; a supplied --diff-file is untrusted and refused.
-Git applies the diff to an index seeded from the merge base; only Git's added lines and
-post-image are scanned. Findings are a lower bound.
+Exit 0 clean, 1 findings, 2 unusable input.
 """
 
 from __future__ import annotations
@@ -42,17 +39,15 @@ from scripts.billing_surface_input import (  # noqa: E402
 
 
 def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult | None, str | None]:
-    """Scan what git applies of the merge-base..head diff it generates: ``(result, error)``.
-
-    An ``error`` (exit 2) has ``result`` None, so unusable input never scans clean."""
-    # GIT_ATTR_SOURCE (below) is ignored by git < 2.41: refuse rather than silently lose it.
+    """``(result, error)``; an error never scans clean."""
+    # git < 2.41 ignores GIT_ATTR_SOURCE.
     version = re.match(r"git version (\d+)\.(\d+)", _run_git(["--version"], repo=repo).stdout)
     if version is None or (int(version[1]), int(version[2])) < (2, 41):
         return None, (
             "FAIL-CLOSED: git >= 2.41 is required for attribute-source hardening. Next action: "
             "upgrade git or run on a host with git >= 2.41"
         )
-    # ONE base for diff and index seed: a moved base can misplace zero-context hunks.
+    # One base for diff and index.
     merge_base = _run_git(["merge-base", base, head], repo=repo)
     if merge_base.returncode != 0:
         return None, (
@@ -60,9 +55,7 @@ def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult 
             "fetch both revisions and rerun"
         )
     base = merge_base.stdout.strip()
-    # Drivers or textconv could substitute a clean patch, and the PR's `.gitattributes` a binary
-    # stub git apply skips: both diffs take attributes from the base tree, and --text so that no
-    # attribute makes a text change opaque.
+    # Base-tree attributes, no drivers, --text: the head cannot make its change opaque.
     attrs = {"GIT_ATTR_SOURCE": base}
     generated = _run_git(
         ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames"]
@@ -89,7 +82,6 @@ def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult 
 def _scan_validated_files(
     files: dict[str, dict[int, str]], *, repo: Path, env: dict[str, str]
 ) -> ScanResult:
-    """Judge only Git-regenerated added lines while the validated index exists."""
     findings: list[Finding] = []
     allowed: list[Finding] = []
     scanned: list[str] = []
@@ -103,11 +95,7 @@ def _scan_validated_files(
         *,
         covers: tuple[int, ...] = (),
     ) -> None:
-        """Record one added line's kinds: the ONE place an exemption is decided.
-
-        A marker exempts only on an allowlisted path (elsewhere it is itself a finding), and only
-        when every added line the finding covers carries it; empty ``covers`` means this line.
-        """
+        """The one exemption point."""
         covered_texts = [added[line] for line in covers if line in added] or [content]
         marked = all(ALLOW_MARKER in text_of_line for text_of_line in covered_texts)
         if not kinds and not marked:
@@ -158,7 +146,7 @@ def _scan_validated_files(
                     line_kinds += ("api-key-route",)
                 emit(path, line_no, line_kinds, text)
             continue
-        # `unparseable-python` goes straight to the findings: no marker exempts it.
+        # No marker exempts unparseable-python.
         findings.extend(node_findings)
         for line_no, text in sorted(added.items()):
             emit(path, line_no, _text_classes(text), text)
@@ -213,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     except UnusableInput as exc:
         print(f"billing-surface-scan: FAIL-CLOSED: {exc}", file=sys.stderr)
         return 2
-    except UnicodeDecodeError:  # --text renders all as text; a change not in UTF-8 is opaque
+    except UnicodeDecodeError:  # not UTF-8: opaque
         print(f"billing-surface-scan: FAIL-CLOSED: {OPAQUE_CHANGE}", file=sys.stderr)
         return 2
     if error is not None or result is None:
