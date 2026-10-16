@@ -26,6 +26,20 @@ PATHS = [LEDGER, REVIEWER, PRODUCER, WRITER]
 EFFECT = "changed_binding_crosses_process"
 MUTATIONS = [
     (
+        "malformed-blocking-metadata-admitted",
+        LEDGER,
+        '            or not isinstance(variants[0]["blocked_reasons"], list)\n',
+        "",
+        "malformed_blocked_reasons",
+    ),
+    (
+        "valid-empty-blocking-metadata-rejected",
+        LEDGER,
+        '            or variants[0]["blocked_reasons"]\n',
+        '            or not variants[0]["blocked_reasons"]\n',
+        "empty_blocked_reasons_allows_binding",
+    ),
+    (
         "invalid-binding-default",
         LEDGER,
         '    path = REPO_ROOT / "config" / "platform-capability-registry.json"',

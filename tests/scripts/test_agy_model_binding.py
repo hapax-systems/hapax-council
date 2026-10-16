@@ -140,6 +140,31 @@ def test_invalid_registry_binding_has_no_default(monkeypatch, fault):
         _load_ledger(monkeypatch, "{" if fault == "malformed" else json.dumps(payload))
 
 
+@pytest.mark.parametrize(
+    "blocked_reasons",
+    [
+        pytest.param(None, id="null"),
+        pytest.param(False, id="false"),
+        pytest.param("", id="empty-string"),
+        pytest.param({}, id="empty-object"),
+        pytest.param(0, id="zero"),
+    ],
+)
+def test_malformed_blocked_reasons_has_no_default(monkeypatch, blocked_reasons):
+    payload, _, variant = _registry()
+    variant["blocked_reasons"] = blocked_reasons
+    with pytest.raises(ValueError, match="repair the governed.*no model fallback"):
+        _load_ledger(monkeypatch, json.dumps(payload))
+
+
+def test_empty_blocked_reasons_allows_binding(monkeypatch):
+    payload, route, variant = _registry()
+    variant["blocked_reasons"] = []
+    ledger = _load_ledger(monkeypatch, json.dumps(payload))
+    assert variant["variant_id"].removeprefix("agy@") == ledger.AGY_ADMISSION_MODEL
+    assert route["execution_descriptor"]["model_id"] == ledger.AGY_ADMISSION_LEGACY_MODEL
+
+
 @pytest.mark.parametrize("native_rc", [0, 1])
 def test_producer_reviewer_model_effect_without_fallback(tmp_path, monkeypatch, capsys, native_rc):
     """Exercise both real scripts with a fake native binary and isolated receipt directory."""

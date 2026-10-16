@@ -79,7 +79,11 @@ def _agy_review_model_binding() -> tuple[str, str]:
             if v["knobs_override"].get("model_id", base) == base
             and v["knobs_override"].get("effort") == "high"
         ]
-        if len(variants) != 1 or variants[0]["blocked_reasons"]:
+        if (
+            len(variants) != 1
+            or not isinstance(variants[0]["blocked_reasons"], list)
+            or variants[0]["blocked_reasons"]
+        ):
             raise ValueError("expected one unblocked high-effort base-model variant")
         variant_id = variants[0]["variant_id"]
         if not variant_id.startswith("agy@"):
