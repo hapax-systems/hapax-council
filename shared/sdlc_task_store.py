@@ -1040,7 +1040,42 @@ def _raise_frontier_changed(
     )
 
 
+# Parsed entries of rows whose full stat vector is unchanged, for this process only.
+# One cc-claim resolves the task store five to six times; without this each
+# resolution re-reads and re-parses every row. A write changes the row's ctime
+# (and usually size and mtime), so a changed row never matches its old key; that is
+# the same reuse rule _reconcile_nonidentity_frontier applies. Frontier passes
+# still stat every row on every resolution, so frontier-change detection is
+# unchanged. Rows that could not be read are not memoized.
+_TASK_IDENTITY_ENTRY_MEMO: dict[tuple[Path, TaskState, _StatVector], TaskIdentityEntry] = {}
+_TASK_IDENTITY_ENTRY_MEMO_MAX = 50_000
+
+
+def clear_task_identity_entry_memo() -> None:
+    """Forget every memoized task-row entry held by this process."""
+
+    _TASK_IDENTITY_ENTRY_MEMO.clear()
+
+
 def _index_entry(
+    path: Path,
+    *,
+    state: TaskState,
+    stat_vector: _StatVector,
+) -> TaskIdentityEntry:
+    key = (_normalized_path(path), state, stat_vector)
+    cached = _TASK_IDENTITY_ENTRY_MEMO.get(key)
+    if cached is not None:
+        return cached
+    entry = _read_index_entry(path, state=state, stat_vector=stat_vector)
+    if entry.content_sha256 is not None:
+        if len(_TASK_IDENTITY_ENTRY_MEMO) >= _TASK_IDENTITY_ENTRY_MEMO_MAX:
+            clear_task_identity_entry_memo()
+        _TASK_IDENTITY_ENTRY_MEMO[key] = entry
+    return entry
+
+
+def _read_index_entry(
     path: Path,
     *,
     state: TaskState,
