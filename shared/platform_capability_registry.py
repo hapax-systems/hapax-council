@@ -513,11 +513,11 @@ class PrimarySourceCandidateBinding(StrictModel):
             (self.admission_requirements, PRIMARY_SOURCE_ADMISSION_REQUIREMENTS),
         ):
             if len(domains) != len(expected) or set(domains) != expected:
-                raise ValueError("candidate binding must retain every stop/admission requirement")
+                raise ValueError("restore every declared candidate stop/admission requirement")
         if len(self.allowed_domains) != len(set(self.allowed_domains)) or any(
             not _PRIMARY_SOURCE_DOMAIN_RE.fullmatch(domain) for domain in self.allowed_domains
         ):
-            raise ValueError("candidate domains must be distinct exact DNS names, never wildcards")
+            raise ValueError("use distinct exact DNS names; remove wildcards and duplicates")
         return self
 
 
@@ -641,7 +641,7 @@ class CapabilityShapeDescriptor(StrictModel):
             self.shape_id != "research.external_primary_source_fetch"
             or self.authority_ceiling is not AuthorityCeiling.READ_ONLY
         ):
-            raise ValueError("primary-source candidate binding belongs only to its read-only shape")
+            raise ValueError("attach candidate binding only to its read-only research shape")
         if self.demand_eligible:
             raise ValueError(
                 "omitted capability shape descriptors cannot be demand_eligible; "

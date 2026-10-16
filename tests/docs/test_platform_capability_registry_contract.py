@@ -526,6 +526,92 @@ def test_primary_source_candidate_boundary_pass_is_never_execution_authority() -
 
 
 @pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("https://[arxiv.org/paper", id="malformed-ipv6"),
+        pytest.param("https://arxiv.org:invalid/paper", id="invalid-port"),
+        pytest.param("https://arxiv.org:65536/paper", id="out-of-range-port"),
+        pytest.param("https://arxiv.org:8443/paper", id="non-443-port"),
+        pytest.param("https://arxiv.org/paper?download=1", id="query"),
+        pytest.param("https://arxiv.org/paper#section", id="fragment"),
+        pytest.param("https://arxiv.org/a b", id="space"),
+        pytest.param("https://arxiv.org/a\tb", id="tab"),
+        pytest.param("https://arxiv.org/a\nb", id="newline"),
+        pytest.param("https://arxiv.org/a\rb", id="carriage-return"),
+        pytest.param("https://arxiv.org/a\x00b", id="control-nul"),
+        pytest.param("https://arxiv.org/a\x1fb", id="control-unit-separator"),
+        pytest.param("https://reader@arxiv.org/paper", id="username"),
+        pytest.param("https://@arxiv.org/paper", id="empty-username"),
+        pytest.param("https://:@arxiv.org/paper", id="empty-username-and-password"),
+    ],
+)
+def test_primary_source_candidate_rejects_each_unsafe_url_branch(url: str) -> None:
+    # All other facts pass: rejection must be caused by this next-hop URL alone.
+    result = _check_primary_source_request(url=url)
+    assert result.stop_reasons == ("unsafe_endpoint",)
+    assert result.within_declared_constraints is False
+    assert result.execution_authorized is False
+
+
+@pytest.mark.parametrize("admission_passed", [True, False], ids=["passing", "stopped"])
+def test_primary_source_candidate_never_authorizes_execution(admission_passed: bool) -> None:
+    result = _check_primary_source_request(admission_passed=admission_passed)
+    assert result.stop_reasons == (() if admission_passed else ("failed_admission",))
+    assert result.within_declared_constraints is admission_passed
+    assert result.execution_authorized is False
+
+
+@pytest.mark.parametrize("validator", ["schema", "runtime"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "duplicate-domains",
+        "missing-admission",
+        "duplicate-admission",
+        "unknown-admission",
+        "duplicate-stop",
+        "wrong-shape",
+        "wrong-authority",
+    ],
+)
+def test_primary_source_candidate_rejects_each_invalid_binding_branch(
+    validator: str, case: str
+) -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    shape = next(
+        row
+        for row in payload["omitted_capability_shapes"]
+        if row["shape_id"] == "research.external_primary_source_fetch"
+    )
+    binding = shape["candidate_binding"]
+    if case == "duplicate-domains":
+        binding["allowed_domains"].append(binding["allowed_domains"][0])
+    elif case == "missing-admission":
+        binding["admission_requirements"].pop()
+    elif case == "duplicate-admission":
+        binding["admission_requirements"][-1] = binding["admission_requirements"][0]
+    elif case == "unknown-admission":
+        binding["admission_requirements"][-1] = "unknown_requirement"
+    elif case == "duplicate-stop":
+        binding["stop_conditions"][-1] = binding["stop_conditions"][0]
+    elif case == "wrong-shape":
+        shape["shape_id"] = "research.another_shape"
+    elif case == "wrong-authority":
+        shape["authority_ceiling"] = "support_only"
+    else:
+        raise AssertionError(f"unhandled invalid binding fixture: {case}")
+
+    if validator == "schema":
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(_json(SCHEMA)).validate(payload)
+    else:
+        with pytest.raises(ValidationError):
+            PlatformCapabilityRegistry.model_validate(payload)
+
+
+@pytest.mark.parametrize(
     "changes", [{"gets_used": -1}, {"request_byte_limit": 0}, {"quota_fresh": "true"}]
 )
 def test_primary_source_candidate_rejects_malformed_facts(changes: dict[str, Any]) -> None:
