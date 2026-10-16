@@ -1,9 +1,8 @@
 """hapax-coord-provision.service static contract (reform-improve coord SSOT).
 
 Pins the boot oneshot that materializes the coordination SSOT tree + escape-grant
-key so the R2 event log and the R3 daemon-independent escape grant are LIVE on
-boot without manual intervention — and that it carries the deploy auto-enable
-marker so a freshly-merged unit is `enable --now`'d, not installed-but-sleeping.
+key. Its legacy automatic activation is parked; provisioning remains available
+for U3's governed activation rather than running implicitly on merge or boot.
 """
 
 from __future__ import annotations
@@ -41,18 +40,11 @@ def test_provision_service_orders_after_secrets() -> None:
     assert "hapax-secrets.service" in unit["Unit"]["After"]
 
 
-def test_provision_service_is_marked_auto_enable() -> None:
-    """reform-improve-deploy-activation: the deploy auto-enables units carrying a
-    `# Hapax-Auto-Enable: true` marker, so the SSOT is provisioned on merge/boot
-    instead of installed-but-sleeping. The marker needs an [Install] section.
-    """
-    markers = [
-        line.strip()
-        for line in PROVISION_SERVICE.read_text(encoding="utf-8").splitlines()
-        if line.lstrip().startswith("#") and "hapax-auto-enable" in line.lower()
-    ]
-    assert markers, "hapax-coord-provision.service must carry a `# Hapax-Auto-Enable` marker"
-    assert any("true" in marker.lower() for marker in markers)
+def test_provision_service_is_parked_for_governed_activation() -> None:
+    """Keep the provisioner installable without starting it on deployment."""
+    text = PROVISION_SERVICE.read_text(encoding="utf-8")
+    assert "# Hapax-Parked: true" in text
+    assert "# Hapax-Auto-Enable: true" not in text
     assert _load(PROVISION_SERVICE)["Install"]["WantedBy"] == "default.target"
 
 

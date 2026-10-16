@@ -47,10 +47,15 @@ systemctl --user status \
   hapax-request-decompose.service \
   hapax-cc-task-offer-ready.timer \
   hapax-cc-task-offer-ready.service \
-  hapax-coordinator.service \
-  hapax-lane-supervisor.timer
+  hapax-coordinator.service
 systemctl --user cat notify-failure@.service
 ```
+
+`hapax-lane-supervisor.timer` is parked and is not an intake-drain prerequisite.
+Worker lanes launch for admitted work and end after acceptance; a persistent
+respawning fleet conflicts with the operator's 2026-10-16 JIT ruling, recorded in
+the canonical vault at
+`30-areas/hapax/lanebus/dev1/20261016T160555Z-dev47-OPERATOR-P0-lanes-are-jit-census-and-teardown.md`.
 
 If a timer is missing after a merge that changed `systemd/user-preset.d/hapax.preset`,
 run the post-merge deploy for the landed SHA and recheck:

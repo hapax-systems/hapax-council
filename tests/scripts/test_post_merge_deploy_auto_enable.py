@@ -20,6 +20,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 
@@ -84,6 +86,13 @@ OnStartupSec=2min
 [Install]
 WantedBy=timers.target
 """
+
+RETIRED_MANDATED_UNITS = (
+    "hapax-reform-complete.timer",
+    "hapax-lane-supervisor.timer",
+    "hapax-segment-prep-emit-health.timer",
+    "hapax-coord-provision.service",
+)
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -222,6 +231,45 @@ def test_deploy_enables_plain_timer_backcompat(tmp_path: Path) -> None:
     res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
     assert res.returncode == 0, res.stderr
     assert "enable --now test-plain.timer" in calls.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("unit", RETIRED_MANDATED_UNITS)
+@pytest.mark.parametrize("active_rc", [0, 1], ids=["active", "inactive"])
+def test_retired_mandated_unit_is_parked_by_deploy(
+    tmp_path: Path, unit: str, active_rc: int
+) -> None:
+    """Actual retired units must not reach restart or plain-timer auto-enable."""
+    body = (REPO_ROOT / "systemd" / "units" / unit).read_text(encoding="utf-8")
+    repo, sha = _make_repo(tmp_path, {unit: body})
+    bin_dir, calls = _make_fake_systemctl(tmp_path)
+    result = _run(
+        [sha],
+        repo=repo,
+        bin_dir=bin_dir,
+        tmp_path=tmp_path,
+        extra_env={"FAKE_IS_ACTIVE_QUIET_RC": str(active_rc)},
+    )
+    assert result.returncode == 0, result.stderr
+    observed = calls.read_text(encoding="utf-8").splitlines()
+    assert f"--user disable --now {unit}" in observed
+    assert f"--user reset-failed {unit}" in observed
+    assert not any(
+        line.split()[1] in {"enable", "start", "restart", "try-restart"}
+        and unit in line.split()[2:]
+        for line in observed
+    ), observed
+
+    # Flow uses this same verifier. A parked unit must also stop demanding
+    # enablement; retaining the old Auto-Enable marker would keep it degraded.
+    verify = _run(
+        ["--verify-auto-enable"],
+        repo=repo,
+        bin_dir=bin_dir,
+        tmp_path=tmp_path,
+        extra_env={"FAKE_IS_ENABLED_RC": "1"},
+    )
+    assert verify.returncode == 0, (verify.stdout, verify.stderr)
+    assert "no Hapax-Auto-Enable units" in verify.stdout
 
 
 def test_deploy_enable_only_timer_does_not_start_during_deploy(tmp_path: Path) -> None:
