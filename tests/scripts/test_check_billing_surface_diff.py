@@ -332,6 +332,8 @@ def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
         (["--repo", "{R}", "--base", "{B}", "--head", "no-such-head"], None),
         (["--repo", "{T}/plain", "--base", "abcdef0", "--diff-file", "{F}"], "not a diff at all\n"),
         (["--repo", "{R}", "--base", "{B}", "--diff-file", "{F}"], ""),
+        (["--repo", "{T}/no-such-repo", "--base", "main", "--head", "HEAD"], None),
+        (["--repo", "{R}", "--base", "{B}", "--diff-file", "{F}"], b"\xff\xfe\x00binary"),
     ],
     ids=[
         "missing-diff-file",
@@ -340,14 +342,18 @@ def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
         "unresolvable-head",
         "not-a-repository",
         "empty-diff-file",
+        "nonexistent-repo",
+        "binary-diff-file",
     ],
 )
 def test_an_unusable_invocation_refuses_with_a_next_action(
-    tmp_path: Path, args: list[str], diff_text: str | None
+    tmp_path: Path, args: list[str], diff_text: str | bytes | None
 ) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     (tmp_path / "plain").mkdir()
-    if diff_text is not None:
+    if isinstance(diff_text, bytes):
+        (tmp_path / "case.diff").write_bytes(diff_text)
+    elif diff_text is not None:
         (tmp_path / "case.diff").write_text(diff_text, encoding="utf-8")
     subs = {"{R}": str(repo), "{B}": base, "{T}": str(tmp_path), "{F}": str(tmp_path / "case.diff")}
     for key, value in subs.items():
@@ -357,6 +363,17 @@ def test_an_unusable_invocation_refuses_with_a_next_action(
     )
     assert result.returncode == 2
     assert "Next action" in result.stderr
+    if "no-such-repo" in args[1]:
+        assert "is not a directory" in result.stderr
+
+
+def test_git_unavailable_during_generation_refuses_with_a_next_action(tmp_path: Path) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base, "--head", "HEAD"]
+    env = {"PATH": str(tmp_path / "no-git-here")}
+    result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 2
+    assert "git is unavailable" in result.stderr and "Next action" in result.stderr
 
 
 # ── the marker is decided from the added lines a finding COVERS

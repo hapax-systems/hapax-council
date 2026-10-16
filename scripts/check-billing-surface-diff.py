@@ -142,6 +142,16 @@ def _scan_validated_files(
     )
 
 
+def _git_unavailable(exc: GitUnavailable) -> int:
+    print(
+        f"billing-surface-scan: FAIL-CLOSED: git is unavailable ({exc}), and this scanner "
+        "validates its input with git before scanning anything. Next action: install git or "
+        "run this scan where git is available",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def _strict_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0] or None)
     parser.add_argument("--base", required=False, help="base revision the input diff applies to")
@@ -153,11 +163,18 @@ def _strict_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", help="repository to validate and scan in (default: cwd)")
     args = parser.parse_args(argv)
     repo = Path(args.repo).expanduser() if args.repo else Path.cwd()
+    if not repo.is_dir():
+        print(
+            f"billing-surface-scan: FAIL-CLOSED: --repo {repo} is not a directory. Next action: "
+            "pass the repository to scan",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.diff_file:
         try:
             diff_text = Path(args.diff_file).read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             print(
                 f"billing-surface-scan: FAIL-CLOSED: cannot read the diff file: {exc}. Next action: "
                 "pass a readable --diff-file, or omit it and let git generate the diff",
@@ -174,7 +191,10 @@ def _strict_main(argv: list[str] | None = None) -> int:
             )
             return 2
         # ONE base for diff and index seed: a moved base can misplace zero-context hunks.
-        merge_base = _run_git(["merge-base", args.base, args.head], repo=repo)
+        try:
+            merge_base = _run_git(["merge-base", args.base, args.head], repo=repo)
+        except GitUnavailable as exc:
+            return _git_unavailable(exc)
         if merge_base.returncode != 0:
             print(
                 f"billing-surface-scan: FAIL-CLOSED: git merge-base {args.base} {args.head}: "
@@ -183,10 +203,13 @@ def _strict_main(argv: list[str] | None = None) -> int:
             )
             return 2
         args.base = merge_base.stdout.strip()
-        generated = _run_git(
-            ["diff", "--find-renames", "--unified=0", f"{args.base}..{args.head}"],
-            repo=repo,
-        )
+        try:
+            generated = _run_git(
+                ["diff", "--find-renames", "--unified=0", f"{args.base}..{args.head}"],
+                repo=repo,
+            )
+        except GitUnavailable as exc:
+            return _git_unavailable(exc)
         if generated.returncode != 0:
             print(
                 f"billing-surface-scan: FAIL-CLOSED: git diff {args.base}...{args.head}: "
@@ -208,13 +231,7 @@ def _strict_main(argv: list[str] | None = None) -> int:
     try:
         result, error = scan_git_validated(diff_text, repo=repo, base=args.base)
     except GitUnavailable as exc:
-        print(
-            f"billing-surface-scan: FAIL-CLOSED: git is unavailable ({exc}), and this scanner "
-            "validates its input with git before scanning anything. Next action: install git or "
-            "run this scan where git is available",
-            file=sys.stderr,
-        )
-        return 2
+        return _git_unavailable(exc)
     except UnusableInput as exc:
         print(f"billing-surface-scan: FAIL-CLOSED: {exc}", file=sys.stderr)
         return 2
