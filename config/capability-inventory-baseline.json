@@ -1,5 +1,5 @@
 {
-  "count": 187,
+  "count": 196,
   "records": {
     "agy.review.direct": {
       "fingerprint": "4ea797143ee0282ae82de6de2fa3a874990802f455005825b9eaf48a87da9e68",
@@ -453,10 +453,6 @@
       "fingerprint": "99988c906448699bed60717a899c0482442fa805cfd6706eb734bac6203cf299",
       "inventory_disposition": "evidence_only_non_supply"
     },
-    "local_compute.ornith_fugu_sakana_surface": {
-      "fingerprint": "e8fa32b2457e3a6a8747b5c188587a4bbf12124def0d6d74ddfbe27f1bccac6d",
-      "inventory_disposition": "evidence_only_non_supply"
-    },
     "local_supplied_evidence_command_r": {
       "fingerprint": "b581af5a66d0b13ea16b193caae5efdb098aa7cfeb813e2630348a080f4b1abb",
       "inventory_disposition": "admitted_supply"
@@ -473,8 +469,48 @@
       "fingerprint": "243759058f41e96e7c85fbe6558d7e9a6e65e9ce9621ba891b6dcbe631c1f381",
       "inventory_disposition": "admitted_supply"
     },
+    "model_provider.cohere": {
+      "fingerprint": "232c1540e755998ec9d52b32b8fab118d6f51d35d64a79da7238cf8075edcbb1",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.featherless_request_pricing": {
+      "fingerprint": "1dc7eb76b7ccbf157b27a3dac149a0888b8606ae04b8720f420cccca0f85a8d6",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.huggingface_pro": {
+      "fingerprint": "4af867eb68519e44efe4b806a08616fb39bd705b2723c628cf922ecccfb059bd",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.meta_muse": {
+      "fingerprint": "ed91bacca4787f69ff0ea4b95720329a6eefec559e5a43f2c8734fc97ec4946a",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
     "model_provider.openrouter_gateway_surface": {
       "fingerprint": "adaa3763dde5bd348097b5882f8b77a726f4683c9fa4d1ded9e72d166c9703a9",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.perplexity": {
+      "fingerprint": "5e3cff5c889f61a98d04f7a496635400c498c1ce51cd88887c65078605ee70b8",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.qwen_cloud_coding_plan": {
+      "fingerprint": "2a6ac663a471e4fc13250364ca6cca0780fcbb0537fcf1734c4e7c8e668eadc1",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.sakana_fugu_subscription": {
+      "fingerprint": "614e516c2b2e78777cf3c9cce74d4bf6115319ec6d12a9ef32a508a811902aea",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.verboo_code_ultra": {
+      "fingerprint": "ddd991c236465a82731b14d57db6829f0be742aa98150e78b7d0b2a160725799",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.xai_supergrok_heavy": {
+      "fingerprint": "9703a1ad285e00c375b2c5bbf6c986fc24e7414c0af6856ac8a5b66173981810",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "model_provider.xiaomi_mimo": {
+      "fingerprint": "c7d88427597caf80afcf0ac2b397c2d44842ea8328cc2a0624d0ef5901284ddc",
       "inventory_disposition": "evidence_only_non_supply"
     },
     "money_rail.resource_receipt_surface": {
