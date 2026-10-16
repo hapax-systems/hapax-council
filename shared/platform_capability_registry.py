@@ -2544,7 +2544,8 @@ def _admission_refs_name_pool(evidence_refs: Iterable[str], pool: str) -> bool:
 
 def _receipt_label_pool(label: str) -> str | None:
     # The leftmost -pool- wins, so a label naming two pools parses as one pool neither names.
-    match = ADMISSION_RECEIPT_POOL_RE.search(label)
+    _, marker, suffix = label.partition("-pool-")
+    match = ADMISSION_RECEIPT_POOL_RE.fullmatch(marker + suffix) if marker else None
     return match.group("pool") if match else None
 
 

@@ -1488,6 +1488,12 @@ def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
         [REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace("-pool-max-2-", "-pool-max-2-extra-")],
         # A label naming two pools names no single one.
         [REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace("-pool-max-2-", "-pool-max-3-pool-max-2-")],
+        # A too-long first pool must not make the parser search for a later pool marker.
+        [
+            REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace(
+                "-pool-max-2-", "-pool-alternative-subscription-max-3-pool-max-2-"
+            )
+        ],
     ],
 )
 @pytest.mark.parametrize("platform_quota", ["unobservable", "observed-for-the-route"])
