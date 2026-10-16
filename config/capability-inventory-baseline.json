@@ -734,7 +734,7 @@
       "inventory_disposition": "admitted_supply"
     },
     "research.external_primary_source_fetch": {
-      "fingerprint": "42586532c03ad524f4c84f4cedca51d621fd5fee56c8bf6e1dd79b7ad6fda2f4",
+      "fingerprint": "6c34cddf09a4ac516b3a9a1da783be62f87aefc23be48763242a2fce4801ca75",
       "inventory_disposition": "evidence_only_non_supply"
     },
     "self_inline.current_session_surface": {

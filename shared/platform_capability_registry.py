@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -462,6 +463,141 @@ class DescriptorVariant(StrictModel):
         return self
 
 
+PRIMARY_SOURCE_STOP_CONDITIONS = frozenset(
+    {
+        "bound_exhausted",
+        "unexpected_authentication",
+        "unknown_billing",
+        "unsafe_endpoint",
+        "failed_admission",
+    }
+)
+PRIMARY_SOURCE_ADMISSION_REQUIREMENTS = frozenset(
+    {
+        "fresh_route_quota_admission",
+        "task_bound_read_only_egress_receipt",
+        "measured_fetch_path",
+        "independent_review",
+        "seat_first_exposure_ruling",
+    }
+)
+_PRIMARY_SOURCE_DOMAIN_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$")
+
+
+class PrimarySourceCandidateBinding(StrictModel):
+    """Planned composition only; neither a supplied tool nor an egress grant."""
+
+    state: Literal["candidate_only"]
+    carrier_route_id: Literal["codex.headless.full"]
+    fetch_path: Literal["scripts/hapax-primary-source-fetch"]
+    fetch_path_state: Literal["planned"]
+    receipt_binding_state: Literal["producer_absent"]
+    authority_contract_ref: Literal["shared/dispatcher_policy.py:RouteAuthorityReceipt"]
+    observation_contract_ref: Literal[
+        "shared/platform_capability_receipts.py:PlatformCapabilityReceipt"
+    ]
+    method: Literal["GET"]
+    allowed_domains: list[str] = Field(min_length=1)
+    max_documents: int = Field(strict=True, ge=1, le=12)
+    max_gets: int = Field(strict=True, ge=1, le=30)
+    max_download_bytes: int = Field(strict=True, ge=1, le=104857600)
+    max_incremental_cost_usd: int = Field(strict=True, ge=0, le=0)
+    billing_basis: Literal["subscription_quota_only_no_paid_search"]
+    stop_conditions: list[str]
+    admission_requirements: list[str]
+
+    @model_validator(mode="after")
+    def _bounded_declaration(self) -> Self:
+        for domains, expected in (
+            (self.stop_conditions, PRIMARY_SOURCE_STOP_CONDITIONS),
+            (self.admission_requirements, PRIMARY_SOURCE_ADMISSION_REQUIREMENTS),
+        ):
+            if len(domains) != len(expected) or set(domains) != expected:
+                raise ValueError("candidate binding must retain every stop/admission requirement")
+        if len(self.allowed_domains) != len(set(self.allowed_domains)) or any(
+            not _PRIMARY_SOURCE_DOMAIN_RE.fullmatch(domain) for domain in self.allowed_domains
+        ):
+            raise ValueError("candidate domains must be distinct exact DNS names, never wildcards")
+        return self
+
+
+class PrimarySourceRequestFacts(StrictModel):
+    """Hypothetical next GET, including a redirect hop; no facts are observed here.
+
+    Admission and endpoint facts must be independently established by the future
+    enforcing tool. These inputs are not authenticated receipts or DNS evidence.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    url: str
+    documents_used: int = Field(ge=0)
+    gets_used: int = Field(ge=0)
+    downloaded_bytes: int = Field(ge=0)
+    request_byte_limit: int = Field(gt=0)
+    authentication: Literal["none", "required", "unknown"]
+    billing: Literal["declared_zero_incremental", "paid", "unknown"]
+    endpoint_public: bool | None
+    admission_passed: bool
+    quota_fresh: bool
+
+
+@dataclass(frozen=True)
+class PrimarySourceCandidateCheck:
+    stop_reasons: tuple[str, ...]
+
+    @property
+    def within_declared_constraints(self) -> bool:
+        return not self.stop_reasons
+
+    @property
+    def execution_authorized(self) -> Literal[False]:
+        return False
+
+
+def check_primary_source_candidate_request(
+    binding: dict[str, Any], facts: dict[str, Any]
+) -> PrimarySourceCandidateCheck:
+    """Validate candidate request data, without fetching, observing or granting authority.
+
+    A passing result is not executable admission. The separate enforcing-tool row
+    must bind actual task authority/receipts, quota, DNS, every redirect, authentication,
+    billing and streamed byte counts at use; registry declarations cannot enforce HTTP.
+    """
+
+    candidate = PrimarySourceCandidateBinding.model_validate(binding)
+    request = PrimarySourceRequestFacts.model_validate(facts)
+    stops: list[str] = []
+    if (
+        request.documents_used >= candidate.max_documents
+        or request.gets_used >= candidate.max_gets
+        or request.downloaded_bytes + request.request_byte_limit > candidate.max_download_bytes
+    ):
+        stops.append("bound_exhausted")
+    if request.authentication != "none":
+        stops.append("unexpected_authentication")
+    if request.billing != "declared_zero_incremental":
+        stops.append("unknown_billing")
+    try:
+        target = urlsplit(request.url)
+        public_target = (
+            target.scheme == "https"
+            and target.hostname in candidate.allowed_domains
+            and target.username is None
+            and target.password is None
+            and target.port in (None, 443)
+            and not target.query
+            and not target.fragment
+            and not any(char.isspace() or ord(char) < 32 for char in request.url)
+        )
+    except ValueError:
+        public_target = False
+    if not public_target or request.endpoint_public is not True:
+        stops.append("unsafe_endpoint")
+    if not request.admission_passed or not request.quota_fresh:
+        stops.append("failed_admission")
+    return PrimarySourceCandidateCheck(tuple(stops))
+
+
 class CapabilityShapeDescriptor(StrictModel):
     """Evidence-only descriptor for an observed but not-yet-admitted capability surface.
 
@@ -494,10 +630,18 @@ class CapabilityShapeDescriptor(StrictModel):
     freshness_state: CapabilityShapeFreshnessState
     evidence_refs: list[str] = Field(default_factory=list)
     blocked_reasons: list[str] = Field(default_factory=list)
+    candidate_binding: PrimarySourceCandidateBinding | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def _omitted_shape_is_not_supply(self) -> Self:
         parse_duration_spec(self.stale_after)
+        if self.candidate_binding is not None and (
+            self.shape_id != "research.external_primary_source_fetch"
+            or self.authority_ceiling is not AuthorityCeiling.READ_ONLY
+        ):
+            raise ValueError("primary-source candidate binding belongs only to its read-only shape")
         if self.demand_eligible:
             raise ValueError(
                 "omitted capability shape descriptors cannot be demand_eligible; "

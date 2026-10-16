@@ -5655,3 +5655,24 @@ _ = (
     _resolve_subscription_pool_binding,
     _claude_config_dir_for_env,
 )
+
+# registry-bind-external-primary-source-research-route-20261016: Pydantic calls the
+# declaration validator dynamically. The candidate-data verification API and its
+# result properties are exercised by contract tests outside the production scan.
+# The enforcing fetch tool is a separate seat-owned row; these are not HTTP gates.
+from shared.platform_capability_registry import (  # noqa: E402
+    PrimarySourceCandidateBinding as _PrimarySourceCandidateBinding,
+)
+from shared.platform_capability_registry import (
+    PrimarySourceCandidateCheck as _PrimarySourceCandidateCheck,
+)
+from shared.platform_capability_registry import (
+    check_primary_source_candidate_request as _check_primary_source_candidate_request,
+)
+
+_ = (
+    _PrimarySourceCandidateBinding._bounded_declaration,
+    _PrimarySourceCandidateCheck.within_declared_constraints,
+    _PrimarySourceCandidateCheck.execution_authorized,
+    _check_primary_source_candidate_request,
+)

@@ -766,6 +766,44 @@
         }
       }
     },
+    "primary_source_candidate_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Candidate data only. The named fetch path and task-bound egress receipt producer are unimplemented; this object cannot authorize execution.",
+      "required": [
+        "state", "carrier_route_id", "fetch_path", "fetch_path_state", "receipt_binding_state",
+        "authority_contract_ref", "observation_contract_ref", "method", "allowed_domains",
+        "max_documents", "max_gets", "max_download_bytes", "max_incremental_cost_usd",
+        "billing_basis", "stop_conditions", "admission_requirements"
+      ],
+      "properties": {
+        "state": {"const": "candidate_only"},
+        "carrier_route_id": {"const": "codex.headless.full"},
+        "fetch_path": {"const": "scripts/hapax-primary-source-fetch"},
+        "fetch_path_state": {"const": "planned"},
+        "receipt_binding_state": {"const": "producer_absent"},
+        "authority_contract_ref": {"const": "shared/dispatcher_policy.py:RouteAuthorityReceipt"},
+        "observation_contract_ref": {"const": "shared/platform_capability_receipts.py:PlatformCapabilityReceipt"},
+        "method": {"const": "GET"},
+        "allowed_domains": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"}
+        },
+        "max_documents": {"type": "integer", "minimum": 1, "maximum": 12},
+        "max_gets": {"type": "integer", "minimum": 1, "maximum": 30},
+        "max_download_bytes": {"type": "integer", "minimum": 1, "maximum": 104857600},
+        "max_incremental_cost_usd": {"type": "integer", "const": 0},
+        "billing_basis": {"const": "subscription_quota_only_no_paid_search"},
+        "stop_conditions": {
+          "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true,
+          "items": {"enum": ["bound_exhausted", "unexpected_authentication", "unknown_billing", "unsafe_endpoint", "failed_admission"]}
+        },
+        "admission_requirements": {
+          "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true,
+          "items": {"enum": ["fresh_route_quota_admission", "task_bound_read_only_egress_receipt", "measured_fetch_path", "independent_review", "seat_first_exposure_ruling"]}
+        }
+      }
+    },
     "capability_shape_descriptor": {
       "type": "object",
       "additionalProperties": false,
@@ -848,6 +886,9 @@
         "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
         "stale_after": {"$ref": "#/$defs/duration"},
         "freshness_state": {"$ref": "#/$defs/capability_shape_freshness_state"},
+        "candidate_binding": {
+          "anyOf": [{"$ref": "#/$defs/primary_source_candidate_binding"}, {"type": "null"}]
+        },
         "evidence_refs": {
           "type": "array",
           "items": {"type": "string", "minLength": 1}
@@ -858,6 +899,13 @@
         }
       },
       "allOf": [
+        {
+          "if": {"required": ["candidate_binding"], "properties": {"candidate_binding": {"type": "object"}}},
+          "then": {"properties": {
+            "shape_id": {"const": "research.external_primary_source_fetch"},
+            "authority_ceiling": {"const": "read_only"}
+          }}
+        },
         {
           "if": {
             "properties": {"shape_state": {"const": "evidence_only"}},
