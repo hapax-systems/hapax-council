@@ -347,6 +347,38 @@ def test_a_heads_binary_attribute_cannot_hide_its_text_change(
     assert "api-key-route" in result.stdout
 
 
+_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x00\x00\x00\x00:~\x9bU"
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "said"),
+    [
+        ("base-marks-python-binary", 1, "api-key-route"),
+        ("base-marks-python-binary-abbrev-7", 1, "api-key-route"),
+        ("genuine-png", 2, "an opaque change cannot be scanned. Next action: split"),
+    ],
+)
+def test_no_opaque_change_passes_the_strict_gate(
+    tmp_path: Path, case: str, code: int, said: str
+) -> None:
+    """codex r9: a base `-diff` text change is scanned as text; a non-text change refuses."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", ".")
+    _git(repo, "config", "core.abbrev", "7" if case.endswith("7") else "40")
+    (repo / "app.py").write_text("import os\n\nvalue = 1\n")
+    (repo / ".gitattributes").write_text("*.py -diff\n" if case.startswith("base") else "")
+    base = _commit(repo, "base")
+    if case.startswith("base"):
+        (repo / "app.py").write_text(f"import os\nfrom openai import OpenAI\n{KEY_LINE}\n")
+    else:
+        (repo / "logo.png").write_bytes(_PNG)
+    head = _commit(repo, "head")
+    result = _run(repo, base, head=head)
+    assert result.returncode == code, result.stdout + result.stderr
+    assert said in result.stdout + result.stderr
+
+
 # ── diff-read errors carry next actions
 
 

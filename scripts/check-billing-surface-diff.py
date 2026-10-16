@@ -30,6 +30,7 @@ from scripts.billing_surface_detector import (  # noqa: E402
     _text_classes,
 )
 from scripts.billing_surface_input import (  # noqa: E402
+    OPAQUE_CHANGE,
     GitUnavailable,
     UnusableInput,
     _git_out,
@@ -60,11 +61,12 @@ def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult 
         )
     base = merge_base.stdout.strip()
     # Drivers or textconv could substitute a clean patch, and the PR's `.gitattributes` a binary
-    # stub git apply skips: both diffs take attributes from the base tree.
+    # stub git apply skips: both diffs take attributes from the base tree, and --text so that no
+    # attribute makes a text change opaque.
     attrs = {"GIT_ATTR_SOURCE": base}
     generated = _run_git(
         ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames"]
-        + ["--unified=0", f"{base}..{head}"],
+        + ["--text", "--unified=0", f"{base}..{head}"],
         repo=repo,
         env={**os.environ, **attrs},
     )
@@ -210,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
         return _git_unavailable(exc)
     except UnusableInput as exc:
         print(f"billing-surface-scan: FAIL-CLOSED: {exc}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError:  # --text renders all as text; a change not in UTF-8 is opaque
+        print(f"billing-surface-scan: FAIL-CLOSED: {OPAQUE_CHANGE}", file=sys.stderr)
         return 2
     if error is not None or result is None:
         print(f"billing-surface-scan: {error}", file=sys.stderr)

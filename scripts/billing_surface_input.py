@@ -25,6 +25,12 @@ class UnusableInput(RuntimeError):
     """The input does not apply to the named base."""
 
 
+OPAQUE_CHANGE = (
+    "an opaque change cannot be scanned. Next action: split the binary change out or rerun "
+    "without it"
+)
+
+
 _SECTION_META_PREFIXES: tuple[str, ...] = (
     "index ",
     "new file mode ",
@@ -129,7 +135,7 @@ def parse_path_added_lines(text: str) -> tuple[dict[int, str], str | None]:
     The file is the path Git was asked about, never text in the output: before the first hunk
     header only Git's own preamble is accepted, and after it no header is recognised, so an
     added line shaped like one (`++ b/docs/x` renders `+++ b/docs/x`) is content. A binary note
-    before any hunk is opaque; any other shape fails closed.
+    before any hunk is opaque and refused; any other shape fails closed.
     """
     added: dict[int, str] = {}
     new_line = 0
@@ -143,7 +149,7 @@ def parse_path_added_lines(text: str) -> tuple[dict[int, str], str | None]:
             in_hunks = True
         elif not in_hunks:
             if raw.startswith(("Binary files ", "GIT binary patch")):
-                return {}, None
+                raise UnusableInput(OPAQUE_CHANGE)
             if not raw.startswith(_PREAMBLE_PREFIXES):
                 return {}, f"an unrecognised line before git's first hunk: {raw!r}"
         elif raw.startswith("+"):
@@ -199,6 +205,7 @@ def regenerated_added_lines(
                 "--no-color",
                 "--no-ext-diff",
                 "--no-textconv",
+                "--text",
                 "--unified=0",
                 commit,
                 "--",

@@ -116,13 +116,12 @@ def test_unknown_shape_in_one_paths_diff_is_rejected(shape: str) -> None:
     assert error is not None
 
 
-def test_binary_note_has_no_added_text_lines() -> None:
-    added, error = source.parse_path_added_lines(
-        "diff --git a/blob.bin b/blob.bin\nindex 123..456 100644\n"
-        "Binary files a/blob.bin and b/blob.bin differ\n"
-    )
-    assert error is None
-    assert added == {}
+def test_a_binary_note_is_an_opaque_change_never_no_lines() -> None:
+    with pytest.raises(source.UnusableInput, match="opaque change cannot be scanned"):
+        source.parse_path_added_lines(
+            "diff --git a/blob.bin b/blob.bin\nindex 123..456 100644\n"
+            "Binary files a/blob.bin and b/blob.bin differ\n"
+        )
 
 
 def test_binary_post_image_is_opaque(tmp_path: Path) -> None:
