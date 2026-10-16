@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -40,6 +42,7 @@ if [ "${{1:-}}" = "exec" ]; then
 fi
 printf '%s\\n' "$*" > {args_file}
 printf 'HAPAX_AGENT_INTERFACE=%s\\n' "$HAPAX_AGENT_INTERFACE" > {env_file}
+printf 'HAPAX_SESSION_ID=%s\\n' "$HAPAX_SESSION_ID" >> {env_file}
 printf 'HAPAX_AGENT_NAME=%s\\n' "$HAPAX_AGENT_NAME" >> {env_file}
 printf 'HAPAX_AGENT_SLOT=%s\\n' "$HAPAX_AGENT_SLOT" >> {env_file}
 printf 'HAPAX_WORKTREE_ROLE=%s\\n' "$HAPAX_WORKTREE_ROLE" >> {env_file}
@@ -537,6 +540,136 @@ def test_valid_codex_session_execs_codex_with_no_ask_flags(tmp_path: Path) -> No
     assert "HAPAX_WORKTREE_ROLE=alpha" in launched_env
     assert "CODEX_THREAD_NAME=cx-red" in launched_env
     assert "HAPAX_IDLE_UPDATE_SECONDS=270" in launched_env
+
+
+def _launch_identity(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            *args,
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env={**env, "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(REPO_ROOT)},
+        timeout=15,
+    )
+
+
+def _launched_session_id(env_file: Path) -> str:
+    return dict(line.split("=", 1) for line in env_file.read_text().splitlines())[
+        "HAPAX_SESSION_ID"
+    ]
+
+
+@pytest.mark.parametrize("parent_role", ["cx-amber", "cx-blue"])
+def test_new_launch_mints_unique_session_ids_despite_inherited_id(
+    tmp_path: Path, parent_role: str
+) -> None:
+    env, _, env_file = _env_with_fake_codex(tmp_path)
+    inherited = env["HAPAX_SESSION_ID"]
+    env["HAPAX_AGENT_ROLE"] = parent_role
+    marker = Path(env["HOME"]) / ".cache/hapax" / f"session-role-{inherited}"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(parent_role + "\n")
+    ids = []
+    for _ in range(2):
+        result = _launch_identity(env)
+        assert result.returncode == 0, result.stderr
+        ids.append(_launched_session_id(env_file))
+    assert len({inherited, *ids}) == 3
+    assert marker.read_text() == parent_role + "\n"
+    for sid in ids:
+        assert (marker.parent / f"session-role-{sid}").read_text() == "cx-amber\n"
+
+
+@pytest.mark.parametrize("equals", [False, True])
+def test_explicit_resume_reuses_only_recorded_own_session(tmp_path: Path, equals: bool) -> None:
+    env, _, env_file = _env_with_fake_codex(tmp_path)
+    own_id = "a0a0a0a0-1111-2222-3333-444455556666"
+    marker = Path(env["HOME"]) / ".cache/hapax" / f"session-role-{own_id}"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("cx-amber\n")
+    args = [f"--resume-session-id={own_id}"] if equals else ["--resume-session-id", own_id]
+    result = _launch_identity(env, *args)
+    assert result.returncode == 0, result.stderr
+    assert _launched_session_id(env_file) == own_id
+    assert "--resume-session-id" not in (tmp_path / "codex-args.txt").read_text()
+
+
+@pytest.mark.parametrize("recorded_role", [None, "cx-blue"])
+def test_explicit_resume_refuses_unowned_session(tmp_path: Path, recorded_role: str | None) -> None:
+    env, args_file, _ = _env_with_fake_codex(tmp_path)
+    sid = env["HAPAX_SESSION_ID"]
+    env["HAPAX_AGENT_ROLE"] = "cx-amber"  # An ambient assertion is not ownership evidence.
+    marker = Path(env["HOME"]) / ".cache/hapax" / f"session-role-{sid}"
+    if recorded_role is not None:
+        marker.parent.mkdir(parents=True)
+        marker.write_text(recorded_role + "\n")
+    result = _launch_identity(env, "--resume-session-id", sid)
+    assert result.returncode != 0
+    assert "resume" in result.stderr and "next action:" in result.stderr
+    assert not args_file.exists()
+    if recorded_role is None:
+        assert not marker.exists()
+    else:
+        assert marker.read_text() == recorded_role + "\n"
+
+
+@pytest.mark.parametrize("sid", ["", "../../other-session", "12345678"])
+def test_explicit_resume_refuses_invalid_session_id(tmp_path: Path, sid: str) -> None:
+    env, args_file, _ = _env_with_fake_codex(tmp_path)
+    # Even a matching marker must not make a path-hostile/non-keyable ID usable.
+    marker = Path(env["HOME"]) / ".cache/hapax" / f"session-role-{sid}"
+    assert marker.resolve().is_relative_to(tmp_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("cx-amber\n")
+    result = _launch_identity(env, f"--resume-session-id={sid}")
+    assert result.returncode != 0
+    assert "resume" in result.stderr and "next action:" in result.stderr
+    assert not args_file.exists()
+
+
+def test_tmux_reentry_keeps_minted_id_but_next_launch_mints_again(tmp_path: Path) -> None:
+    env, _, env_file = _env_with_fake_codex(tmp_path)
+    runner_file = tmp_path / "runner-path"
+    fake_tmux = tmp_path / "bin/tmux"
+    fake_tmux.write_text(
+        f"#!/usr/bin/env bash\n"
+        'if [ "$1" = has-session ]; then exit 1; fi\n'
+        'if [ "$1" = new-session ]; then\n'
+        f'  printf "%s\\n" "${{@: -1}}" > {shlex.quote(str(runner_file))}\n'
+        "fi\n"
+    )
+    fake_tmux.chmod(0o755)
+    result = _launch_identity(env, "--terminal", "tmux")
+    assert result.returncode == 0, result.stderr
+    runner = Path(runner_file.read_text().strip())
+    text = runner.read_text()
+    outer_sid = next(
+        shlex.split(line)[1].split("=", 1)[1]
+        for line in text.splitlines()
+        if line.startswith("export HAPAX_SESSION_ID=")
+    )
+    assert outer_sid != env["HAPAX_SESSION_ID"]
+    result = subprocess.run(
+        ["bash", str(runner)], env=env, capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr
+    assert _launched_session_id(env_file) == outer_sid
+    env["HAPAX_SESSION_ID"] = outer_sid
+    env["HAPAX_AGENT_ROLE"] = "cx-amber"
+    result = _launch_identity(env)
+    assert result.returncode == 0, result.stderr
+    assert _launched_session_id(env_file) != outer_sid
 
 
 def test_launcher_does_not_export_published_codex_access_token_when_available(

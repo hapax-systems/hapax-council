@@ -14,7 +14,7 @@ fi
 usage() {
   cat <<'EOF'
 usage: hapax-codex [--session cx-color] [--slot alpha|beta|delta|epsilon] [--cd DIR]
-                   [--task TASK_ID] [--bootstrap FILE] [--task-gate]
+                   [--resume-session-id ID] [--task TASK_ID] [--bootstrap FILE] [--task-gate]
                    [--execution-route ROUTE_OR_LEAF]
                    [--terminal none|tmux|foot] [--force] [--no-claim]
                    [--] [codex args...]
@@ -25,6 +25,8 @@ Defaults:
   - worktree slot is inferred from cwd when --slot is omitted
   - worktree selected from the slot when --cd is omitted
   - terminal is none: exec Codex in the current terminal
+  - each launch mints a fresh coordination ID; --resume-session-id requires
+    an existing session-role marker for the selected role (native resume is separate)
 EOF
 }
 
@@ -906,11 +908,27 @@ TERMINAL="${HAPAX_CODEX_TERMINAL:-none}"
 TASK_GATE=0
 CLAIM_TASK=1
 FORCE=0
+RESUME_SESSION_ID=""
+RESUME_SESSION_REQUESTED=0
 EXECUTION_ROUTE="codex.headless.full"
 CODEX_EXTRA=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --resume-session-id)
+      RESUME_SESSION_REQUESTED=1
+      RESUME_SESSION_ID="${2:-}"
+      if [ -z "$RESUME_SESSION_ID" ] || [[ "$RESUME_SESSION_ID" == --* ]]; then
+        echo "hapax-codex: --resume-session-id requires an ID; next action: supply this role's recorded session ID or omit the flag for a new launch" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --resume-session-id=*)
+      RESUME_SESSION_REQUESTED=1
+      RESUME_SESSION_ID="${1#*=}"
+      shift
+      ;;
     --execution-route)
       EXECUTION_ROUTE="${2:?--execution-route requires a registry route}"
       shift 2
@@ -1108,9 +1126,22 @@ export HAPAX_CODEX_WORKTREE_STRATEGY="$CODEX_WORKTREE_STRATEGY"
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_ROLE:-unknown}}}}"
 
-# Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
-# claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="$(normalize_session_uuid "${HAPAX_SESSION_ID:-}")"
+# Ambient IDs belong to the caller. Only an explicit resume backed by the
+# existing session-role marker may retain an ID, including our tmux re-entry.
+if [ "$RESUME_SESSION_REQUESTED" -eq 1 ]; then
+  if ! session_id_is_safe "$RESUME_SESSION_ID"; then
+    echo "hapax-codex: unsafe or empty resume session ID; next action: supply this role's recorded session ID or omit --resume-session-id for a new launch" >&2
+    exit 2
+  fi
+  RESUME_SESSION_ROLE="$(cat "$HOME/.cache/hapax/session-role-$RESUME_SESSION_ID" 2>/dev/null || true)"
+  if [ "$RESUME_SESSION_ROLE" != "$SESSION" ]; then
+    echo "hapax-codex: resume session is not recorded as owned by '$SESSION'; next action: use this role's recorded session ID or omit --resume-session-id for a new launch" >&2
+    exit 2
+  fi
+  SESSION_UUID="$RESUME_SESSION_ID"
+else
+  SESSION_UUID="$(normalize_session_uuid "")"
+fi
 TMUX_NAME="hapax-codex-$SESSION"
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""
@@ -1223,6 +1254,16 @@ if [ "$FORCE" -ne 1 ]; then
     RELAY_STATUS_FILE="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}/$SESSION.yaml"
     echo "hapax-codex: relay '$SESSION' is retired/wound-down ($RELAY_STATUS_FILE); recheck: sed -n '1,80p' \"$RELAY_STATUS_FILE\"; pass --force to reactivate (P0 drain lanes do this automatically)" >&2
     exit 6
+  fi
+fi
+
+if [ "$RESUME_SESSION_REQUESTED" -eq 0 ]; then
+  # Existing agent-role.sh / hapax-whoami identity contract; never overwrite a
+  # resume target to make an unowned ID appear to belong to the selected role.
+  if ! mkdir -p "$HOME/.cache/hapax" \
+      || ! printf '%s\n' "$SESSION" >"$HOME/.cache/hapax/session-role-$SESSION_UUID"; then
+    echo "hapax-codex: cannot record session ownership; next action: repair the writable session-role directory before retrying" >&2
+    exit 2
   fi
 fi
 
@@ -1483,7 +1524,7 @@ if ! RUNNER="$(mktemp "$RUNNER_TEMPLATE")"; then
 fi
 umask "$RUNNER_UMASK"
 chmod 700 "$RUNNER"
-CHILD_ARGS=(--execution-route "$EXECUTION_ROUTE" --session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
+CHILD_ARGS=(--resume-session-id "$SESSION_UUID" --execution-route "$EXECUTION_ROUTE" --session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
 if [ "$FORCE" -eq 1 ]; then
   CHILD_ARGS+=(--force)
 fi
