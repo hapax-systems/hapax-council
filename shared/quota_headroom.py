@@ -178,6 +178,48 @@ def burn_rows(readings: list[QuotaMeasurement]) -> list[QuotaMeasurement]:
     return rows
 
 
+def codex_weekly_pace(readings: list[QuotaMeasurement], *, now: datetime) -> dict[str, Any]:
+    """Read-only seating evidence, never an outage or an admission receipt.
+
+    Uses the ruled weekly line from hapax-claude-pool-pace: 2 + 0.6 * elapsed
+    hours, capped at 100. Like that reader, evaluate at the observation time;
+    merely waiting must not turn the same over-line sample into permission.
+    """
+    result: dict[str, Any] = {"allowed": False, "reason": "weekly_meter_missing"}
+    weekly = [row for row in readings if row.capacity_id == "codex.subscription.weekly"]
+    if not weekly:
+        return result
+    row = max(weekly, key=lambda item: item.observed_at or datetime.min.replace(tzinfo=UTC))
+    result.update(
+        capacity_id=row.capacity_id,
+        observed_at=row.observed_at.isoformat() if row.observed_at else None,
+        resets_at=row.resets_at.isoformat() if row.resets_at else None,
+        source=row.source,
+    )
+    if row.label == "unobserved":
+        return result
+    if row.label != "observed" or row.unit != "percent_used" or row.quantity < 0:
+        return dict(result, reason="weekly_meter_invalid")
+    if not row.measurement_is_fresh(now) or now - row.observed_at >= MEASUREMENT_TTL:
+        return dict(result, reason="weekly_meter_stale")
+    if row.window != "10080m" or row.resets_at is None or row.resets_at <= now:
+        return dict(result, reason="weekly_window_invalid")
+    window_start = row.resets_at - timedelta(hours=WINDOW_HOURS["weekly"])
+    if row.observed_at < window_start:
+        return dict(result, reason="weekly_window_invalid")
+    elapsed_hours = (row.observed_at - window_start).total_seconds() / 3600.0
+    line = min(100.0, 2.0 + 0.6 * elapsed_hours)
+    allowed = row.quantity < line
+    return dict(
+        result,
+        allowed=allowed,
+        reason="under_pace_line" if allowed else "pace_line_reached",
+        used_percent=row.quantity,
+        line_percent=line,
+        window_open=window_start.isoformat(),
+    )
+
+
 def read_codex_token_count(
     sessions_root: Path, *, now: datetime | None = None
 ) -> list[QuotaMeasurement]:

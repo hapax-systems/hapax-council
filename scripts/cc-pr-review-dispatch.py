@@ -1466,6 +1466,23 @@ def _outage_causes(state_path: Path | None = None) -> dict[str, str]:
     }
 
 
+def codex_review_pace(now_iso: str) -> dict[str, Any]:
+    """Re-read Codex for each constitution, outside the ten-minute wall cache.
+
+    An --all scan can consume its pace margin between PRs. Reader failure only
+    removes Codex; it never creates quota-wall evidence or a degradation grant.
+    """
+    now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    try:
+        rows = quota_headroom.read_codex_token_count(
+            WALL_TRACE_HOME / ".codex" / "sessions", now=now
+        )
+        return quota_headroom.codex_weekly_pace(rows, now=now)
+    except Exception as exc:
+        LOG.warning("Codex pace meter unavailable: %s", type(exc).__name__)
+        return {"allowed": False, "reason": "weekly_meter_unreadable"}
+
+
 @dataclass(frozen=True)
 class ConstitutionInputs:
     """Everything a constitution excludes, and why (shared by PR and artifact review)."""
@@ -1475,6 +1492,7 @@ class ConstitutionInputs:
     walls: dict[str, dict[str, Any]]
     wall_error: str | None
     causes: dict[str, str]
+    codex_pace: dict[str, Any] | None = None
 
 
 def constitution_inputs(
@@ -1514,6 +1532,7 @@ def constitution_inputs(
         walls=walls,
         wall_error=wall_error,
         causes=causes,
+        codex_pace=codex_review_pace(now_iso),
     )
 
 
@@ -1543,7 +1562,17 @@ def constitute_with_substitution(
             for family in outage_families
             if inputs.causes.get(family) != SEAT_OUTPUT_OUTAGE_CAUSE
         )
+    pace_excluded = (
+        {"codex": inputs.codex_pace}
+        if inputs.codex_pace is not None
+        and not inputs.codex_pace["allowed"]
+        # Preserve independently evidenced wall/route exclusions and their notes.
+        and "codex" not in outage_families
+        and "codex" not in route_blocked_families
+        else {}
+    )
     substitution: dict[str, Any] = {
+        "excluded_for_pace": pace_excluded,
         "excluded_for_wall": {family: dict(ev) for family, ev in sorted(inputs.walls.items())},
         "excluded_for_outage": sorted(outage_families - set(inputs.walls)),
         "excluded_for_route_block": sorted(route_blocked_families),
@@ -1596,6 +1625,7 @@ def constitute_with_substitution(
                 pr_number=pr_number,
                 outage_families=outage_families,
                 route_blocked_families=route_blocked_families,
+                available_families=[f for f in roster if f not in pace_excluded],
             )
         except ValueError:
             pass  # baseline is only a replacement identity witness
@@ -1607,11 +1637,21 @@ def constitute_with_substitution(
             pr_number=pr_number,
             outage_families=outage_families,
             route_blocked_families=route_blocked_families,
-            available_families=[f for f in roster if f not in excluded_for_capacity],
+            available_families=[
+                f for f in roster if f not in excluded_for_capacity and f not in pace_excluded
+            ],
             size_excluded_families=frozenset(excluded_for_capacity),
         )
     except ValueError as exc:
         return None, substitution, str(exc)
+    if pace_excluded:
+        constitution = review_team.Constitution(
+            team_class=constitution.team_class,
+            quorum_required=constitution.quorum_required,
+            seats=constitution.seats,
+            notes=constitution.notes
+            + (f"family_unavailable_for_pace:codex:{inputs.codex_pace['reason']}",),
+        )
     if excluded_for_capacity:
         constitution = review_team.Constitution(
             team_class=constitution.team_class,
