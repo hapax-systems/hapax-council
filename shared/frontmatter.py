@@ -41,6 +41,16 @@ class FrontmatterParseResult:
         return self.error_kind is None and self.frontmatter is not None
 
 
+def _safe_yaml_loader() -> type[yaml.SafeLoader]:
+    """libyaml's safe loader where it is built in, else the pure-Python one.
+
+    Both construct only plain YAML types. The C loader parses task-row
+    frontmatter about eight times faster, which matters because every
+    task-store index build parses every row.
+    """
+    return getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
 def parse_frontmatter(path_or_text: Path | str) -> tuple[dict, str]:
     """Extract YAML frontmatter and body from a markdown file or string.
 
@@ -96,7 +106,7 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
         return FrontmatterParseResult(frontmatter={}, body=body)
 
     try:
-        data = yaml.safe_load(yaml_text)
+        data = yaml.load(yaml_text, Loader=_safe_yaml_loader())  # noqa: S506 - always a safe loader
     except yaml.YAMLError as exc:
         return FrontmatterParseResult(
             frontmatter=None,
