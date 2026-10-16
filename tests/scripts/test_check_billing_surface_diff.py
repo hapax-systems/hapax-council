@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import inspect
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -62,14 +63,16 @@ def _fixture(tmp_path: Path) -> tuple[Path, str, str, str]:
 
 
 def _run(
-    repo: Path, base: str, *, diff_file: Path | None = None
+    repo: Path,
+    base: str,
+    *,
+    head: str = "HEAD",
+    diff_file: Path | None = None,
+    env: dict | None = None,
 ) -> subprocess.CompletedProcess[str]:
     argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base]
-    if diff_file is not None:
-        argv += ["--diff-file", str(diff_file)]
-    else:
-        argv += ["--head", _git(repo, "rev-parse", "HEAD").strip()]
-    return subprocess.run(argv, capture_output=True, text=True, check=False)
+    argv += ["--diff-file", str(diff_file)] if diff_file else ["--head", head]
+    return subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
 
 
 # ── detectors, marker contract, proxy exemption (ported): id -> (path, pre-image or None for
@@ -339,8 +342,7 @@ def test_a_heads_binary_attribute_cannot_hide_its_text_change(
     (repo / ".gitattributes").write_text("*.py -diff\n")
     head = _commit(repo, "head marks python binary")
     _git(repo, "checkout", "-q", base if worktree_at == "base" else head)
-    argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base, "--head", head]
-    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    result = _run(repo, base, head=head)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "api-key-route" in result.stdout
 
@@ -382,28 +384,27 @@ def test_an_unusable_invocation_refuses_with_a_next_action(tmp_path: Path, args:
         assert "is not a directory" in result.stderr
 
 
-@pytest.mark.parametrize("version", ["git version 2.39.5", "git version unknown"])
-def test_a_git_below_the_attribute_source_floor_refuses(tmp_path: Path, version: str) -> None:
-    """GIT_ATTR_SOURCE needs git >= 2.40; an older git would silently ignore it, so refuse."""
+@pytest.mark.parametrize(
+    ("version", "refusal"),
+    [
+        ("2.39.5", "git >= 2.40 is required"),
+        ("unknown", "git >= 2.40"),
+        (None, "git is unavailable"),
+    ],
+)
+def test_an_unusable_git_refuses_with_a_next_action(
+    tmp_path: Path, version: str | None, refusal: str
+) -> None:
+    """No git, or one below 2.40 that would silently ignore GIT_ATTR_SOURCE, refuses."""
     repo, base, _head, _diff = _fixture(tmp_path)
     stub = tmp_path / "bin" / "git"
     stub.parent.mkdir()
-    real = subprocess.run(["which", "git"], capture_output=True, text=True).stdout.strip()
-    stub.write_text(
-        f'#!/bin/sh\n[ "$1" = --version ] && echo "{version}" && exit 0\nexec {real} "$@"\n'
-    )
-    stub.chmod(0o755)
-    argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base, "--head", "HEAD"]
-    env = {"PATH": f"{stub.parent}:/usr/bin:/bin"}
-    result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+    if version:
+        real = shutil.which("git")
+        stub.write_text(
+            f'#!/bin/sh\n[ "$1" = --version ] && echo "git version {version}" && exit\nexec {real} "$@"\n'
+        )
+        stub.chmod(0o755)
+    result = _run(repo, base, env={"PATH": str(stub.parent)})
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "git >= 2.40 is required" in result.stderr and "Next action" in result.stderr
-
-
-def test_git_unavailable_during_generation_refuses_with_a_next_action(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base, "--head", "HEAD"]
-    env = {"PATH": str(tmp_path / "no-git-here")}
-    result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
-    assert result.returncode == 2
-    assert "git is unavailable" in result.stderr and "Next action" in result.stderr
+    assert refusal in result.stderr and "Next action" in result.stderr

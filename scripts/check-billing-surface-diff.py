@@ -41,11 +41,9 @@ from scripts.billing_surface_input import (  # noqa: E402
 
 
 def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult | None, str | None]:
-    """Generate the merge-base..head diff, then scan what git applies: ``(result, error)``.
+    """Scan what git applies of the merge-base..head diff it generates: ``(result, error)``.
 
-    ``error`` (exit 2) means git refused; ``result`` is then None, so unusable input never
-    scans clean. No diff text is accepted: the only input is the diff generated here.
-    """
+    An ``error`` (exit 2) has ``result`` None, so unusable input never scans clean."""
     # GIT_ATTR_SOURCE (below) is ignored by git < 2.40: refuse rather than silently lose it.
     version = re.match(r"git version (\d+)\.(\d+)", _run_git(["--version"], repo=repo).stdout)
     if version is None or (int(version[1]), int(version[2])) < (2, 40):
@@ -61,9 +59,8 @@ def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult 
             "fetch both revisions and rerun"
         )
     base = merge_base.stdout.strip()
-    # A configured diff driver or textconv could substitute a clean patch for the real one, and
-    # the PR's own `.gitattributes` could mark a changed text file binary (an opaque stub git
-    # apply skips): both diffs take attributes from the trusted base tree.
+    # Drivers or textconv could substitute a clean patch, and the PR's `.gitattributes` a binary
+    # stub git apply skips: both diffs take attributes from the base tree.
     attrs = {"GIT_ATTR_SOURCE": base}
     generated = _run_git(
         ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames"]
@@ -78,9 +75,7 @@ def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult 
         )
     if not generated.stdout.strip():
         return None, (
-            "FAIL-CLOSED: empty diff input is not evidence. Next action: pass the PR's "
-            "--base/--head; a PR that genuinely changes no file is covered by the "
-            "merge-group duplicate sentinel, not by this scan reporting success."
+            "FAIL-CLOSED: an empty diff is not evidence. Next action: pass the PR's --base/--head"
         )
     with materialise_post_image(generated.stdout, repo=repo, base=base) as (_index_path, env):
         files, error = regenerated_added_lines(repo=repo, base=base, env={**env, **attrs})
@@ -172,22 +167,18 @@ def _scan_validated_files(
 
 def _git_unavailable(exc: GitUnavailable) -> int:
     print(
-        f"billing-surface-scan: FAIL-CLOSED: git is unavailable ({exc}), and this scanner "
-        "validates its input with git before scanning anything. Next action: install git or "
-        "run this scan where git is available",
+        f"billing-surface-scan: FAIL-CLOSED: git is unavailable ({exc}). Next action: install "
+        "git or run this scan where git is available",
         file=sys.stderr,
     )
     return 2
 
 
-def _strict_main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0] or None)
     parser.add_argument("--base", required=False, help="base revision the input diff applies to")
     parser.add_argument("--head", help="head revision (used only to generate the input diff)")
-    parser.add_argument(
-        "--diff-file",
-        help="refused: the gate scans only the diff git generates from --base/--head",
-    )
+    parser.add_argument("--diff-file", help="refused: untrusted text")
     parser.add_argument("--repo", help="repository to validate and scan in (default: cwd)")
     args = parser.parse_args(argv)
     repo = Path(args.repo).expanduser() if args.repo else Path.cwd()
@@ -201,9 +192,8 @@ def _strict_main(argv: list[str] | None = None) -> int:
 
     if args.diff_file:
         print(
-            "billing-surface-scan: FAIL-CLOSED: --diff-file is unusable for a gate: a diff file is "
-            "untrusted text, and the gate scans only the diff git generates itself. Next action: "
-            "rerun with `--base <base> --head <head>`",
+            "billing-surface-scan: FAIL-CLOSED: --diff-file is unusable for a gate: it is "
+            "untrusted text. Next action: rerun with `--base <base> --head <head>`",
             file=sys.stderr,
         )
         return 2
@@ -232,10 +222,9 @@ def _strict_main(argv: list[str] | None = None) -> int:
             print(f"{finding.path}:{finding.line}: {finding.kind}: {finding.text}")
         print(
             f"billing-surface-scan: FAIL: {len(result.findings)} billing-surface mutation(s) in the "
-            "diff. Next action: remove the added billing surface or route the client through the "
-            "governed LiteLLM proxy, then rerun; if the line is a scan fixture or a pattern "
-            f"definition, mark it visibly with {ALLOW_MARKER} so review sees the exemption. If a "
-            "finding is wrong, fix the scan in the same PR rather than exempting the line."
+            "diff. Next action: remove it or route the client through the governed LiteLLM "
+            f"proxy; mark a scan fixture or pattern definition visibly with {ALLOW_MARKER}; fix "
+            "a wrong finding in the scan, not by exempting the line."
         )
         return 1
     print(
@@ -250,10 +239,6 @@ def _strict_main(argv: list[str] | None = None) -> int:
             + ")"
         )
     return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    return _strict_main(argv)
 
 
 if __name__ == "__main__":
