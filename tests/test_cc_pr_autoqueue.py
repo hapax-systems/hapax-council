@@ -5561,6 +5561,200 @@ class TestArmedNoteReconciliation:
         assert resumed.observe(rows) == frozenset()  # still the first pass
 
 
+def _retry_budget_fixture(tmp_path: Path) -> tuple[_RestRotationRunner, Any, list[str]]:
+    vault = _make_vault(tmp_path)
+    TestArmedNoteReconciliation()._write_armed_task(vault, 42)
+    runner = _RestRotationRunner(60)
+    arm_call = [
+        "gh",
+        "pr",
+        "merge",
+        "42",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-42",
+    ]
+
+    def tick(*, apply: bool = True) -> dict[str, Any]:
+        return autoqueue.run_reconciler(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            vault_root=vault,
+            apply=apply,
+            limit=5,
+            rotation_state_path=tmp_path / "examined.json",
+            lineage_ledger_path=None,
+            quarantine_path=tmp_path / "quarantine.json",
+            admission_governor_path=tmp_path / "governor.yaml",
+            runner=runner,
+        )
+
+    return runner, tick, arm_call
+
+
+@pytest.mark.parametrize("blocker", ["hold", "failed_check"])
+def test_blocked_retry_exams_preserve_budget_then_clean_pr_is_enqueued(
+    tmp_path: Path, blocker: str
+) -> None:
+    runner, tick, arm_call = _retry_budget_fixture(tmp_path)
+    row = next(row for row in runner.open_prs if row["number"] == 42)
+    if blocker == "hold":
+        row["labels"] = [{"name": "hold"}]
+    else:
+        row["statusCheckRollup"][0]["conclusion"] = "FAILURE"
+    blocked_exams = []
+    # Three blocked re-arm ticks, retaining the production two-tick hysteresis.
+    for _ in range(3 * autoqueue.ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES):
+        report = tick()
+        blocked_exams.extend(d for d in report["decisions"] if d["pr"] == 42)
+    assert len(blocked_exams) == 3
+    assert all(d["action"] == "blocked" and d["reasons"] for d in blocked_exams)
+    assert arm_call not in runner.calls
+    assert report["armed_note_reconciliation"]["watched"][0]["retries"] == 0
+
+    row["labels"] = []
+    row["statusCheckRollup"][0]["conclusion"] = "SUCCESS"
+    runner.calls.clear()
+    for _ in range(autoqueue.ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES):
+        report = tick()
+    assert arm_call in runner.calls
+    result = next(m for m in report["mutations"] if m["pr"] == 42 and m["action"] == "queue")
+    assert result["ok"] and result["admission_status"]["state"] == "success"
+    # The merge-group consumes this proof even though it is not a required PR check.
+    proof = next(
+        i
+        for i, call in enumerate(runner.calls)
+        if call[:4] == ["gh", "api", "-X", "POST"]
+        and call[4] == "repos/owner/repo/statuses/sha-42"
+        and "state=success" in call
+    )
+    assert proof < runner.calls.index(arm_call)
+    assert report["armed_note_reconciliation"]["retried"] == [{"pr": 42, "retry": 1}]
+
+
+def test_failed_admission_proof_does_not_spend_rearm_budget(tmp_path: Path) -> None:
+    runner, tick, arm_call = _retry_budget_fixture(tmp_path)
+    runner.fail_status_posts = True
+    for _ in range(3 * autoqueue.ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES):
+        report = tick()
+    assert arm_call not in runner.calls
+    assert report["armed_note_reconciliation"]["exhausted"] == []
+    assert report["armed_note_reconciliation"]["watched"][0]["retries"] == 0
+
+
+@pytest.mark.parametrize(
+    "same_head,same_counter_head,blocked",
+    [(True, True, True), (False, True, True), (True, False, True), (True, True, False)],
+)
+def test_legacy_exhaustion_recovers_only_from_same_head_blocked_exam(
+    tmp_path: Path, same_head: bool, same_counter_head: bool, blocked: bool
+) -> None:
+    runner, tick, arm_call = _retry_budget_fixture(tmp_path)
+    now = datetime.now(UTC).isoformat()
+    (tmp_path / "examined.json.armed-note-reconciliation.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repositories": {
+                    "owner/repo": {
+                        "42": {
+                            "consecutive_passes": 80,
+                            "retries": 3,
+                            "head_sha": "sha-42" if same_counter_head else "old-counter-head",
+                            "last_seen_at": now,
+                        }
+                    }
+                },
+            }
+        )
+    )
+    (tmp_path / "examined.json.exam-ledger.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repositories": {
+                    "owner/repo": {
+                        "42": {
+                            "examined_at": now,
+                            "head_sha": "sha-42" if same_head else "old-head",
+                            "blockers": ["hold_labels:hold"] if blocked else [],
+                            "task_status": "pr_open",
+                            "route_blocked": None,
+                        }
+                    }
+                },
+            }
+        )
+    )
+    # Recovery only schedules a new exam; the historical blocker cannot authorize release.
+    row = next(row for row in runner.open_prs if row["number"] == 42)
+    row["labels"] = [{"name": "hold"}]
+    report = tick()
+    assert arm_call not in runner.calls
+    if same_head and same_counter_head and blocked:
+        decision = next(d for d in report["decisions"] if d["pr"] == 42)
+        assert decision["action"] == "blocked" and "hold_labels:hold" in decision["reasons"]
+        assert report["armed_note_reconciliation"]["watched"][0]["retries"] == 0
+        row["labels"] = []
+        for _ in range(autoqueue.ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES):
+            tick()
+        assert arm_call in runner.calls
+    else:
+        assert 42 not in [d["pr"] for d in report["decisions"]]
+        assert report["armed_note_reconciliation"]["exhausted"] == [{"pr": 42, "retries": 3}]
+
+
+def test_exhausted_pr_remains_in_bounded_rotation_under_fresh_evidence_pressure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, tick, arm_call = _retry_budget_fixture(tmp_path)
+    now = datetime.now(UTC).isoformat()
+    (tmp_path / "examined.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repositories": {"owner/repo": {str(n): now for n in range(1, 61)}},
+            }
+        )
+    )
+    (tmp_path / "examined.json.armed-note-reconciliation.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repositories": {
+                    "owner/repo": {
+                        "42": {
+                            "consecutive_passes": 80,
+                            "retries": 3,
+                            "head_sha": "sha-42",
+                            "last_seen_at": now,
+                        }
+                    }
+                },
+            }
+        )
+    )
+    fresh = set(range(1, autoqueue.MUST_INCLUDE_CAP + 1))
+    monkeypatch.setattr(
+        autoqueue,
+        "_fresh_evidence_probe",
+        lambda *_a, **_k: lambda row, since: row["number"] in fresh,
+    )
+    # Even saturated priority seats leave two rotation seats: ceil((60 - 8) / 2).
+    remaining = len(runner.open_prs) - len(fresh)
+    bound = (remaining + 1) // 2
+    for _ in range(bound):
+        report = tick()
+        if 42 in [d["pr"] for d in report["decisions"]]:
+            break
+    else:
+        pytest.fail(f"exhausted PR not examined within {bound} ticks")
+    assert arm_call in runner.calls
+
+
 def test_armed_note_unarmed_pr_gets_bounded_rearm_reconciliation(tmp_path: Path) -> None:
     """Defect item 2 end to end: the diverged PR gets a bounded re-arm retry.
 
