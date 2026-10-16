@@ -4680,6 +4680,135 @@ def test_damaged_terminal_journal_of_another_task_holds_only_the_estate_inspecti
     assert any(item.publication_id == other_id and item.disposition == "hold" for item in estate)
 
 
+# ── terminal journals archived out of the live root (2026-10-16) ─────────────
+
+_ARCHIVE_NOW = 2_000_000_000.0
+_ARCHIVE_OLD = _ARCHIVE_NOW - 30 * 86_400
+_ARCHIVE_BOUND = 7 * 86_400
+
+
+def _close_task(fixture: ClaimFixture, *, status: str = "done", move: bool = True) -> None:
+    task_id = fixture.intent.task_id
+    active = fixture.vault / "active" / f"{task_id}.md"
+    text = active.read_text(encoding="utf-8").replace("status: claimed", f"status: {status}")
+    target = fixture.vault / ("closed" if move else "active") / f"{task_id}.md"
+    if move:
+        active.unlink()
+    target.write_text(text, encoding="utf-8")
+
+
+def _archive_root(tmp_path: Path) -> tuple[ClaimFixture, dict[str, str]]:
+    """One journal per archive rule in one live root; only ``archive`` qualifies."""
+
+    journals: dict[str, str] = {}
+    fixtures: dict[str, ClaimFixture] = {}
+    for case, state in (
+        ("archive", "applied"),
+        ("marked", "applied"),
+        ("active", "applied"),
+        ("done_in_active", "applied"),
+        ("closed_not_terminal", "applied"),
+        ("young", "applied"),
+        ("unfinished", "projecting"),
+        ("unreadable", "applied"),
+        ("misnamed", "applied"),
+    ):
+        fixture = _fixture(tmp_path, task_id=f"task-{case}")
+        fixtures[case] = fixture
+        journals[case] = _materialize_v1_history(fixture, state=state)
+    for case in ("archive", "marked", "young", "unfinished", "unreadable", "misnamed"):
+        _close_task(fixtures[case])
+    _close_task(fixtures["done_in_active"], move=False)
+    _close_task(fixtures["closed_not_terminal"], status="claimed")
+    root = fixtures["archive"].transactions
+    manifest = root / journals["unreadable"] / "manifest.json"
+    manifest.write_bytes(manifest.read_bytes() + b" ")
+    misnamed = f"claim-pub-{'e' * 64}"
+    (root / journals["misnamed"]).rename(root / misnamed)
+    journals["misnamed"] = misnamed
+    for marker in fixtures["archive"].cache.glob("cc-active-task-*"):
+        marker.unlink()
+    (fixtures["archive"].cache / "cc-active-task-cx-blue").write_text("task-marked\n")
+    for case, publication_id in journals.items():
+        stamp = _ARCHIVE_NOW - 60 if case == "young" else _ARCHIVE_OLD
+        os.utime(root / publication_id, (stamp, stamp))
+    return fixtures["archive"], journals
+
+
+def _archive(fixture: ClaimFixture, *, apply: bool, observed_at: str = "20261016T030000Z"):
+    return sdlc_claim.archive_terminal_claim_publications(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        older_than_seconds=_ARCHIVE_BOUND,
+        observed_at=observed_at,
+        now_epoch=_ARCHIVE_NOW,
+        apply=apply,
+    )
+
+
+def test_archive_decides_only_terminal_journals_of_closed_unmarked_old_tasks(
+    tmp_path: Path,
+) -> None:
+    fixture, journals = _archive_root(tmp_path)
+    before = _tree_snapshot(tmp_path)
+
+    decisions = {item.publication_id: item for item in _archive(fixture, apply=False)}
+
+    assert _tree_snapshot(tmp_path) == before  # deciding writes nothing
+    assert {case: decisions[pid].reason for case, pid in journals.items()} == {
+        "archive": "terminal_journal_of_closed_task",
+        "marked": "task_named_by_claim_marker",
+        "active": "task_not_closed",
+        "done_in_active": "task_not_closed",
+        "closed_not_terminal": "task_not_closed",
+        "young": "younger_than_bound",
+        "unfinished": "journal_unfinished",
+        "unreadable": "manifest_unproven",
+        "misnamed": "manifest_unproven",
+    }
+    assert [pid for pid, item in decisions.items() if item.archive] == [journals["archive"]]
+
+
+def test_archive_moves_the_journal_byte_for_byte_into_a_create_once_archive(
+    tmp_path: Path,
+) -> None:
+    fixture, journals = _archive_root(tmp_path)
+    source = fixture.transactions / journals["archive"]
+    content = _tree_snapshot(source)
+
+    moved = [item for item in _archive(fixture, apply=True) if item.archived_to is not None]
+
+    archive = fixture.transactions.with_name(
+        f"{fixture.transactions.name}.terminal-archive-20261016T030000Z"
+    )
+    assert [item.archived_to for item in moved] == [archive / journals["archive"]]
+    assert not source.exists()
+    assert _tree_snapshot(archive / journals["archive"]) == content
+    remaining = {path.name for path in fixture.transactions.iterdir()}
+    assert remaining == {pid for case, pid in journals.items() if case != "archive"}
+
+
+def test_archive_refuses_an_existing_archive_and_an_unreadable_marker(
+    tmp_path: Path,
+) -> None:
+    fixture, journals = _archive_root(tmp_path)
+    fixture.transactions.with_name(
+        f"{fixture.transactions.name}.terminal-archive-20261016T030000Z"
+    ).mkdir()
+
+    with pytest.raises(ClaimPublicationError) as exists:
+        _archive(fixture, apply=True)
+    assert exists.value.reason_code == "claim_publication_archive_exists"
+    assert (fixture.transactions / journals["archive"]).is_dir()
+
+    unreadable = fixture.cache / "cc-active-task-cx-green"
+    unreadable.write_bytes(b"\xff\xfe")
+    with pytest.raises(ClaimPublicationError) as marker:
+        _archive(fixture, apply=False, observed_at="20261016T030500Z")
+    assert marker.value.reason_code == "claim_publication_archive_marker_unreadable"
+
+
 # ── task resolution retaken through task-store frontier churn (M95) ──────────
 # claim-publication-frontier-churn-bounded-retry-m95-20260927
 

@@ -7002,6 +7002,137 @@ def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
     return str(fields.get("status") or "").strip() or "unknown"
 
 
+@dataclass(frozen=True)
+class TerminalJournalArchiveDecision:
+    """One journal's archive decision: ``archived_to`` is set only when it was moved."""
+
+    publication_id: str
+    task_id: str | None
+    archive: bool
+    reason: str
+    archived_to: Path | None = None
+
+
+def _marker_named_tasks(cache_dir: Path) -> frozenset[str]:
+    """Every task any role's claim marker names. An unreadable marker proves nothing about
+    which journal it still needs, so the archive refuses rather than guess."""
+
+    tasks: set[str] = set()
+    for marker in sorted(cache_dir.glob("cc-active-task-*")):
+        try:
+            words = marker.read_text(encoding="utf-8").split()
+        except (OSError, UnicodeError) as exc:
+            raise ClaimPublicationError(
+                "claim_publication_archive_marker_unreadable",
+                "repair or release the unreadable claim marker, then rerun the archive",
+                str(marker),
+            ) from exc
+        if words:
+            tasks.add(words[0])
+    return frozenset(tasks)
+
+
+def _terminal_journal_archive_decision(
+    entry: Path,
+    *,
+    vault_root: Path,
+    marked: frozenset[str],
+    older_than: float,
+) -> TerminalJournalArchiveDecision:
+    name = entry.name
+    try:
+        if not entry.is_dir() or entry.is_symlink():
+            return TerminalJournalArchiveDecision(name, None, False, "not_a_journal_directory")
+        if entry.stat().st_mtime > older_than:
+            return TerminalJournalArchiveDecision(name, None, False, "younger_than_bound")
+        record, _ = _strict_json(entry / "manifest.json")
+    except (ClaimPublicationError, OSError):
+        return TerminalJournalArchiveDecision(name, None, False, "manifest_unproven")
+    intent = record.get("intent")
+    task = intent.get("task_id") if isinstance(intent, dict) else None
+    if not isinstance(task, str) or record.get("publication_id") != name:
+        return TerminalJournalArchiveDecision(name, None, False, "manifest_unproven")
+    if record.get("state") not in {"applied", "aborted"}:
+        return TerminalJournalArchiveDecision(name, task, False, "journal_unfinished")
+    if task in marked:
+        return TerminalJournalArchiveDecision(name, task, False, "task_named_by_claim_marker")
+    note = _task_note_path_for_any_state(vault_root, task)
+    if note is None or note.parent.name != "closed":
+        return TerminalJournalArchiveDecision(name, task, False, "task_not_closed")
+    if _task_status_for_any_state(vault_root, task) not in TASK_TERMINAL_STATUSES:
+        return TerminalJournalArchiveDecision(name, task, False, "task_not_closed")
+    return TerminalJournalArchiveDecision(name, task, True, "terminal_journal_of_closed_task")
+
+
+def archive_terminal_claim_publications(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    older_than_seconds: float,
+    observed_at: str,
+    now_epoch: float,
+    apply: bool = False,
+) -> tuple[TerminalJournalArchiveDecision, ...]:
+    """Move terminal journals of closed tasks out of the live claim-publication root.
+
+    Every claim inspection lists the live root, and ``_MAX_CLAIM_PUBLICATIONS`` refuses every
+    claim once it is exceeded (956 of 4096 on 2026-10-16). A journal is archived only when its
+    strict manifest proves it terminal, its task's note is in ``closed/`` with a terminal status,
+    no claim marker of any role names that task, and it is older than ``older_than_seconds``.
+    Anything unproven stays. The move is an atomic rename into one create-once sibling
+    ``<root>.terminal-archive-<observed_at>``; nothing is rewritten or deleted.
+
+    ``apply=False`` (the default) only decides. Running it with ``apply=True`` is an activation
+    act, taken under the seat's claim serialization, never implicitly.
+    """
+
+    if older_than_seconds <= 0:
+        raise ClaimPublicationError(
+            "claim_publication_archive_bound_invalid",
+            "pass a positive age bound in seconds",
+            str(older_than_seconds),
+        )
+    root = _normalized(transaction_root)
+    if not root.is_dir() or root.is_symlink():
+        return ()
+    marked = _marker_named_tasks(_normalized(cache_dir))
+    older_than = now_epoch - older_than_seconds
+    decisions = [
+        _terminal_journal_archive_decision(
+            entry, vault_root=vault_root, marked=marked, older_than=older_than
+        )
+        for entry in sorted(root.iterdir(), key=lambda path: path.name)
+        if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(entry.name) is not None
+    ]
+    if not apply or not any(item.archive for item in decisions):
+        return tuple(decisions)
+    archive = root.with_name(f"{root.name}.terminal-archive-{observed_at}")
+    try:
+        archive.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise ClaimPublicationError(
+            "claim_publication_archive_exists",
+            "rerun with a fresh observed_at; an archive is created once",
+            str(archive),
+        ) from exc
+    moved: list[TerminalJournalArchiveDecision] = []
+    for item in decisions:
+        if not item.archive:
+            moved.append(item)
+            continue
+        target = archive / item.publication_id
+        os.rename(root / item.publication_id, target)
+        moved.append(
+            TerminalJournalArchiveDecision(
+                item.publication_id, item.task_id, True, item.reason, target
+            )
+        )
+    _fsync_directory(root)
+    _fsync_directory(archive)
+    return tuple(moved)
+
+
 def archive_dispatch_only_claim_residue(
     *,
     vault_root: Path,
@@ -8051,8 +8182,10 @@ __all__ = [
     "ClaimPublicationSuccessor",
     "ClaimResidueArchiveHold",
     "ClaimResidueRelease",
+    "TerminalJournalArchiveDecision",
     "admitted_claim_publication_id",
     "archive_dispatch_only_claim_residue",
+    "archive_terminal_claim_publications",
     "admitted_claim_publication_id",
     "claim_publication_id",
     "claim_publication_mutation_scope_address",
