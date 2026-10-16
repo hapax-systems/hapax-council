@@ -175,6 +175,23 @@ def test_an_unparseable_python_post_image_fails_closed(tmp_path: Path, content: 
     assert "OPENAI_API_KEY" not in result.stdout
 
 
+def test_an_advanced_base_cannot_misplace_the_prs_added_line(tmp_path: Path) -> None:
+    # The PR inserts a key line after line 1; main then prepends a string block. Applied to
+    # main's tree, the zero-context hunk would land inside that string and scan clean.
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    _git(repo, "checkout", "-q", "-b", "pr")
+    (repo / "app.py").write_text(f"import os\n{KEY_LINE}\n\nvalue = 1\n")
+    _commit(repo, "pr")
+    _git(repo, "checkout", "-q", base)
+    (repo / "app.py").write_text('NOTE = """\ninside\n"""\nimport os\n\nvalue = 1\n')
+    advanced = _commit(repo, "main advances")
+    _git(repo, "checkout", "-q", "pr")
+    result = _run(repo, advanced)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "app.py:2: api-key-route" in result.stdout
+
+
 def test_a_doc_change_is_skipped(tmp_path: Path) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)

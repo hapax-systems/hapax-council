@@ -188,8 +188,19 @@ def _strict_main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        # ONE base for the diff and the index seed: zero-context hunks applied to a moved base
+        # can land elsewhere silently, so the scanned post-image would not be the PR's.
+        merge_base = _run_git(["merge-base", args.base, args.head], repo=repo)
+        if merge_base.returncode != 0:
+            print(
+                f"billing-surface-scan: FAIL-CLOSED: git merge-base {args.base} {args.head}: "
+                f"{_git_out(merge_base)}. Next action: fetch both revisions and rerun",
+                file=sys.stderr,
+            )
+            return 2
+        args.base = merge_base.stdout.strip()
         generated = _run_git(
-            ["diff", "--find-renames", "--unified=0", f"{args.base}...{args.head}"],
+            ["diff", "--find-renames", "--unified=0", f"{args.base}..{args.head}"],
             repo=repo,
         )
         if generated.returncode != 0:
