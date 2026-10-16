@@ -4476,6 +4476,210 @@ def test_inspection_recovers_from_a_transient_concurrent_change(
     assert len(sleeps) == 1
 
 
+def _slow_churning_transaction_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    attempt_seconds: float,
+) -> tuple[Path, Path, list[int], list[float]]:
+    """A raced inspection whose every pass takes ``attempt_seconds`` on a fake clock."""
+
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="concurrent_change"
+    )
+    now = [0.0]
+    racing = sdlc_claim.ReadOnlyFsSnapshot.seal
+
+    def slow(snapshot: object) -> object:
+        now[0] += attempt_seconds
+        return racing(snapshot)  # type: ignore[arg-type]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(sdlc_claim.ReadOnlyFsSnapshot, "seal", slow)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", lambda: now[0])
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleep)
+    return cache, transactions, captures, now
+
+
+def test_inspection_retakes_a_raced_pass_slower_than_the_fixed_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-15/16: one pass took about 3.5 min, so a 30 s deadline fixed at the start left
+    zero retakes and a benign sidecar write HOLDed the claim (dev49, dev51, dev52)."""
+
+    cache, transactions, captures, _now = _slow_churning_transaction_root(
+        tmp_path, monkeypatch, attempt_seconds=100.0
+    )
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert [item.reason_code for item in results] == ["fs_snapshot_concurrent_change"]
+    assert 2 <= len(captures) <= sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+
+
+@pytest.mark.parametrize("attempt_seconds", [1.0, 100.0, 250.0, 400.0, 700.0])
+def test_inspection_retake_window_is_bounded_by_count_and_hard_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attempt_seconds: float,
+) -> None:
+    cache, transactions, captures, now = _slow_churning_transaction_root(
+        tmp_path, monkeypatch, attempt_seconds=attempt_seconds
+    )
+
+    inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert 1 <= len(captures) <= sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+    # The first pass always runs; a retake starts only if one more pass as long as the
+    # longest so far still ends inside the capped window.
+    assert now[0] <= max(sdlc_claim.INSPECTION_CHURN_WINDOW_CAP_SECONDS, attempt_seconds)
+
+
+def _inspection_file_observations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    foreign: int,
+    foreign_state: str = "applied",
+    task_id: str | None = "task-alpha",
+) -> tuple[list[str], tuple[tuple[str, str | None], ...], list[str]]:
+    own = _fixture(tmp_path, task_id="task-alpha")
+    _materialize_v1_history(own)
+    foreign_ids = [
+        _materialize_v1_history(
+            _fixture(tmp_path, task_id=f"task-foreign-{index}"), state=foreign_state
+        )
+        for index in range(foreign)
+    ]
+    observed: list[str] = []
+    original = sdlc_claim.ReadOnlyFsSnapshot.observe_file_at
+
+    def counting(self: object, directory: object, name: str, **kwargs: object) -> object:
+        observed.append(name)
+        return original(self, directory, name, **kwargs)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sdlc_claim.ReadOnlyFsSnapshot, "observe_file_at", counting)
+        results = inspect_claim_publications(
+            cache_dir=own.cache, transaction_root=own.transactions, task_id=task_id
+        )
+    # Publication ids bind the fixture's own paths, so two roots compare by verdict only.
+    summary = tuple(sorted((item.disposition, item.reason_code) for item in results))
+    return observed, summary, foreign_ids
+
+
+def test_task_inspection_reads_one_manifest_per_terminal_journal_of_another_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live root held 956 journals (132.6 MB) on 2026-10-16 and one pass read 267 MB; a
+    terminal journal of another task can never block this claim, so only its manifest is read."""
+
+    alone, alone_results, _ = _inspection_file_observations(
+        tmp_path / "alone", monkeypatch, foreign=0
+    )
+    crowded, crowded_results, _ = _inspection_file_observations(
+        tmp_path / "crowded", monkeypatch, foreign=6
+    )
+
+    assert alone_results  # this task's own terminal journal is still inspected in full
+    assert crowded_results == alone_results
+    assert len(crowded) - len(alone) == 6
+    assert crowded.count("manifest.json") - alone.count("manifest.json") == 6
+
+
+def test_task_inspection_still_captures_an_expected_publication_of_another_task(
+    tmp_path: Path,
+) -> None:
+    own = _fixture(tmp_path, task_id="task-alpha")
+    _materialize_v1_history(own)
+    other_id = _materialize_v1_history(_fixture(tmp_path, task_id="task-foreign-0"))
+
+    results = inspect_claim_publications(
+        cache_dir=own.cache,
+        transaction_root=own.transactions,
+        task_id="task-alpha",
+        expected_publication_id=other_id,
+    )
+
+    assert [item.reason_code for item in results if item.publication_id == other_id] == [
+        "claim_publication_expected_task_mismatch"
+    ]
+
+
+def test_inspection_retake_does_not_start_after_an_oversleep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures, now = _slow_churning_transaction_root(
+        tmp_path, monkeypatch, attempt_seconds=100.0
+    )
+
+    def oversleep(_seconds: float) -> None:
+        now[0] += 10_000.0
+
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", oversleep)
+
+    inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert captures == [1]
+
+
+def test_task_inspection_still_fully_inspects_unfinished_journals_of_other_tasks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alone, _, _ = _inspection_file_observations(tmp_path / "alone", monkeypatch, foreign=0)
+    unfinished, _, _ = _inspection_file_observations(
+        tmp_path / "unfinished", monkeypatch, foreign=1, foreign_state="projecting"
+    )
+
+    assert len(unfinished) - len(alone) > 1
+
+
+def test_unfiltered_inspection_still_fully_inspects_every_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alone, _, _ = _inspection_file_observations(
+        tmp_path / "alone", monkeypatch, foreign=0, task_id=None
+    )
+    crowded, _, _ = _inspection_file_observations(
+        tmp_path / "crowded", monkeypatch, foreign=3, task_id=None
+    )
+
+    assert len(crowded) - len(alone) > 3
+
+
+def test_damaged_terminal_journal_of_another_task_holds_only_the_estate_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Narrowing, declared: a damaged terminal journal of another task no longer HOLDs every
+    unrelated claim; the unfiltered (estate, recovery) inspection still reports it."""
+
+    own = _fixture(tmp_path, task_id="task-alpha")
+    _materialize_v1_history(own)
+    other_id = _materialize_v1_history(_fixture(tmp_path, task_id="task-foreign-0"))
+    blob = next(
+        path
+        for path in sorted((own.transactions / other_id).iterdir())
+        if path.name != "manifest.json"
+    )
+    blob.write_bytes(blob.read_bytes() + b"damage")
+
+    scoped = inspect_claim_publications(
+        cache_dir=own.cache, transaction_root=own.transactions, task_id="task-alpha"
+    )
+    estate = inspect_claim_publications(cache_dir=own.cache, transaction_root=own.transactions)
+
+    assert other_id not in {item.publication_id for item in scoped}
+    assert any(item.publication_id == other_id and item.disposition == "hold" for item in estate)
+
+
 # ── task resolution retaken through task-store frontier churn (M95) ──────────
 # claim-publication-frontier-churn-bounded-retry-m95-20260927
 
