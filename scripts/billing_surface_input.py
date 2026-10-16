@@ -25,6 +25,12 @@ class UnusableInput(RuntimeError):
     """The input does not apply to the named base."""
 
 
+OPAQUE_CHANGE = (
+    "an opaque change cannot be scanned. Next action: split the binary change out or rerun "
+    "without it"
+)
+
+
 _SECTION_META_PREFIXES: tuple[str, ...] = (
     "index ",
     "new file mode ",
@@ -134,7 +140,7 @@ def parse_path_added_lines(text: str) -> tuple[dict[int, str], str | None]:
     added: dict[int, str] = {}
     new_line = 0
     in_hunks = False
-    for raw in text.splitlines():
+    for raw in text.removesuffix("\n").split("\n") if text else ():
         if raw.startswith("@@"):
             header = _HUNK_HEADER_RE.match(raw)
             if header is None:
@@ -143,7 +149,7 @@ def parse_path_added_lines(text: str) -> tuple[dict[int, str], str | None]:
             in_hunks = True
         elif not in_hunks:
             if raw.startswith(("Binary files ", "GIT binary patch")):
-                return {}, None
+                raise UnusableInput(OPAQUE_CHANGE)
             if not raw.startswith(_PREAMBLE_PREFIXES):
                 return {}, f"an unrecognised line before git's first hunk: {raw!r}"
         elif raw.startswith("+"):
@@ -198,6 +204,8 @@ def regenerated_added_lines(
                 "--no-renames",
                 "--no-color",
                 "--no-ext-diff",
+                "--no-textconv",
+                "--text",
                 "--unified=0",
                 commit,
                 "--",

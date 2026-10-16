@@ -4,5 +4,6 @@
   "scripts/mint_public_gate_receipts.py",
   "shared.sdlc_close",
   "shared.methodology_dispatch_carrier",
-  "agents.discourse_sensing.state"
+  "agents.discourse_sensing.state",
+  "scripts/check-billing-surface-diff.py"
 ]
