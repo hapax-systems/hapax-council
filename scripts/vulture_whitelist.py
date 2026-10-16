@@ -5625,3 +5625,33 @@ _ = (
     _billing_node_findings_for_postimage,
     _billing_text_classes,
 )
+
+# Subscription pool binding (cc-task review-route-claude-quota-receipt-producer-20261014).
+# Pydantic invokes the declared-path validator during registry parsing
+# (tests/shared/test_platform_capability_registry.py::
+# test_pool_binding_rejects_an_unsafe_declaration). The resolver is called by the
+# extensionless scripts/hapax-claude-reviewer (its isolated POOL_BINDING_RESOLVER) and
+# scripts/hapax-claude-subscription-quota-admission (_declared_pool_binding); the config-dir
+# helper by that admission writer (_pool_binding_mismatches) and
+# scripts/hapax-claude-account-live-observe (_bound_to_another_pool); those callers land in the
+# stacked PRs that follow the registry piece. vulture's *.py walk cannot see them. Exercised by tests/scripts/test_hapax_claude_reviewer.py::
+# test_review_refuses_an_override_that_rebinds_the_route_to_another_pool,
+# tests/scripts/test_hapax_claude_subscription_quota_admission.py::
+# test_bound_route_refuses_a_reading_from_a_conflicting_config_dir and
+# tests/scripts/test_hapax_claude_account_live_observe.py::
+# test_the_account_1_observer_unit_stays_green_with_the_review_route_bound_to_max_2.
+from shared.platform_capability_registry import (  # noqa: E402
+    SubscriptionPoolBinding as _SubscriptionPoolBinding,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    claude_config_dir_for_env as _claude_config_dir_for_env,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    resolve_subscription_pool_binding as _resolve_subscription_pool_binding,
+)
+
+_ = (
+    _SubscriptionPoolBinding._distinct_relative_paths,
+    _resolve_subscription_pool_binding,
+    _claude_config_dir_for_env,
+)

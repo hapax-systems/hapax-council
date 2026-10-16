@@ -830,10 +830,18 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
 CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
+#: The review route's admission as the bound pool's own writer names it (-pool-max-2-).
+REVIEW_POOL_ADMISSION_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "claude-subscription-quota-admission-20260708t140000z.yaml",
+    "claude-subscription-quota-admission-claude-review-opus-pool-max-2-20260708t140000z.yaml",
+).replace("claude.headless.full", "claude.review.opus")
+
+
 def _write_claude_live_quota_ledger(
     path: Path,
     *,
     route_id: str = "claude.headless.full",
+    evidence_refs: list[str] | None = None,
 ) -> None:
     payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
     payload["ledger_id"] = "quota-spend-ledger-test-claude-live"
@@ -855,9 +863,8 @@ def _write_claude_live_quota_ledger(
             "provider": "anthropic-claude-subscription",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
-            "evidence_refs": [
-                CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", route_id)
-            ],
+            "evidence_refs": evidence_refs
+            or [CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", route_id)],
             "operator_visible_reason": "fixture claude admission receipt",
         }
     )
@@ -1433,7 +1440,11 @@ def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
     receipt_dir = tmp_path / "receipts"
     receipt_dir.mkdir()
     live_ledger = tmp_path / "quota-spend-ledger-live.json"
-    _write_claude_live_quota_ledger(live_ledger, route_id="claude.review.opus")
+    _write_claude_live_quota_ledger(
+        live_ledger,
+        route_id="claude.review.opus",
+        evidence_refs=[REVIEW_POOL_ADMISSION_EVIDENCE_REF],
+    )
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
     receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
     (receipt_dir / "claude.json").write_text(
@@ -1457,11 +1468,88 @@ def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
 
     assert route.route_state is RouteState.ACTIVE
     assert route.blocked_reasons == []
+    assert REVIEW_POOL_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+    assert result.ok is True
+
+
+@pytest.mark.parametrize(
+    "evidence_refs",
+    [
+        # Default-pool evidence: a fresh account-1 admission for the route bound to max-2.
+        [CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", "claude.review.opus")],
+        # Another pool's evidence.
+        [REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace("-pool-max-2-", "-pool-max-3-")],
+        # One pooled ref does not launder an unpooled one beside it.
+        [
+            REVIEW_POOL_ADMISSION_EVIDENCE_REF,
+            CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", "claude.review.opus"),
+        ],
+        # A pool whose name merely starts with max-2 is another pool.
+        [REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace("-pool-max-2-", "-pool-max-2-extra-")],
+        # A label naming two pools names no single one.
+        [REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace("-pool-max-2-", "-pool-max-3-pool-max-2-")],
+        # A too-long first pool must not make the parser search for a later pool marker.
+        [
+            REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace(
+                "-pool-max-2-", "-pool-alternative-subscription-max-3-pool-max-2-"
+            )
+        ],
+    ],
+)
+@pytest.mark.parametrize("platform_quota", ["unobservable", "observed-for-the-route"])
+def test_bound_review_route_stays_blocked_on_evidence_not_from_its_declared_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    evidence_refs: list[str],
+    platform_quota: str,
+) -> None:
+    """A fresh ledger admission that does not name max-2 never makes the max-2 route active,
+    whether the platform receipt's quota is unobservable or observed for the route."""
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(
+        live_ledger, route_id="claude.review.opus", evidence_refs=evidence_refs
+    )
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    receipt = _make_receipt(
+        observed_at=datetime(2026, 7, 8, 14, 1, tzinfo=UTC), routes=["claude.review.opus"]
+    )
+    if platform_quota == "observed-for-the-route":
+        receipt.quota.status = EvidenceStatus.OBSERVED
+        receipt.quota.reason_codes = []
+        receipt.quota.evidence_refs = [
+            "platform-capability-registry:claude.review.opus:quota:observed"
+        ]
+    (receipt_dir / "claude.json").write_text(receipt.model_dump_json(), encoding="utf-8")
+
+    route = load_platform_capability_registry(receipt_dir=receipt_dir, now=CLAUDE_NOW).require(
+        "claude.review.opus"
+    )
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "claude_review_route_specific_quota_receipt_absent" in route.blocked_reasons
     assert (
-        CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", "claude.review.opus")
+        "quota-spend-ledger:claude.review.opus:admission-not-from-declared-pool:max-2"
         in route.freshness.evidence.quota.evidence_refs
     )
-    assert result.ok is True
+
+
+def test_unbound_claude_routes_keep_their_default_pool_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Only a route that declares a pool is pool-checked; unbound routes admit as before."""
+    payload = _payload()
+    route = _route_payload(payload, "claude.headless.full")
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    admitted, refs = _route_specific_quota_admission_fresh(route, now=CLAUDE_NOW)
+
+    assert admitted is True
+    assert CLAUDE_ADMISSION_EVIDENCE_REF in refs
 
 
 def test_claude_review_route_not_blocked_by_unrelated_headless_wrapper(
@@ -1471,7 +1559,11 @@ def test_claude_review_route_not_blocked_by_unrelated_headless_wrapper(
     receipt_dir = tmp_path / "receipts"
     receipt_dir.mkdir()
     live_ledger = tmp_path / "quota-spend-ledger-live.json"
-    _write_claude_live_quota_ledger(live_ledger, route_id="claude.review.opus")
+    _write_claude_live_quota_ledger(
+        live_ledger,
+        route_id="claude.review.opus",
+        evidence_refs=[REVIEW_POOL_ADMISSION_EVIDENCE_REF],
+    )
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
     receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
     bad_headless = WrapperEvidence(
@@ -2112,3 +2204,175 @@ def test_kimi_expired_fresh_until_does_not_clear_route_specific_blocker(
         fresh_until="2026-09-11T15:00:00Z",
     )
     _assert_kimi_route_specific_quota_still_blocked(route)
+
+
+# --- subscription_pool_binding: the pool a Claude route bills, stated, never inherited ----------
+
+REVIEW_ROUTE = "claude.review.opus"
+
+
+def test_the_review_route_is_bound_to_max_2_and_the_account_1_routes_are_not() -> None:
+    from shared.platform_capability_registry import resolve_subscription_pool_bindings
+
+    home = Path("/srv/example-home")
+    bindings = resolve_subscription_pool_bindings(home=home)
+
+    assert set(bindings) == {REVIEW_ROUTE}
+    binding = bindings[REVIEW_ROUTE]
+    assert binding.pool == "max-2"
+    assert binding.config_dir == home / ".claude-max-2"
+    assert binding.receipt_dir == home / ".cache/hapax/relay/receipts-max-2"
+    assert binding.headless_dir == home / ".cache/hapax/claude-headless-max-2"
+    assert binding.pace_activation == home / ".cache/hapax/claude-pool-pace-max-2/activation.json"
+    assert binding.durable_sink_root == home / ".cache/hapax/stage0-durable-sink-max-2"
+    # The native load set names the same config home through the same variable.
+    route = _route_payload(_payload(), REVIEW_ROUTE)
+    assert route["native_load_set"]["native_home"] == ".claude-max-2"
+    assert route["native_load_set"]["home_env"] == "CLAUDE_CONFIG_DIR"
+
+
+def _bound_payload() -> tuple[dict, dict]:
+    payload = _payload()
+    return payload, _route_payload(payload, REVIEW_ROUTE)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("config_home", "/srv/elsewhere/.claude-max-2", "inside HOME"),
+        ("receipt_dir", "../elsewhere", "inside HOME"),
+        ("config_home", ".claude", "non-default config home"),
+        ("receipt_dir", ".cache/hapax/relay/receipts", "outside the shared relay dir"),
+        ("headless_dir", ".cache/hapax/relay/receipts-max-2", "distinct"),
+        ("pool", "account-2", "billing or account identifier"),
+        ("pool", "Max_2", "should match pattern"),
+    ],
+)
+def test_pool_binding_rejects_an_unsafe_declaration(field: str, value: str, match: str) -> None:
+    payload, route = _bound_payload()
+    route["subscription_pool_binding"][field] = value
+    if field == "config_home" and value != ".claude":
+        route["native_load_set"]["native_home"] = value
+
+    with pytest.raises(ValidationError, match=match) as refused:
+        PlatformCapabilityRegistry.model_validate(payload)
+    if match != "should match pattern":  # pydantic's own pattern message, not ours
+        assert "next action:" in str(refused.value)
+
+
+def test_pool_binding_must_agree_with_the_native_load_set() -> None:
+    payload, route = _bound_payload()
+    route["native_load_set"]["native_home"] = ".claude"
+
+    with pytest.raises(ValidationError, match="must name the same config home"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_pool_binding_is_valid_only_on_a_claude_subscription_route() -> None:
+    payload, route = _bound_payload()
+    codex = _route_payload(payload, "codex.headless.full")
+    codex["subscription_pool_binding"] = deepcopy(route["subscription_pool_binding"])
+
+    with pytest.raises(ValidationError, match="only on a Claude subscription route"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_one_pool_name_is_one_set_of_paths() -> None:
+    payload, route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    headless["subscription_pool_binding"] = deepcopy(route["subscription_pool_binding"])
+    headless["subscription_pool_binding"]["durable_sink_root"] = ".cache/hapax/another-sink"
+    headless["native_load_set"]["native_home"] = ".claude-max-2"
+    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
+
+    with pytest.raises(ValidationError, match="declared with different paths"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_two_pools_never_share_a_path() -> None:
+    payload, route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    other = deepcopy(route["subscription_pool_binding"])
+    other.update(pool="max-3", config_home=".claude-max-3")
+    headless["subscription_pool_binding"] = other
+    headless["native_load_set"]["native_home"] = ".claude-max-3"
+    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
+
+    with pytest.raises(ValidationError, match="share the path"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("receipt_dir", ".cache/hapax/relay//receipts-max-2"),
+        ("receipt_dir", "./.cache/hapax/relay/receipts-max-2/"),
+        ("headless_dir", ".cache/hapax/relay/receipts-max-2/headless"),
+        ("durable_sink_root", ".cache/hapax"),
+    ],
+)
+def test_two_pools_never_share_a_path_in_another_spelling_or_by_nesting(
+    field: str, value: str
+) -> None:
+    """No second pool reaches one of the first pool's dirs re-spelled, inside it or around it."""
+    with pytest.raises(ValidationError, match="share the path"):
+        PlatformCapabilityRegistry.model_validate(_with_a_max_3_pool(**{field: value}))
+
+
+def test_two_pools_with_disjoint_paths_are_accepted() -> None:
+    PlatformCapabilityRegistry.model_validate(_with_a_max_3_pool())
+
+
+def _with_a_max_3_pool(**paths: str) -> dict:
+    payload, _route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    headless["subscription_pool_binding"] = {
+        "pool": "max-3",
+        "config_home": ".claude-max-3",
+        "receipt_dir": ".cache/hapax/relay/receipts-max-3",
+        "headless_dir": ".cache/hapax/claude-headless-max-3",
+        "pace_activation": ".cache/hapax/claude-pool-pace-max-3/activation.json",
+        "durable_sink_root": ".cache/hapax/stage0-durable-sink-max-3",
+        **paths,
+    }
+    headless["native_load_set"].update(native_home=".claude-max-3", home_env="CLAUDE_CONFIG_DIR")
+    return payload
+
+
+def test_an_unreadable_registry_never_resolves_to_unbound(tmp_path: Path) -> None:
+    from shared.platform_capability_registry import (
+        PlatformCapabilityRegistryError,
+        resolve_subscription_pool_binding,
+    )
+
+    broken = tmp_path / "registry.json"
+    broken.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(PlatformCapabilityRegistryError, match="next action: repair"):
+        resolve_subscription_pool_binding(REVIEW_ROUTE, broken)
+
+
+def test_the_resolver_reads_the_descriptor_registry_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One declaration per process: the same file shared/capability_execution.py reads."""
+    from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+    payload, route = _bound_payload()
+    route.pop("subscription_pool_binding")
+    unbound = tmp_path / "registry.json"
+    unbound.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(unbound))
+
+    assert resolve_subscription_pool_binding(REVIEW_ROUTE) is None
+
+
+def test_the_reading_pool_is_the_config_dir_a_cli_child_runs_on() -> None:
+    from shared.platform_capability_registry import claude_config_dir_for_env
+
+    home = Path("/srv/example-home")
+    assert claude_config_dir_for_env({}, home=home) == home / ".claude"
+    assert claude_config_dir_for_env({"CLAUDE_CONFIG_DIR": "  "}, home=home) == home / ".claude"
+    assert claude_config_dir_for_env(
+        {"CLAUDE_CONFIG_DIR": "/srv/example-home/.claude-max-2"}, home=home
+    ) == Path("/srv/example-home/.claude-max-2")
