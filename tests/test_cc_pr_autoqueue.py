@@ -5645,6 +5645,156 @@ def test_failed_admission_proof_does_not_spend_rearm_budget(tmp_path: Path) -> N
     assert report["armed_note_reconciliation"]["watched"][0]["retries"] == 0
 
 
+@pytest.mark.parametrize("late_failure", ["checks_unreadable", "head_changed"])
+def test_final_boundary_refusal_preserves_rearm_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, late_failure: str
+) -> None:
+    runner, tick, arm_call = _retry_budget_fixture(tmp_path)
+    original_status = autoqueue.set_autoqueue_admission_status
+    original_evidence = autoqueue.fetch_pr_release_evidence
+    proof_published = False
+    final_reads = []
+
+    def publish_status(decision: Any, **kwargs: Any) -> Any:
+        nonlocal proof_published
+        result = original_status(decision, **kwargs)
+        if decision.pr.number == 42 and result is not None and result[0]:
+            proof_published = True
+        return result
+
+    def read_evidence(number: int, **kwargs: Any) -> Any:
+        if number == 42 and proof_published:
+            final_reads.append(number)
+            if late_failure == "checks_unreadable":
+                return False, "invalid_status_check_rollup", set()
+            return True, "sha-force-pushed", set()
+        return original_evidence(number, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(autoqueue, "set_autoqueue_admission_status", publish_status)
+        patch.setattr(autoqueue, "fetch_pr_release_evidence", read_evidence)
+        for _ in range(autoqueue.ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES):
+            report = tick()
+
+    assert final_reads == [42]
+    result = next(m for m in report["mutations"] if m["pr"] == 42 and m["action"] == "queue")
+    assert not result["ok"]
+    expected = (
+        "current_pr_checks_unreadable:invalid_status_check_rollup"
+        if late_failure == "checks_unreadable"
+        else "current_pr_head_mismatch:current=sha-force-pushed:expected=sha-42"
+    )
+    assert result["message"] == expected
+    assert arm_call not in runner.calls
+    assert report["armed_note_reconciliation"]["watched"][0]["retries"] == 0
+    assert report["armed_note_reconciliation"]["retried"] == []
+    posts = [call for call in runner.calls if "repos/owner/repo/statuses/sha-42" in call]
+    assert any("state=success" in call for call in posts)
+    assert any("state=failure" in call for call in posts)
+
+    # After the transient clears, the next eligible exam still has its first retry.
+    for _ in range(autoqueue.ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES):
+        report = tick()
+    assert arm_call in runner.calls
+    assert report["armed_note_reconciliation"]["retried"] == [{"pr": 42, "retry": 1}]
+
+
+def test_failed_rearm_command_still_spends_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, tick, arm_call = _retry_budget_fixture(tmp_path)
+    original_run = _RestRotationRunner.__call__
+
+    def fail_arm(self: Any, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd == arm_call:
+            self.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "arm command failed")
+        return original_run(self, cmd, **kwargs)
+
+    monkeypatch.setattr(_RestRotationRunner, "__call__", fail_arm)
+    for _ in range(autoqueue.ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES):
+        report = tick()
+    assert runner.calls.count(arm_call) == 1
+    result = next(m for m in report["mutations"] if m["pr"] == 42 and m["action"] == "queue")
+    assert not result["ok"] and result["message"] == "arm command failed"
+    assert report["armed_note_reconciliation"]["retried"] == [{"pr": 42, "retry": 1}]
+
+
+@pytest.mark.parametrize(
+    "review_case", ["open_major", "clean", "invalid_header", "missing_ruling", "valid_disposition"]
+)
+def test_armed_classification_uses_current_review_mitigation(
+    tmp_path: Path, review_case: str
+) -> None:
+    runner, tick, arm_call = _retry_budget_fixture(tmp_path)
+    vault = _make_vault(tmp_path)
+    dispositions = []
+    if review_case in {"invalid_header", "missing_ruling", "valid_disposition"}:
+        source = "30-areas/hapax/lanebus/dev1/seat-ruling.md"
+        ruling = tmp_path / "Documents/Personal" / source
+        ruling.parent.mkdir(parents=True)
+        header = "claude/dev25 (Crow, dev1)" if review_case == "invalid_header" else "claude/dev1"
+        body = (
+            "Major defect: ACCEPTED.\n"
+            if review_case == "missing_ruling"
+            else "release_finding_head_sha: sha-42\n"
+            "release_finding_title: Major defect\n"
+            "release_finding_disposition: accepted\n"
+        )
+        ruling.write_text(f"---\nfrom: {header}\n---\n{body}")
+        dispositions = [
+            {
+                "head_sha": "sha-42",
+                "reviewer_id": "codex-1",
+                "file": "shared/foo.py",
+                "line": 17,
+                "title": "Major defect",
+                "lens": "tests-cover-the-diff",
+                "disposition": "accepted",
+                "source": source,
+            }
+        ]
+    _write_task(
+        vault,
+        task_id="armed-note-42",
+        status="pr_open",
+        pr=42,
+        branch="feat/42",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-42",
+            "release_authorized_head_ref": "feat/42",
+            "stage": "S7_RELEASE",
+            "risk_flags": {"governance_sensitive": True},
+            "release_finding_dispositions": dispositions,
+        },
+    )
+    _write_review_dossier(
+        vault,
+        "armed-note-42",
+        head_sha="sha-42",
+        reviewers=None if review_case == "clean" else _reviewers_with_open_major(),
+    )
+    row = next(row for row in runner.open_prs if row["number"] == 42)
+    row["statusCheckRollup"] = _governance_mitigation_checks()
+    for _ in range(autoqueue.ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES):
+        report = tick()
+    decision = next(d for d in report["decisions"] if d["pr"] == 42)
+    if review_case not in {"clean", "valid_disposition"}:
+        assert decision["action"] == "blocked"
+        assert decision["reasons"] == [
+            "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review-team-quorum"
+        ]
+        assert arm_call not in runner.calls
+        assert report["armed_note_reconciliation"]["watched"][0]["retries"] == 0
+        assert not any(m["action"] == "release_head_revalidation" for m in report["mutations"])
+    else:
+        assert decision["action"] == "queue"
+        assert arm_call in runner.calls
+        assert report["armed_note_reconciliation"]["retried"] == [{"pr": 42, "retry": 1}]
+
+
 @pytest.mark.parametrize(
     "same_head,same_counter_head,blocked",
     [(True, True, True), (False, True, True), (True, False, True), (True, True, False)],
@@ -6964,7 +7114,7 @@ def test_head_locked_public_current_release_passes_revalidation(
     ] in runner.calls
 
 
-def test_head_locked_provider_spend_release_still_blocks_revalidation(
+def test_head_locked_provider_spend_release_is_classified_blocked(
     tmp_path: Path,
 ) -> None:
     vault = _make_vault(tmp_path)
@@ -6995,14 +7145,9 @@ def test_head_locked_provider_spend_release_still_blocks_revalidation(
         runner=runner,
     )
 
-    assert any(
-        item["pr"] == 770
-        and item["action"] == "release_head_revalidation"
-        and item["ok"] is False
-        and item["message"].startswith("current_release_auto_arm_blocked:")
-        and "mutation_surface:provider_spend" in item["message"]
-        for item in report["mutations"]
-    )
+    decision = next(d for d in report["decisions"] if d["pr"] == 770)
+    assert decision["action"] == "blocked"
+    assert any("mutation_surface:provider_spend" in reason for reason in decision["reasons"])
     assert not any(call[:4] == ["gh", "pr", "merge", "770"] for call in runner.calls)
 
 
@@ -9146,8 +9291,9 @@ def test_release_head_boundary_revalidates_current_task_gate_before_queue(
             "stage": "S7_RELEASE",
         },
     )
+    _write_governance_review_dossier(vault, "already-armed-governance-revoked-before-boundary", 740)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(740)]
+    runner.open_prs = [_pr(740, checks=_governance_mitigation_checks())]
     original_boundary = autoqueue._release_head_boundary_blocker
 
     def remove_authority_before_boundary(decision: Any, **kwargs: Any) -> str | None:
