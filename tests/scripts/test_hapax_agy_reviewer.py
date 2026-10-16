@@ -72,7 +72,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
         "HAPAX_AGY_REVIEW_PRINT_TIMEOUT": "20m0s",
     }
     result = subprocess.run(
-        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-high"],
+        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-4-argon-low"],
         input="diff --git a/x b/x\n+change\n",
         capture_output=True,
         text=True,
@@ -90,7 +90,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "--log-file" in args
     assert "--print-timeout" in args
     assert "--model" in args
-    assert "gemini-3.1-pro-high" in args
+    assert "gemini-4-argon-low" in args
     assert "--print" in args
     assert "Read ./review-dossier.md" in args
     assert "diff --git a/x b/x" not in args
@@ -128,7 +128,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
         "--dangerously-skip-permissions",
         "--disable-slash-commands",
         "--model",
-        "gemini-3.1-pro-high",
+        "gemini-4-argon-low",
         "--print",
         argv[-1],
     ]
@@ -180,7 +180,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     fake_agy.chmod(0o755)
 
     result = subprocess.run(
-        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-high"],
+        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-4-argon-low"],
         input="diff --git a/x b/x\n+change\n",
         capture_output=True,
         text=True,
@@ -318,8 +318,8 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "not a capacity block" in result.stderr
 
 
-def test_agy_reviewer_accepts_legacy_review_model_id(tmp_path: Path) -> None:
-    """The retired preview id names the same seat and is rewritten to high."""
+def test_agy_reviewer_accepts_registry_base_alias(tmp_path: Path) -> None:
+    """The base alias is rewritten to the declared production tier."""
 
     fake_agy = tmp_path / "agy"
     calls = tmp_path / "calls.txt"
@@ -333,7 +333,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     fake_agy.chmod(0o755)
 
     result = subprocess.run(
-        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-preview"],
+        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-4-argon"],
         input="review\n",
         capture_output=True,
         text=True,
@@ -343,8 +343,8 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert result.returncode == 0, result.stderr
     assert "verdict: accept" in result.stdout
     args = calls.read_text(encoding="utf-8")
-    assert "gemini-3.1-pro-high" in args
-    assert "gemini-3.1-pro-preview" not in args
+    assert "gemini-4-argon-low" in args
+    assert "gemini-4-argon" not in args.splitlines()
 
 
 def test_agy_reviewer_ignores_ambient_review_model(tmp_path: Path) -> None:
@@ -358,7 +358,16 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
         encoding="utf-8",
     )
     fake_agy.chmod(0o755)
-    env = {**os.environ, "HAPAX_AGY_REVIEW_MODEL": "claude-sonnet-4-6"}
+    env = os.environ | dict.fromkeys(
+        (
+            "AGY_MODEL",
+            "HAPAX_AGY_MODEL",
+            "GEMINI_MODEL",
+            "HAPAX_AGY_MEASUREMENT_MODEL",
+            "HAPAX_AGY_REVIEW_MODEL",
+        ),
+        "claude-sonnet-4-6",
+    )
 
     result = subprocess.run(
         [str(WRAPPER), "--agy-bin", str(fake_agy)],
@@ -371,7 +380,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
 
     assert result.returncode == 0, result.stderr
     args = calls.read_text(encoding="utf-8")
-    assert "gemini-3.1-pro-high" in args
+    assert "gemini-4-argon-low" in args
     assert "claude-sonnet-4-6" not in args
 
 
@@ -392,7 +401,7 @@ def test_agy_reviewer_rejects_non_pinned_review_model(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 64
-    assert "review model is pinned to gemini-3.1-pro-high" in result.stderr
+    assert "review model is pinned to gemini-4-argon-low" in result.stderr
     assert "should not run" not in result.stderr
 
 

@@ -15,7 +15,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.quota_spend_ledger import agy_review_model_binding  # noqa: E402
+from shared.quota_spend_ledger import (  # noqa: E402
+    agy_measurement_model,
+    agy_review_model_binding,
+)
 
 DEFAULT_PRINT_TIMEOUT = "20m0s"
 DEFAULT_AGY_BIN = "/usr/bin/agy"
@@ -88,6 +91,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agy-bin", default=_default_agy_bin())
     parser.add_argument("--model")
+    parser.add_argument(
+        "--measurement-model", help="Explicit unqualified registry measurement leaf"
+    )
     parser.add_argument(
         "--print-timeout",
         default=os.environ.get("HAPAX_AGY_REVIEW_PRINT_TIMEOUT", DEFAULT_PRINT_TIMEOUT),
@@ -186,18 +192,27 @@ def main(argv: list[str] | None = None) -> int:
     if agy_bin.name != "agy" or not agy_bin.is_absolute():
         print("hapax-agy-reviewer: --agy-bin must be an absolute path named agy", file=sys.stderr)
         return 64
-    pinned_model, legacy_model = agy_review_model_binding()
-    if args.model is None:
-        args.model = pinned_model
-    if args.model not in {pinned_model, legacy_model}:
-        print(
-            "hapax-agy-reviewer: review model is pinned to "
-            f"{pinned_model} for registry family traceability "
-            f"(the retired id {legacy_model} names the same seat)",
-            file=sys.stderr,
-        )
-        return 64
-    cli_model = pinned_model
+    if args.measurement_model:
+        try:
+            if args.model is not None:
+                raise ValueError("--model and --measurement-model cannot be combined")
+            cli_model = agy_measurement_model(args.measurement_model)
+        except ValueError as exc:
+            print(f"hapax-agy-reviewer: {exc}", file=sys.stderr)
+            return 64
+    else:
+        pinned_model, legacy_model = agy_review_model_binding()
+        if args.model is None:
+            args.model = pinned_model
+        if args.model not in {pinned_model, legacy_model}:
+            print(
+                "hapax-agy-reviewer: review model is pinned to "
+                f"{pinned_model} for registry family traceability "
+                f"(the registry base alias {legacy_model} names the same seat)",
+                file=sys.stderr,
+            )
+            return 64
+        cli_model = pinned_model
 
     dossier = sys.stdin.read()
     prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
@@ -223,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if cli_model:
             cmd.extend(["--model", cli_model])
+        if args.measurement_model:
+            cmd.extend(["--output-format", "json"])
         cmd.extend(["--print", PRINT_PROMPT])
 
         try:
@@ -254,6 +271,32 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return TOKEN_ECHO_EXIT
+    if args.measurement_model and result.returncode == 0:
+        try:
+            # Native envelope metadata, never a model's self-report in response.
+            # https://antigravity.google/docs/cli/headless/#json
+            payload = json.loads(result.stdout)
+            if payload.get("status") != "SUCCESS" or not isinstance(payload.get("response"), str):
+                raise ValueError(
+                    f"native measurement failed: {str(payload.get('error', 'invalid result'))[:500]}"
+                )
+            served = payload.get("model")
+            if served is not None and served != cli_model:
+                raise ValueError("served measurement model differs from requested model")
+            result.stdout = (
+                json.dumps(
+                    {
+                        "measurement_only": True,
+                        "model": cli_model,
+                        "served_model": served,
+                        "response": payload["response"],
+                    }
+                )
+                + "\n"
+            )
+        except (ValueError, TypeError, AttributeError) as exc:
+            print(f"hapax-agy-reviewer: invalid measurement result: {exc}", file=sys.stderr)
+            return 65
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     return result.returncode
