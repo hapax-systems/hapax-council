@@ -185,6 +185,19 @@ def test_an_advanced_base_cannot_misplace_the_prs_added_line(tmp_path: Path) -> 
     assert "app.py:2: api-key-route" in result.stdout
 
 
+def test_an_added_line_shaped_like_a_header_cannot_hide_a_later_hunk(tmp_path: Path) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "app.py").write_text('import os\nNOTE = """\nfirst\n"""\n\nvalue = 1\n')
+    advanced = _commit(repo, "a string block")
+    note = 'import os\nNOTE = """\nfirst\n++ b/docs/hidden.py\n"""\n\nvalue = 1\n'
+    (repo / "app.py").write_text(f"{note}{KEY_LINE}\n")
+    _commit(repo, "a header-shaped added line, then a key line")
+    result = _run(repo, advanced)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "app.py:8: api-key-route" in result.stdout
+
+
 def test_a_doc_change_is_skipped(tmp_path: Path) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
