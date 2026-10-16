@@ -23,7 +23,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.billing_surface_detector import (  # noqa: E402
-    _KEY_BEARING_PROBE,
     _PY_SUFFIXES,
     ALLOW_MARKER,
     Finding,
@@ -148,37 +147,11 @@ def _scan_validated_files(
                     line_kinds += ("api-key-route",)
                 emit(path, line_no, line_kinds, text)
             continue
-        flagged = 0
+        # An unparseable Python post-image fails closed in the detector (`unparseable-python`).
+        # It goes straight to the findings: no marker can exempt what cannot be parsed.
+        findings.extend(node_findings)
         for line_no, text in sorted(added.items()):
-            kinds = _text_classes(text)
-            if "api-key-route" in kinds:
-                flagged += 1
-            emit(path, line_no, kinds, text)
-        if (
-            path.endswith(_PY_SUFFIXES)
-            and content is not None
-            and not parsed
-            and flagged == 0
-            and any(_KEY_BEARING_PROBE.search(text) for text in added.values())
-        ):
-            # ONE FINDING PER KEY-BEARING LINE, each with its own line's text: attributing a
-            # region's damage to its first line let a marker on that line move the finding to
-            # `allowed` while a later unmarked key-bearing line was never judged (dev21's r2
-            # reproduction). The marker's contract is exactly the marked line.
-            for line_no, text in sorted(added.items()):
-                if _KEY_BEARING_PROBE.search(text):
-                    emit(
-                        path,
-                        line_no,
-                        ("billing-scan-unusable-input",),
-                        text,
-                        text=(
-                            "this Python post-image does not parse and this added line carries "
-                            f"credential-bearing text: {text.strip()[:120]!r}. Next action: make "
-                            "the file parse at the head revision it names, or scan it whole; "
-                            "unparseable credential-bearing text is never exempt."
-                        ),
-                    )
+            emit(path, line_no, _text_classes(text), text)
     return ScanResult(
         findings=tuple(findings), allowed=tuple(allowed), scanned_files=tuple(scanned)
     )

@@ -156,6 +156,25 @@ def test_a_change_without_a_billing_surface_is_clean(tmp_path: Path) -> None:
     assert "OK" in result.stdout
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "values = (\n",
+        'v = os.getenv(default=None,\n    key="OPENAI_API_KEY")\nbroken = (\n',
+    ],
+    ids=["no-key-bearing-line", "multiline-keyword-read"],
+)
+def test_an_unparseable_python_post_image_fails_closed(tmp_path: Path, content: str) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "app.py").write_text(f"import os\n{content}")
+    _commit(repo, "unparseable")
+    result = _run(repo, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "unparseable-python" in result.stdout
+    assert "OPENAI_API_KEY" not in result.stdout
+
+
 def test_a_doc_change_is_skipped(tmp_path: Path) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
