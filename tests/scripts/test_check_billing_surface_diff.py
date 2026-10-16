@@ -1,11 +1,12 @@
 """The git-validated billing scanner, through its full entry point: the ported detectors, marker
-and proxy contracts, and the strict refusal of a supplied diff file. Malformed diff text, which
-only an advisory caller can still supply, must never scan clean through the library."""
+and proxy contracts, and the strict refusal of a supplied diff file. The gate generates its own
+diff; no entry accepts diff text."""
 
 from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import inspect
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ sys.modules[_spec.name] = scanner
 _spec.loader.exec_module(scanner)
 
 KEY_LINE = 'client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])'
+ALLOW = "  # billing-scan:allow"
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -60,11 +62,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, str, str, str]:
 
 
 def _run(
-    repo: Path,
-    base: str,
-    *,
-    diff_text: str | None = None,
-    diff_file: Path | None = None,
+    repo: Path, base: str, *, diff_file: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base]
     if diff_file is not None:
@@ -74,86 +72,169 @@ def _run(
     return subprocess.run(argv, capture_output=True, text=True, check=False)
 
 
-def _run_text(repo: Path, base: str, tmp_path: Path, text: str) -> subprocess.CompletedProcess[str]:
-    path = tmp_path / "case.diff"
-    path.write_text(text, encoding="utf-8")
-    return _run(repo, base, diff_file=path)
+# ── detectors, marker contract, proxy exemption (ported): id -> (path, pre-image or None for
+# the fixture base, post-image, exit, required stdout fragments, forbidden stdout fragments)
 
-
-def _scan_text(repo: Path, base: str, text: str) -> int:
-    """The library path supplied diff text still takes off the gate: 0 clean, 1 findings, 2 unusable."""
-    try:
-        result, _error = scanner.scan_git_validated(text, repo=repo, base=base)
-    except scanner.UnusableInput:
-        return 2
-    return 2 if result is None else int(bool(result.findings))
-
-
-# ── detectors, marker contract, proxy exemption (ported)
-
-
-def test_a_credential_route_on_an_added_line_is_a_finding(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "api-key-route" in result.stdout
-    assert "credential-env-read" in result.stdout
-
-
-@pytest.mark.parametrize(
-    ("path", "content", "kind"),
-    [
-        (
-            "app.py",
-            'url = "HTTPS://user@API.OPENAI.COM.:443/v1?model=x"\n',
-            "provider-api-endpoint",
-        ),
-        ("app.js", 'const key = process.env["openai_api_key"];\n', "credential-env-read"),
-        ("app.py", 'headers = {"authorization": f"BEARER {token}"}\n', "api-key-route"),
-        ("app.py", "client = OpenAI()\n", "provider-api-endpoint"),
-        ("app.py", "client = OpenAI(timeout=30)\n", "provider-api-endpoint"),
-    ],
-    ids=["provider-url", "js-env", "bearer-header", "sdk-constructor-bare", "sdk-constructor-args"],
-)
-def test_normalized_detector_variants_reach_scanner_finding(
-    tmp_path: Path, path: str, content: str, kind: str
-) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / path).write_text(content)
-    _commit(repo, "normalized detector case")
-    result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert kind in result.stdout
-
-
-def test_a_change_without_a_billing_surface_is_clean(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text("import os\n\nvalue = 2\n")
-    _commit(repo, "clean")
-    result = _run(repo, base)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "OK" in result.stdout
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        "values = (\n",
+_PROXY = 'base_url="http://127.0.0.1:4000"'
+_HEADER_PRE = 'import os\nNOTE = """\nfirst\n"""\n\nvalue = 1\n'
+_HEADER_POST = f'import os\nNOTE = """\nfirst\n++ b/docs/hidden.py\n"""\n\nvalue = 1\n{KEY_LINE}\n'
+_CASES = {
+    "credential-route": (
+        "app.py",
+        None,
+        f"import os\nfrom openai import OpenAI\n{KEY_LINE}\n",
+        1,
+        ("api-key-route", "credential-env-read"),
+        (),
+    ),
+    "provider-url": (
+        "app.py",
+        None,
+        'url = "HTTPS://user@API.OPENAI.COM.:443/v1?model=x"\n',
+        1,
+        ("provider-api-endpoint",),
+        (),
+    ),
+    "js-env": (
+        "app.js",
+        None,
+        'k = process.env["openai_api_key"];\n',
+        1,
+        ("credential-env-read",),
+        (),
+    ),
+    "bearer-header": (
+        "app.py",
+        None,
+        'h = {"authorization": f"BEARER {t}"}\n',
+        1,
+        ("api-key-route",),
+        (),
+    ),
+    "sdk-constructor-bare": ("app.py", None, "c = OpenAI()\n", 1, ("provider-api-endpoint",), ()),
+    "sdk-constructor-args": (
+        "app.py",
+        None,
+        "c = OpenAI(timeout=3)\n",
+        1,
+        ("provider-api-endpoint",),
+        (),
+    ),
+    "no-billing-surface": ("app.py", None, "import os\n\nvalue = 2\n", 0, ("OK",), ()),
+    # unparseable-python fails closed, and never echoes a key read it could not place
+    "unparseable": ("app.py", None, "import os\nvalues = (\n", 1, ("unparseable-python",), ()),
+    "unparseable-multiline-read": (
+        "app.py",
+        None,
         'v = os.getenv(default=None,\n    key="OPENAI_API_KEY")\nbroken = (\n',
-    ],
-    ids=["no-key-bearing-line", "multiline-keyword-read"],
-)
-def test_an_unparseable_python_post_image_fails_closed(tmp_path: Path, content: str) -> None:
+        1,
+        ("unparseable-python",),
+        ("OPENAI_API_KEY",),
+    ),
+    # an added line shaped like a header cannot hide a later hunk
+    "header-shaped-line": (
+        "app.py",
+        _HEADER_PRE,
+        _HEADER_POST,
+        1,
+        ("app.py:8: api-key-route",),
+        (),
+    ),
+    "doc-skipped": ("notes.md", None, f"{KEY_LINE}\n", 0, (), ()),
+    # #4808 r2/r3: a marker on one line never speaks for another line's finding
+    "neighbour-marker": (
+        "tests/gen.py",
+        None,
+        f"c = OpenAI(api_key=key)\n#{ALLOW}\n",
+        1,
+        ("api-key-route",),
+        ("allowed",),
+    ),
+    "marker-abroad": (
+        "app.py",
+        None,
+        f"c = OpenAI(api_key=key){ALLOW}\n",
+        1,
+        ("marker", "api-key-route"),
+        (),
+    ),
+    "proxy-exempt": (
+        "app.py",
+        None,
+        f"OpenAI(api_key=key, {_PROXY})\n",
+        0,
+        ("governed-proxy-route",),
+        (),
+    ),
+    # the exemption is per call for the api-key class; the credential READ is its own node
+    "proxy-env-read": (
+        "app.py",
+        None,
+        f'OpenAI(api_key=os.environ["OPENAI_API_KEY"], {_PROXY})\n',
+        1,
+        ("governed-proxy-route", "credential-env-read"),
+        (),
+    ),
+    "dynamic-proxy": (
+        "app.py",
+        None,
+        'h = "x"\nOpenAI(api_key=os.environ["K"], base_url=f"http://{h}:4000")\n',
+        1,
+        ("api-key-route",),
+        (),
+    ),
+    # the marker is decided from the ADDED lines a finding covers
+    "marker-on-unchanged-opening-line": (
+        "tests/gen.py",
+        f"c = OpenAI({ALLOW}\n)\n",
+        f"c = OpenAI({ALLOW}\n    api_key=key,\n)\n",
+        1,
+        ("api-key-route",),
+        ("allowed",),
+    ),
+    "marker-on-own-line": (
+        "tests/gen.py",
+        None,
+        f"c = OpenAI(api_key=key){ALLOW}\n",
+        0,
+        ("allowed tests/gen.py:1",),
+        (),
+    ),
+    "marker-on-every-covered-line": (
+        "tests/gen.py",
+        None,
+        f"c = OpenAI({ALLOW}\n    api_key=key,{ALLOW}\n){ALLOW}\n",
+        0,
+        ("allowed tests/gen.py:1",),
+        (),
+    ),
+    "capacity-pool-payg": (
+        "app.py",
+        None,
+        'c = {"capacity_pool": "api_paid_spend"}\n',
+        1,
+        ("capacity-pool-payg",),
+        (),
+    ),
+    "plan-type-api": ("app.py", None, "plan_type = 'api'\n", 1, ("capacity-pool-payg",), ()),
+}
+
+
+@pytest.mark.parametrize("case", list(_CASES), ids=list(_CASES))
+def test_a_scan_case_through_the_entry_point(tmp_path: Path, case: str) -> None:
+    path, pre, post, code, present, absent = _CASES[case]
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text(f"import os\n{content}")
-    _commit(repo, "unparseable")
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    if pre is not None:
+        (repo / path).write_text(pre)
+        base = _commit(repo, "pre-image")
+    (repo / path).write_text(post)
+    _commit(repo, case)
     result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "unparseable-python" in result.stdout
-    assert "OPENAI_API_KEY" not in result.stdout
+    assert result.returncode == code, result.stdout + result.stderr
+    assert all(p in result.stdout for p in present), result.stdout
+    assert not any(a in result.stdout for a in absent), result.stdout
 
 
 def test_an_advanced_base_cannot_misplace_the_prs_added_line(tmp_path: Path) -> None:
@@ -172,146 +253,96 @@ def test_an_advanced_base_cannot_misplace_the_prs_added_line(tmp_path: Path) -> 
     assert "app.py:2: api-key-route" in result.stdout
 
 
-def test_an_added_line_shaped_like_a_header_cannot_hide_a_later_hunk(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text('import os\nNOTE = """\nfirst\n"""\n\nvalue = 1\n')
-    advanced = _commit(repo, "a string block")
-    note = 'import os\nNOTE = """\nfirst\n++ b/docs/hidden.py\n"""\n\nvalue = 1\n'
-    (repo / "app.py").write_text(f"{note}{KEY_LINE}\n")
-    _commit(repo, "a header-shaped added line, then a key line")
-    result = _run(repo, advanced)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "app.py:8: api-key-route" in result.stdout
+# ── untrusted diff text has no entry; git's own diff is generated without drivers
 
 
-def test_a_doc_change_is_skipped(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "notes.md").write_text(f"{KEY_LINE}\n")
-    _commit(repo, "docs")
-    result = _run(repo, base)
-    assert result.returncode == 0, result.stdout + result.stderr
+def test_the_gate_module_offers_no_text_accepting_entry() -> None:
+    """muse r7: the library entry took diff text; the gate entry now generates its own diff."""
+    entry = inspect.signature(scanner.scan_git_validated)
+    assert list(entry.parameters) == ["repo", "base", "head"]
+    for name, fn in vars(scanner).items():
+        if inspect.isfunction(fn) and fn.__module__ == scanner.__name__:
+            assert not {"diff_text", "text"} & set(inspect.signature(fn).parameters), name
 
 
-def test_a_marker_on_a_neighbour_line_does_not_exempt_the_finding(tmp_path: Path) -> None:
-    """#4808 r2/r3's leak: a marker on one line must never speak for another line's finding."""
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "tests" / "gen.py").write_text("client = OpenAI(api_key=key)\n# billing-scan:allow\n")
-    _commit(repo, "neighbour marker")
-    result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "api-key-route" in result.stdout
-    assert "allowed" not in result.stdout
-
-
-def test_a_marker_outside_the_allowlist_is_itself_a_finding(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text("client = OpenAI(api_key=key)  # billing-scan:allow\n")
-    _commit(repo, "marker abroad")
-    result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "marker" in result.stdout
-    assert "api-key-route" in result.stdout
-
-
-def test_a_governed_proxy_route_is_exempt_per_call(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text(
-        'from openai import OpenAI\nOpenAI(api_key=key, base_url="http://127.0.0.1:4000")\n'
-    )
-    _commit(repo, "proxy")
-    result = _run(repo, base)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "governed-proxy-route" in result.stdout
-
-
-def test_an_env_read_inside_a_proxy_bound_call_is_still_its_own_site(tmp_path: Path) -> None:
-    """The exemption is per call for the api-key class; the credential READ is its own node."""
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text(
-        "from openai import OpenAI\n"
-        'OpenAI(api_key=os.environ["OPENAI_API_KEY"], base_url="http://127.0.0.1:4000")\n'
-    )
-    _commit(repo, "proxy with env read")
-    result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "governed-proxy-route" in result.stdout
-    assert "credential-env-read" in result.stdout
-
-
-def test_a_dynamic_proxy_target_is_not_a_binding(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text(
-        "from openai import OpenAI\n"
-        "host = '127.0.0.1'\n"
-        'OpenAI(api_key=os.environ["OPENAI_API_KEY"], base_url=f"http://{host}:4000")\n'
-    )
-    _commit(repo, "dynamic")
-    result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "api-key-route" in result.stdout
-
-
-# ── malformed diff text: never a clean scan
+_CLEAN = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -3 +3 @@\n-value = 1\n+value = 2\n"
+_BINARY = "Binary files a/app.py and b/app.py differ"
 
 
 @pytest.mark.parametrize(
-    "prefixes",
-    [("diff --git",), ("diff --git", "index ", "--- ")],
-    ids=["headerless-hunk", "ppp-without-diff-git"],
+    "shape",
+    [
+        lambda d, ls: d,
+        lambda d, ls: "\n".join(l for l in ls if not l.startswith("diff --git")) + "\n",
+        lambda d, ls: "\n".join(
+            l for l in ls if not l.startswith(("diff --git", "index ", "--- "))
+        ),
+        lambda d, ls: "\n".join([*ls[:3], _BINARY, *ls[3:]]) + "\n",
+        lambda d, ls: f"{d}{_BINARY}\n",
+        lambda d, ls: "\n".join(ls[:-1]) + "\n",
+        lambda d, ls: d[: len(d) // 2],
+        lambda d, ls: "\n".join(ls[1:]) + "\n",
+        lambda d, ls: f"{_CLEAN}+{KEY_LINE}\n",
+    ],
+    ids=[
+        "honest-diff",
+        "headerless-hunk",
+        "ppp-without-diff-git",
+        "binary-note-after-hunk",
+        "trailing-binary-note",
+        "line-truncation",
+        "char-truncation",
+        "header-deletion",
+        "trailing-credential-after-valid-hunk",
+    ],
 )
-def test_a_stripped_header_is_never_a_clean_scan(tmp_path: Path, prefixes: tuple[str, ...]) -> None:
+def test_every_fail_open_reproduction_is_refused_at_the_strict_entry(
+    tmp_path: Path, shape: object
+) -> None:
+    """#4795 r5-r7 / #4808 r1-r3 shapes and muse r7's: untrusted diff text is not accepted."""
     repo, base, _head, diff = _fixture(tmp_path)
-    stripped = "\n".join(l for l in diff.splitlines() if not l.startswith(prefixes))
-    assert _scan_text(repo, base, stripped + "\n") != 0
+    case = tmp_path / "case.diff"
+    case.write_text(shape(diff, diff.splitlines()), encoding="utf-8")  # type: ignore[operator]
+    result = _run(repo, base, diff_file=case)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "unusable for a gate" in result.stderr and "--head" in result.stderr
 
 
-def test_a_binary_note_after_a_hunk_is_never_a_clean_scan(tmp_path: Path) -> None:
-    """#4808 r3's leak: the note made the old parser treat the credential line as binary payload."""
-    repo, base, _head, diff = _fixture(tmp_path)
-    lines = diff.splitlines()
-    poisoned = (
-        "\n".join(lines[:3])
-        + "\nBinary files a/app.py and b/app.py differ\n"
-        + "\n".join(lines[3:])
-        + "\n"
-    )
-    assert _scan_text(repo, base, poisoned) != 0
-    trailing = "\n".join(lines) + "\nBinary files a/app.py and b/app.py differ\n"
-    assert _scan_text(repo, base, trailing) != 0
+@pytest.mark.parametrize("driver", ["external-diff", "textconv"])
+def test_a_configured_diff_driver_cannot_substitute_a_clean_patch(
+    tmp_path: Path, driver: str
+) -> None:
+    """codex r7: a repo's diff driver or textconv must not decide what the gate scans."""
+    repo, base, _head, _diff = _fixture(tmp_path)
+    tool = tmp_path / "driver.sh"
+    if driver == "external-diff":
+        (tmp_path / "clean.diff").write_text(_CLEAN)
+        tool.write_text(f"#!/bin/sh\ncat {tmp_path / 'clean.diff'}\n")
+        _git(repo, "config", "diff.external", str(tool))
+    else:
+        tool.write_text('#!/bin/sh\ngrep -v OpenAI "$1"\n')
+        (repo / ".git" / "info").mkdir(exist_ok=True)
+        (repo / ".git" / "info" / "attributes").write_text("*.py diff=clean\n")
+        _git(repo, "config", "diff.clean.textconv", str(tool))
+    tool.chmod(0o755)
+    result = _run(repo, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "api-key-route" in result.stdout
 
 
-def test_strict_mode_refuses_any_diff_file_with_a_next_action(tmp_path: Path) -> None:
-    """The gate reads only git's own diff: a supplied file is untrusted text, honest or not."""
-    repo, base, _head, diff = _fixture(tmp_path)
-    clean = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -3,0 +4 @@\n+more = 2\n"
-    trailing = f"\nBinary files a/app.py and b/app.py differ\n+{KEY_LINE}\n"
-    for text in (diff, clean + trailing):
-        result = _run_text(repo, base, tmp_path, text)
-        assert result.returncode == 2, result.stdout + result.stderr
-        assert "unusable for a gate" in result.stderr and "--head" in result.stderr
-
-
-def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
-    """The strike rule, as a test: exit 0 with an unmarked key-bearing line present is a strike."""
-    repo, base, _head, diff = _fixture(tmp_path)
-    lines = diff.splitlines()
-    corpus: list[str] = []
-    for cut in range(1, len(lines)):
-        corpus.append("\n".join(lines[:cut]) + "\n")
-    for drop in range(len(lines)):
-        corpus.append("\n".join(lines[:drop] + lines[drop + 1 :]) + "\n")
-    for stride in range(0, len(diff), 11):
-        corpus.append(diff[:stride])
-    for text in corpus:
-        if _scan_text(repo, base, text) == 0:
-            assert "OPENAI_API_KEY" not in text, f"scanned clean over a key line:\n{text}"
+@pytest.mark.parametrize("worktree_at", ["base", "head"])
+def test_a_heads_binary_attribute_cannot_hide_its_text_change(
+    tmp_path: Path, worktree_at: str
+) -> None:
+    """Attributes come from the base tree: the PR's own `.gitattributes` cannot mark a key opaque."""
+    repo, base, _head, _diff = _fixture(tmp_path)
+    (repo / ".gitattributes").write_text("*.py -diff\n")
+    head = _commit(repo, "head marks python binary")
+    _git(repo, "checkout", "-q", base if worktree_at == "base" else head)
+    argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base, "--head", head]
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "api-key-route" in result.stdout
 
 
 # ── diff-read errors carry next actions
@@ -320,7 +351,6 @@ def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "args",
     [
-        ["--repo", "{R}", "--base", "{B}", "--diff-file", "{T}/absent.diff"],
         ["--repo", "{R}", "--head", "HEAD"],
         ["--repo", "{R}", "--base", "no-such-revision", "--head", "HEAD"],
         ["--repo", "{R}", "--base", "{B}", "--head", "no-such-head"],
@@ -329,7 +359,6 @@ def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
         ["--repo", "{T}/no-such-repo", "--base", "main", "--head", "HEAD"],
     ],
     ids=[
-        "diff-file-refused",
         "missing-base",
         "unresolvable-base",
         "unresolvable-head",
@@ -360,80 +389,3 @@ def test_git_unavailable_during_generation_refuses_with_a_next_action(tmp_path: 
     result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
     assert result.returncode == 2
     assert "git is unavailable" in result.stderr and "Next action" in result.stderr
-
-
-# ── the marker is decided from the added lines a finding COVERS
-
-
-def test_a_marker_on_an_unchanged_opening_line_does_not_exempt_an_added_argument(
-    tmp_path: Path,
-) -> None:
-    """A marker on an unchanged opening line must not exempt an added ``api_key=`` argument."""
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "tests" / "gen.py").write_text("client = OpenAI(  # billing-scan:allow\n)\n")
-    marker_base = _commit(repo, "opening line carries the marker")
-    (repo / "tests" / "gen.py").write_text(
-        "client = OpenAI(  # billing-scan:allow\n    api_key=key,\n)\n"
-    )
-    head = _commit(repo, "add the credential argument")
-
-    diff = _git(repo, "diff", "--unified=0", f"{marker_base}...{head}")
-    assert "+    api_key=key," in diff
-    assert "+client = OpenAI(" not in diff
-
-    result = _run(repo, marker_base)
-
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "api-key-route" in result.stdout
-    assert "allowed" not in result.stdout
-
-
-def test_a_marker_on_the_added_calls_own_line_still_exempts(tmp_path: Path) -> None:
-    """The other half: the exemption still works when the ADDED lines it covers carry the marker."""
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "tests" / "gen.py").write_text("client = OpenAI(api_key=key)  # billing-scan:allow\n")
-    _commit(repo, "one-line marked call")
-
-    result = _run(repo, base)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "allowed tests/gen.py:1" in result.stdout
-
-
-def test_a_multi_line_call_needs_the_marker_on_every_added_line_it_covers(
-    tmp_path: Path,
-) -> None:
-    """A multi-line call is exempt only when every added line of it carries the marker."""
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "tests" / "gen.py").write_text(
-        "client = OpenAI(  # billing-scan:allow\n"
-        "    api_key=key,  # billing-scan:allow\n"
-        ")  # billing-scan:allow\n"
-    )
-    _commit(repo, "multi-line marked call")
-
-    result = _run(repo, base)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "allowed tests/gen.py:1" in result.stdout
-
-
-# ── the remaining detector classes and error branches, at the entry point
-
-
-@pytest.mark.parametrize(
-    "content",
-    ['config = {"capacity_pool": "api_paid_spend"}\n', "plan_type = 'api'\n"],
-    ids=["capacity-pool-payg", "plan-type-api"],
-)
-def test_a_payg_rebinding_is_a_finding(tmp_path: Path, content: str) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text(content)
-    _commit(repo, "payg rebinding")
-    result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "capacity-pool-payg" in result.stdout

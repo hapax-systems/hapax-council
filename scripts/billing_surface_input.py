@@ -198,6 +198,7 @@ def regenerated_added_lines(
                 "--no-renames",
                 "--no-color",
                 "--no-ext-diff",
+                "--no-textconv",
                 "--unified=0",
                 commit,
                 "--",

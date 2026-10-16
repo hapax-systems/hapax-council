@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Git-validated provider-billing surface scan.
 
-Exits 0 clean, 1 on findings, 2 on unusable input. The gate reads only the diff git
-generates from --base/--head; a supplied --diff-file is untrusted text and is refused.
+Exits 0 clean, 1 on findings, 2 on unusable input. The gate reads only the diff it has git
+generate from --base/--head, drivers off; a supplied --diff-file is untrusted and refused.
 Git applies the diff to an index seeded from the merge base; only Git's added lines and
 post-image are scanned. Findings are a lower bound.
 """
@@ -10,6 +10,7 @@ post-image are scanned. Findings are a lower bound.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -38,22 +39,43 @@ from scripts.billing_surface_input import (  # noqa: E402
 )
 
 
-def scan_git_validated(
-    diff_text: str, *, repo: Path, base: str
-) -> tuple[ScanResult | None, str | None]:
-    """Scan the added lines git derives from the validated input: ``(result, error)``.
+def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult | None, str | None]:
+    """Generate the merge-base..head diff, then scan what git applies: ``(result, error)``.
 
-    ``error`` (exit 2) means git refused the input; ``result`` is then None, so unusable
-    input never scans clean.
+    ``error`` (exit 2) means git refused; ``result`` is then None, so unusable input never
+    scans clean. No diff text is accepted: the only input is the diff generated here.
     """
-    if not diff_text.strip():
+    # ONE base for diff and index seed: a moved base can misplace zero-context hunks.
+    merge_base = _run_git(["merge-base", base, head], repo=repo)
+    if merge_base.returncode != 0:
+        return None, (
+            f"FAIL-CLOSED: git merge-base {base} {head}: {_git_out(merge_base)}. Next action: "
+            "fetch both revisions and rerun"
+        )
+    base = merge_base.stdout.strip()
+    # A configured diff driver or textconv could substitute a clean patch for the real one, and
+    # the PR's own `.gitattributes` could mark a changed text file binary (an opaque stub git
+    # apply skips): both diffs take attributes from the trusted base tree.
+    attrs = {"GIT_ATTR_SOURCE": base}
+    generated = _run_git(
+        ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames"]
+        + ["--unified=0", f"{base}..{head}"],
+        repo=repo,
+        env={**os.environ, **attrs},
+    )
+    if generated.returncode != 0:
+        return None, (
+            f"FAIL-CLOSED: git diff {base}..{head}: {_git_out(generated)}. Next action: confirm "
+            "both revisions exist in this repository and rerun"
+        )
+    if not generated.stdout.strip():
         return None, (
             "FAIL-CLOSED: empty diff input is not evidence. Next action: pass the PR's "
             "--base/--head; a PR that genuinely changes no file is covered by the "
             "merge-group duplicate sentinel, not by this scan reporting success."
         )
-    with materialise_post_image(diff_text, repo=repo, base=base) as (_index_path, env):
-        files, error = regenerated_added_lines(repo=repo, base=base, env=env)
+    with materialise_post_image(generated.stdout, repo=repo, base=base) as (_index_path, env):
+        files, error = regenerated_added_lines(repo=repo, base=base, env={**env, **attrs})
         if error is not None:
             return None, error
         return _scan_validated_files(files, repo=repo, env=env), None
@@ -184,38 +206,8 @@ def _strict_main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    # ONE base for diff and index seed: a moved base can misplace zero-context hunks.
     try:
-        merge_base = _run_git(["merge-base", args.base, args.head], repo=repo)
-    except GitUnavailable as exc:
-        return _git_unavailable(exc)
-    if merge_base.returncode != 0:
-        print(
-            f"billing-surface-scan: FAIL-CLOSED: git merge-base {args.base} {args.head}: "
-            f"{_git_out(merge_base)}. Next action: fetch both revisions and rerun",
-            file=sys.stderr,
-        )
-        return 2
-    args.base = merge_base.stdout.strip()
-    try:
-        generated = _run_git(
-            ["diff", "--find-renames", "--unified=0", f"{args.base}..{args.head}"],
-            repo=repo,
-        )
-    except GitUnavailable as exc:
-        return _git_unavailable(exc)
-    if generated.returncode != 0:
-        print(
-            f"billing-surface-scan: FAIL-CLOSED: git diff {args.base}...{args.head}: "
-            f"{_git_out(generated)}. Next action: confirm both revisions exist in this "
-            "repository and rerun",
-            file=sys.stderr,
-        )
-        return 2
-    diff_text = generated.stdout
-
-    try:
-        result, error = scan_git_validated(diff_text, repo=repo, base=args.base)
+        result, error = scan_git_validated(repo=repo, base=args.base, head=args.head)
     except GitUnavailable as exc:
         return _git_unavailable(exc)
     except UnusableInput as exc:
