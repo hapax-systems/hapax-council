@@ -45,6 +45,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -3679,7 +3680,15 @@ def classify_pr(
         arm = assess_release_auto_arm_estate(
             task.frontmatter, verified_checks=verified_checks, changed_files=pr.files
         )
-        if arm.needs_arming:
+        if arm.armed:
+            # Existing authorization does not waive current mitigation evidence.
+            # Use the boundary's assessment, including its manual-arm waivers.
+            blockers = _release_auto_arm_current_evidence_blockers(
+                task.frontmatter, verified_checks=verified_checks, changed_files=pr.files
+            )
+            if blockers:
+                reasons.append("release_auto_arm_ineligible:" + ",".join(blockers))
+        elif arm.needs_arming:
             if arm.eligible:
                 auto_arm = True
                 auto_arm_verified_checks = tuple(sorted(verified_checks))
@@ -3828,6 +3837,7 @@ def merge_pr(
     runner: Any = None,
     require_route_metadata: bool = True,
     route: ListingRoute | None = None,
+    before_queue_attempt: Callable[[], None] | None = None,
 ) -> tuple[bool, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
@@ -3892,6 +3902,10 @@ def merge_pr(
             timeout=120,
         )
     else:
+        if decision.action in {"queue", "enable_auto_merge"} and before_queue_attempt is not None:
+            # All local admission checks, including this function's final head
+            # revalidation, passed. Count the attempt even if the command fails.
+            before_queue_attempt()
         proc = runner(
             cmd,
             cwd=str(repo_root),
@@ -6024,13 +6038,6 @@ def run_reconciler(
                         }
                     )
                     continue
-                if armed_note_reconciliation is not None and decision.action in {
-                    "queue",
-                    "enable_auto_merge",
-                }:
-                    # Admission blockers, release-head revalidation and proof
-                    # publication have all passed. Only now is this a retry.
-                    armed_note_reconciliation.note_served({decision.pr.number})
                 ok, message = merge_pr(
                     decision,
                     repo=repo,
@@ -6038,6 +6045,11 @@ def run_reconciler(
                     runner=runner,
                     require_route_metadata=require_route_metadata,
                     route=listing_route,
+                    before_queue_attempt=(
+                        partial(armed_note_reconciliation.note_served, {decision.pr.number})
+                        if armed_note_reconciliation is not None
+                        else None
+                    ),
                 )
                 result = {
                     **decision.as_dict(),
