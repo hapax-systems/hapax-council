@@ -115,7 +115,11 @@ _CLAIM_PUBLICATION_LOCK_RETRY_SECONDS = 0.05
 # retaken, a bounded number of times; every other inspection result is final.
 _INSPECTION_CHURN_REASON = "fs_snapshot_concurrent_change"
 INSPECTION_CHURN_MAX_ATTEMPTS = 4
+#: The retake window is relative to the passes it judges: MAX_ATTEMPTS times the longest pass,
+#: never shorter than this floor and never longer than the cap. A window fixed at 30 s gave a
+#: 3.5-minute pass zero retakes, so one benign sidecar write HOLDed the claim (2026-10-16).
 INSPECTION_CHURN_DEADLINE_SECONDS = 30.0
+INSPECTION_CHURN_WINDOW_CAP_SECONDS = 600.0
 INSPECTION_CHURN_JITTER_SECONDS = (0.25, 1.5)
 # A write to any other task row while a resolution indexes the whole task store
 # refuses that resolution (M95). Resolution is a pure read too, and its repair is a
@@ -5652,9 +5656,43 @@ def _capture_failure(
     )
 
 
+def _terminal_journal_of_another_task(
+    manifest_path: Path,
+    content: bytes,
+    *,
+    publication_id: str,
+    scoped_task_id: str,
+) -> bool:
+    """Whether a captured manifest proves a terminal journal of a different task.
+
+    A task-scoped inspection drops every draft of another task, so such a journal can never
+    block this claim; reading its blobs and receipt only made each pass grow with the whole
+    history (956 journals, 132.6 MB on 2026-10-16). Anything not proven (unreadable, unfinished,
+    ours, or naming a different publication) is captured in full, as before.
+    """
+
+    try:
+        record, _ = _strict_json(manifest_path, content=content)
+    except ClaimPublicationError:
+        return False
+    intent = record.get("intent")
+    if not isinstance(intent, dict):
+        return False
+    task = intent.get("task_id")
+    return (
+        record.get("publication_id") == publication_id
+        and record.get("state") in {"applied", "aborted"}
+        and isinstance(task, str)
+        and task != scoped_task_id
+    )
+
+
 def _capture_claim_journals(
     snapshot: ReadOnlyFsSnapshot,
     root: Path,
+    *,
+    scoped_task_id: str | None = None,
+    expected_publication_id: str | None = None,
 ) -> tuple[
     tuple[_CapturedClaimJournal | _ClaimJournalCaptureFailure, ...],
     ContentAddress,
@@ -5741,6 +5779,17 @@ def _capture_claim_journals(
                 max_bytes=_MAX_CLAIM_MANIFEST_BYTES,
             )
             assert manifest_observation.captured is not None
+            if (
+                scoped_task_id is not None
+                and name != expected_publication_id
+                and _terminal_journal_of_another_task(
+                    transaction.path / "manifest.json",
+                    manifest_observation.captured.content,
+                    publication_id=name,
+                    scoped_task_id=scoped_task_id,
+                )
+            ):
+                continue  # its manifest stays observed and sealed; its blobs cannot matter
             blobs: list[tuple[str, CapturedFile]] = []
             observations = [
                 _directory_address(transaction),
@@ -6146,14 +6195,18 @@ def inspect_claim_publications(
 ) -> tuple[ClaimPublicationInspection, ...]:
     """Inspect estate history and unresolved journals without granting current eligibility.
 
-    A whole-root snapshot that raced a concurrent write is retaken, with jitter,
-    at most ``INSPECTION_CHURN_MAX_ATTEMPTS`` times inside
-    ``INSPECTION_CHURN_DEADLINE_SECONDS``; the last observation is returned.
+    A whole-root snapshot that raced a concurrent write is retaken, with jitter, at most
+    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times. The window is relative to the passes it judges
+    (MAX_ATTEMPTS times the longest so far, floored at ``INSPECTION_CHURN_DEADLINE_SECONDS``,
+    capped at ``INSPECTION_CHURN_WINDOW_CAP_SECONDS``), and a retake starts only when one more
+    pass that long still ends inside it. The last observation is returned.
     """
 
-    deadline = _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    started = _churn_clock()
+    longest = 0.0
     attempt = 1
     while True:
+        attempt_started = _churn_clock()
         inspections = _inspect_claim_publications_once(
             cache_dir=cache_dir,
             transaction_root=transaction_root,
@@ -6169,10 +6222,18 @@ def inspect_claim_publications(
         )
         if not raced:
             return inspections
+        now = _churn_clock()
+        longest = max(longest, now - attempt_started)
+        window = min(
+            INSPECTION_CHURN_WINDOW_CAP_SECONDS,
+            max(INSPECTION_CHURN_DEADLINE_SECONDS, INSPECTION_CHURN_MAX_ATTEMPTS * longest),
+        )
         delay = random.uniform(*INSPECTION_CHURN_JITTER_SECONDS)
-        if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or _churn_clock() + delay > deadline:
+        if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or now + delay + longest > started + window:
             return inspections
         _churn_sleep(delay)
+        if _churn_clock() + longest > started + window:
+            return inspections  # an oversleep would end the retake past the window
         attempt += 1
 
 
@@ -6195,7 +6256,12 @@ def _inspect_claim_publications_once(
         return _global_inspection_failure(root, exc, observed_at=observed_at)
     try:
         with snapshot:
-            entries, listing = _capture_claim_journals(snapshot, root)
+            entries, listing = _capture_claim_journals(
+                snapshot,
+                root,
+                scoped_task_id=task_id,
+                expected_publication_id=expected_publication_id,
+            )
             receipt_directory = snapshot.pin_absolute_dir(
                 trusted_receipt_root,
                 private_final=True,
