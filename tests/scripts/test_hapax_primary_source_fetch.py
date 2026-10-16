@@ -7,6 +7,7 @@ import json
 import socket
 import ssl
 import threading
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -93,6 +94,7 @@ def rig(tmp_path, monkeypatch):
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(cert_path, key_path)
     server.socket = tls.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
@@ -308,6 +310,23 @@ def test_exact_known_byte_bound_is_usable(rig):
 def test_tls_still_checks_the_original_hostname(rig):
     stopped(rig, "failed_admission", urls=["https://deepmind.google/source"])
     assert rig.requests == [] and len(rig.connections) == 1
+
+
+@pytest.mark.parametrize(
+    "floor", [ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1, ssl.TLSVersion.MINIMUM_SUPPORTED]
+)
+def test_production_transport_refuses_a_context_below_tls12(rig, floor):
+    context = rig.module.PinnedHTTPS("arxiv.org", PUBLIC_IP)._context
+    assert context.minimum_version >= ssl.TLSVersion.TLSv1_2
+    with (
+        pytest.warns(DeprecationWarning)
+        if floor in (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1)
+        else nullcontext()
+    ):
+        context.minimum_version = floor
+    with pytest.raises(rig.module.FetchStop, match="failed_admission"):
+        rig.module.PinnedHTTPS("arxiv.org", PUBLIC_IP)
+    assert rig.requests == rig.connections == []
 
 
 def test_initial_endpoint_is_checked_before_connection(rig):

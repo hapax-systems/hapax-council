@@ -133,7 +133,10 @@ def public_address(host: str) -> str:
 
 class PinnedHTTPS(http.client.HTTPSConnection):
     def __init__(self, host: str, address: str):
-        super().__init__(host, port=443, timeout=20, context=ssl.create_default_context())
+        context = ssl.create_default_context()
+        if context.minimum_version < ssl.TLSVersion.TLSv1_2:
+            raise FetchStop("failed_admission")
+        super().__init__(host, port=443, timeout=20, context=context)
         self.address = address
 
     def connect(self):
