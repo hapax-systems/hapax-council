@@ -90,6 +90,9 @@ LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 
 #: Dossier filename suffix; the dossier lives beside the task note.
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
+REVIEW_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
+TWO_FAMILY_UNANIMOUS = "degraded_to:two_family_unanimous"
+TWO_FAMILY_SIZING = {"team_size": 2, "quorum_accept": 2, "min_families": 2}
 #: Dossier field: sha256 of the task note as dispatched, minus its seat dispositions. A seat
 #: disposition is written to the note after the round, so it must not void the dossier it names.
 CONSTITUTION_NOTE_SHA256_FIELD = "constitution_note_sha256"
@@ -1236,6 +1239,16 @@ def task_scoped_paid_review_route_blocked_families(
     return blocked
 
 
+def _two_family_eligible(roster, available, size_excluded, route_blocked, outages=()) -> bool:
+    """Every missing family must have a size/route cause; never infer one from absence."""
+    return (
+        len(set(available)) == 2
+        and not outages
+        and bool(set(roster) - set(available))
+        and set(roster) - set(available) <= set(size_excluded) | set(route_blocked)
+    )
+
+
 def constitute_team(
     team_class: str,
     writer_family: str,
@@ -1259,7 +1272,9 @@ def constitute_team(
     coverage, never a substitute. Seats go to non-writer core families, then the
     writer's family, then declared substitute families (``substitute: true``); if
     fewer distinct families are available than the class seats, this raises
-    ``same_family_reseat`` rather than repeat one.
+    ``same_family_reseat`` rather than repeat one. The 2026-10-16 ruling permits
+    exactly two unanimous seats when every other family is size/route blocked;
+    unrelated absence never qualifies, and a third fitting family retires it.
 
     DEGRADATION RULE (n-tier symmetry principal; postmortem 2026-06-12,
     failure class #1): when a roster family is out on an OBSERVED quota wall
@@ -1336,6 +1351,12 @@ def constitute_team(
                     route_ids=route_ids,
                 )
             )
+    if size > 2 and _two_family_eligible(
+        roster, available, size_excluded_families, route_blocked, outage_families
+    ):
+        sizing = TWO_FAMILY_SIZING
+        size = 2
+        notes.append(TWO_FAMILY_UNANIMOUS)
     min_families = int(sizing.get("min_families", 1))
     if not available:
         raise ValueError("no reviewer families available")
@@ -2222,9 +2243,14 @@ def synthesize_dossier(
         roster = [f for f in roster if f not in degraded_families]
         if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
             sizing = registry["sizing"]["t2_standard"]
+    unanimous_two = TWO_FAMILY_UNANIMOUS in constitution_notes
+    if unanimous_two:
+        sizing = TWO_FAMILY_SIZING
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
-    quorum_reviews = _reviews_for_quorum(reviews, criticals, phantom_criticals)
+    quorum_reviews = (
+        reviews if unanimous_two else _reviews_for_quorum(reviews, criticals, phantom_criticals)
+    )
     accepts, partial_accepts = _split_partial_coverage_accepts(
         _checklist_complete_accepts(quorum_reviews, lenses)
     )
@@ -2332,6 +2358,8 @@ def synthesize_dossier(
         verdict = "blocked"
     else:
         quorum_met = len(accepts) >= int(sizing["quorum_accept"])
+        if unanimous_two:
+            quorum_met = quorum_met and len(reviews) == len(accepts) == 2
         min_families = int(sizing.get("min_families", 1))
         if quorum_met and len(accept_families) < min_families:
             quorum_met = False
@@ -2471,6 +2499,21 @@ def review_dossier_path(note_path: Path, task_id: str) -> Path:
     """Canonical dossier location: ``<task_id>.review-dossier.yaml`` beside the note."""
 
     return note_path.parent / f"{task_id}{REVIEW_DOSSIER_SUFFIX}"
+
+
+def _capacity_refusal_blockers(task_id, pr_number, head_sha) -> tuple[str, ...]:
+    """Read the existing lane wake; a refusal is not a reviewer verdict."""
+    wake = _note_frontmatter(REVIEW_WAKE_DIR / f"{task_id}-{str(head_sha)[:8]}.md") or {}
+    if (
+        wake.get("status") == "prompt_capacity_exceeded"
+        and wake.get("task_id") == task_id
+        and wake.get("pr") == pr_number
+        and head_sha
+        and wake.get("head_sha") == head_sha
+        and isinstance(wake.get("capacity_error"), str)
+    ):
+        return ("review_dispatch_prompt_capacity_exceeded:" + wake["capacity_error"],)
+    return ()
 
 
 def prompt_replay_digest(inputs: Mapping[str, Any], note_hashes: Mapping[str, str]) -> str:
@@ -2831,6 +2874,7 @@ def _dossier_validity_blockers(
     # no reviewers; the post-recovery re-review obligation rides the
     # degraded-merges ledger, not this gate.
     _notes = [str(n) for n in (dossier.get("constitution_notes") or [])]
+    unanimous_two = TWO_FAMILY_UNANIMOUS in _notes
     _note_out = sorted(
         n.split(":", 1)[1] for n in _notes if n.startswith("degraded_family_outage:")
     )
@@ -3039,7 +3083,8 @@ def _dossier_validity_blockers(
     if not isinstance(substitution, Mapping):
         substitution = {}
     if (
-        _note_size_replaced
+        unanimous_two
+        or _note_size_replaced
         or _field_size_replaced
         or substitution.get("excluded_for_size")
         or substitution.get("excluded_for_prompt")
@@ -3067,7 +3112,9 @@ def _dossier_validity_blockers(
                 measured = capacity_evidence_measurer(
                     measure_pr,
                     pr_head_sha,
-                    tuple(f"{family}-1" for family in prompt_excluded),
+                    tuple(
+                        f"{family}-1" for family in (roster if unanimous_two else prompt_excluded)
+                    ),
                 )
             except (OSError, ValueError, TypeError, RuntimeError):
                 pass  # unmeasurable capacity evidence refuses below
@@ -3110,6 +3157,36 @@ def _dossier_validity_blockers(
                 "excluded_for_size" in substitution and set(size_excluded) != expected_size_excluded
             ):
                 blockers.append("review_dossier_size_replacements_wrong_for_diff")
+        if unanimous_two:
+            # Replay all candidates, not only recorded exclusions: a recovered third
+            # family retires this rule, and neither seated family may exceed its cap.
+            available = {
+                f
+                for f in roster
+                if f not in live_route_blocked
+                and live_full is not None
+                and live_full <= seat_diff_capacity(f"{f}-1", registry)["limit_bytes"]
+                and type(live_prompts.get(f"{f}-1")) is int
+                and live_prompts[f"{f}-1"]
+                <= seat_diff_capacity(f"{f}-1", registry)["prompt_limit_bytes"]
+            }
+            if (
+                not _two_family_eligible(
+                    roster,
+                    available,
+                    _note_size_replaced,
+                    live_route_blocked,
+                    degraded_outage
+                    or substitution.get("excluded_for_outage")
+                    or substitution.get("excluded_for_wall"),
+                )
+                or _required_team_size(sizing) <= 2
+                or len(reviews) != 2
+                or available != {str(r.get("family")) for r in reviews}
+            ):
+                blockers.append("review_dossier_two_family_rule_ineligible")
+            else:
+                sizing = TWO_FAMILY_SIZING
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
     if degraded_families:
         seated_degraded = sorted({str(r.get("family")) for r in reviews} & degraded_families)
@@ -3202,7 +3279,7 @@ def _dossier_validity_blockers(
     for review in reviews:
         blockers.extend(_review_checklist_blockers(review, lenses))
 
-    quorum_reviews = _reviews_for_quorum(reviews, criticals, phantoms)
+    quorum_reviews = reviews if unanimous_two else _reviews_for_quorum(reviews, criticals, phantoms)
     accepts, partial_accepts = _split_partial_coverage_accepts(
         _checklist_complete_accepts(quorum_reviews, lenses)
     )
@@ -3313,8 +3390,9 @@ def review_dossier_validity_blockers(
     if not task_id:
         return ("review_dossier_unkeyable:missing_task_id",)
     dossier_file = review_dossier_path(note_path, task_id)
+    refusal = _capacity_refusal_blockers(task_id, pr_number or frontmatter.get("pr"), pr_head_sha)
     if not dossier_file.is_file():
-        return ("missing_review_dossier",)
+        return refusal + ("missing_review_dossier",)
     try:
         loaded = yaml.safe_load(dossier_file.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
@@ -3353,7 +3431,7 @@ def review_dossier_validity_blockers(
     bound_pr = pr_number
     if bound_pr is None and type(frontmatter.get("pr")) is int:
         bound_pr = frontmatter["pr"]
-    return _dossier_validity_blockers(
+    blockers = _dossier_validity_blockers(
         loaded,
         pr_head_sha=pr_head_sha,
         registry=registry,
@@ -3369,6 +3447,7 @@ def review_dossier_validity_blockers(
         diff_size_measurer=diff_size_measurer,
         capacity_evidence_measurer=capacity_evidence_measurer,
     )
+    return refusal + blockers if blockers else ()
 
 
 def review_team_verdict_blockers(

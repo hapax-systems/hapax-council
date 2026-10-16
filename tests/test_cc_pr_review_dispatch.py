@@ -8219,3 +8219,73 @@ class TestRouteAdmissionBasisRecording:
 
     def test_missing_observed_at_receipt_records_no_basis(self, tmp_path: Path) -> None:
         assert self._basis_from_receipt_text(tmp_path, self._receipt_text(observed_at="")) == {}
+
+
+class TestCapacityRefusalSurfacing:
+    def test_immediate_log_typed_blocker_and_one_wake(self, tmp_path, monkeypatch, caplog):
+        real = dispatch.review_team.seat_diff_capacity
+
+        def tiny(seat, registry):
+            return {**real(seat, registry), "prompt_limit_bytes": 1}
+
+        monkeypatch.setattr(dispatch.review_team, "seat_diff_capacity", tiny)
+        monkeypatch.setattr(dispatch.review_team, "REVIEW_WAKE_DIR", tmp_path / "wake")
+        sends = []
+        with caplog.at_level("WARNING"):
+            result, _, reviewers, note = _review(tmp_path, send_runner=sends.append)
+        assert result["status"] == "prompt_capacity_exceeded"
+        assert not reviewers.invocations
+        assert result["head_sha"] == "c" * 40
+        assert result["reason"] in caplog.text and "PR #42" in caplog.text
+        assert "c" * 40 in caplog.text
+        assert len(sends) == 1
+        blocker = "review_dispatch_prompt_capacity_exceeded:" + result["reason"]
+        fm = {"task_id": "task-a", "pr": 42}
+        check = dispatch.review_team.review_dossier_validity_blockers
+        assert blocker in check(fm, note, pr_head_sha="c" * 40, pr_number=42)
+        assert blocker not in check(fm, note, pr_head_sha="d" * 40, pr_number=42)
+        assert blocker not in check(fm, note, pr_head_sha="c" * 40, pr_number=43)
+        _review(tmp_path, send_runner=sends.append)
+        assert len(sends) == 1
+        assert not dispatch.review_team.review_dossier_path(note, "task-a").exists()
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "seat_diff_capacity",
+            lambda seat, reg: {
+                **real(seat, reg),
+                "prompt_limit_bytes": 1_000_000 if seat == "codex-1" else 1,
+            },
+        )
+        changed, _, _, _ = _review(tmp_path, send_runner=sends.append)
+        assert changed["reason"] != result["reason"]
+        assert len(sends) == 1
+        latest = "review_dispatch_prompt_capacity_exceeded:" + changed["reason"]
+        assert latest in check(fm, note, pr_head_sha="c" * 40, pr_number=42)
+        monkeypatch.setattr(dispatch.review_team, "seat_diff_capacity", real)
+        recovered, _, _, _ = _review(tmp_path, send_runner=sends.append)
+        assert recovered["status"] == "dispatched"
+        assert blocker not in check(
+            fm, note, pr_head_sha="c" * 40, pr_number=42, route_blocked_families={}
+        )
+
+    def test_two_family_reduction_is_recorded_in_existing_ledger(self, tmp_path, monkeypatch):
+        real = dispatch.review_team.seat_diff_capacity
+
+        def capacity(seat, registry):
+            return {
+                **real(seat, registry),
+                "prompt_limit_bytes": 1_000_000 if seat in {"codex-1", "muse-1"} else 1,
+            }
+
+        monkeypatch.setattr(dispatch.review_team, "seat_diff_capacity", capacity)
+        result, _, reviewers, note = _review(tmp_path, task_kwargs={"risk_tier": "T1"})
+        assert result["status"] == "dispatched"
+        assert {f for _, f, _ in reviewers.invocations} == {"codex", "muse"}
+        dossier = yaml.safe_load(
+            dispatch.review_team.review_dossier_path(note, "task-a").read_text()
+        )
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert "Degraded: two-family unanimous" in dispatch.render_dossier_markdown(dossier)
+        record = json.loads(dispatch.DEGRADED_MERGES_LEDGER.read_text())
+        assert record["degraded_rule"] == "two_family_unanimous"
+        assert record["degraded_family_outage"] == []
