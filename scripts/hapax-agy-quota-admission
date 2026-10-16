@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.quota_spend_ledger import AGY_ADMISSION_MODEL  # noqa: E402
+from shared.quota_spend_ledger import agy_review_model_binding  # noqa: E402
 
 DEFAULT_REVIEWER_COMMAND = REPO_ROOT / "scripts" / "hapax-agy-reviewer"
 DEFAULT_RECEIPT_DIR = Path(
@@ -39,7 +39,6 @@ PROVIDER = "google-antigravity-cli-agy"
 ROUTE_ID = "agy.review.direct"
 CAPACITY_POOL = "subscription_quota"
 SUPPORTED_TOOL = "hapax-agy-reviewer"
-MODEL = AGY_ADMISSION_MODEL
 BILLING_MODE = "operator_session_subscription"
 SECRET_SOURCE = "agy:operator-session"
 DEFAULT_STALE_AFTER_SECONDS = 900
@@ -236,6 +235,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        model, _ = agy_review_model_binding()
         observed_at = _now(args)
         if not 60 <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
             raise ValueError("--stale-after-seconds must be between 60 and 3600")
@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             ("route_id", ROUTE_ID),
             ("capacity_pool", CAPACITY_POOL),
             ("supported_tool", SUPPORTED_TOOL),
-            ("model", MODEL),
+            ("model", model),
             ("observed_at", _iso(observed_at)),
             ("stale_after_seconds", args.stale_after_seconds),
             ("evidence_ref", evidence_ref),
@@ -289,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
         "path": str(path),
         "route_id": ROUTE_ID,
         "supported_tool": SUPPORTED_TOOL,
-        "model": MODEL,
+        "model": model,
         "smoke_command": SMOKE_COMMAND_REF,
         "smoke_stdout_validated": True,
         "observed_at": _iso(observed_at),

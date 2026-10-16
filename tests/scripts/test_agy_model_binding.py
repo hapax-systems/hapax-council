@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from datetime import UTC, datetime
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -17,10 +18,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "config/platform-capability-registry.json"
 CONSUMERS = [
-    ("shared/quota_spend_ledger.py", "AGY_ADMISSION_MODEL"),
-    ("scripts/hapax-agy-reviewer", "PINNED_REVIEW_MODEL"),
-    ("scripts/hapax-agy-quota-admission", "MODEL"),
-    ("scripts/hapax-quota-telemetry-writer", "AGY_ADMISSION_MODEL"),
+    "shared/quota_spend_ledger.py",
+    "scripts/hapax-agy-reviewer",
+    "scripts/hapax-agy-quota-admission",
+    "scripts/hapax-quota-telemetry-writer",
 ]
 
 
@@ -39,9 +40,15 @@ def _registry():
 
 def _load_ledger(monkeypatch, text):
     read = Path.read_text
-    monkeypatch.setattr(
-        Path, "read_text", lambda p, *a, **k: text if p == REGISTRY else read(p, *a, **k)
-    )
+
+    def registry_text(path, *args, **kwargs):
+        if path != REGISTRY:
+            return read(path, *args, **kwargs)
+        if text is None:
+            raise FileNotFoundError("fixture registry missing")
+        return text
+
+    monkeypatch.setattr(Path, "read_text", registry_text)
     name = "shared.quota_spend_ledger"
     spec = importlib.util.spec_from_file_location(name, ROOT / "shared/quota_spend_ledger.py")
     module = importlib.util.module_from_spec(spec)
@@ -50,23 +57,51 @@ def _load_ledger(monkeypatch, text):
     return module
 
 
-@pytest.mark.parametrize("consumer,field", CONSUMERS)
+@pytest.mark.parametrize("consumer", CONSUMERS)
+@pytest.mark.parametrize("fault", ["missing", "ambiguous"])
+def test_consumers_import_without_binding_and_refuse_at_use(
+    monkeypatch, tmp_path, capsys, consumer, fault
+):
+    payload, route, variant = _registry()
+    route["descriptor_variants"].append(dict(variant))
+    ledger = _load_ledger(monkeypatch, None if fault == "missing" else json.dumps(payload))
+    namespace = vars(ledger) if consumer.startswith("shared/") else runpy.run_path(ROOT / consumer)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid binding reached a subprocess")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    if consumer.endswith("quota-admission"):
+        assert namespace["main"](["--receipt-dir", str(tmp_path)]) == 2
+        assert "repair the governed" in capsys.readouterr().err
+        assert not list(tmp_path.iterdir())
+        return
+    with pytest.raises(ValueError, match="repair the governed.*no model fallback"):
+        if consumer.startswith("shared/"):
+            ledger._is_agy_admission_evidence_ref(
+                "relay-receipt:agy-quota-admission.yaml:witness:fixture-smoke:"
+                "supported_tool:hapax-agy-reviewer:model:gemini-3.1-pro-high:"
+                "observed_at:2026-07-07T13:00:00Z:fresh_until:2026-07-07T13:15:00Z"
+            )
+        elif consumer.endswith("reviewer"):
+            namespace["main"](["--agy-bin", "/nonexistent/agy"])
+        else:
+            namespace["active_agy_admission_receipts"](tmp_path, now=datetime.now(UTC))
+
+
+@pytest.mark.parametrize("consumer", CONSUMERS)
 @pytest.mark.parametrize("changed", [False, True])
-def test_all_four_consumers_follow_registry_binding(monkeypatch, consumer, field, changed):
+def test_all_four_consumers_follow_registry_binding(monkeypatch, consumer, changed):
     payload, route, variant = _registry()
     if changed:
         variant["variant_id"] = "agy@gemini-synthetic-binding-high"
     expected = variant["variant_id"].removeprefix("agy@")
     ledger = _load_ledger(monkeypatch, json.dumps(payload))
     namespace = vars(ledger) if consumer.startswith("shared/") else runpy.run_path(ROOT / consumer)
-    assert namespace[field] == expected
-    aliases = (
-        namespace["PINNED_REVIEW_MODELS"]
-        if consumer.endswith("reviewer")
-        else namespace.get("AGY_ADMISSION_MODELS")
+    assert namespace["agy_review_model_binding"]() == (
+        expected,
+        route["execution_descriptor"]["model_id"],
     )
-    if aliases is not None:
-        assert aliases == {expected, route["execution_descriptor"]["model_id"]}
 
 
 @pytest.mark.parametrize(
@@ -134,10 +169,12 @@ def test_invalid_registry_binding_has_no_default(monkeypatch, fault):
         monkeypatch.setattr(Path, "read_text", denied)
         # The normal import reads the actual path; do not replace this failure with fixture text.
         with pytest.raises(ValueError, match="repair the governed.*no model fallback"):
-            runpy.run_path(ROOT / "shared/quota_spend_ledger.py")
+            runpy.run_path(ROOT / "shared/quota_spend_ledger.py")["agy_review_model_binding"]()
         return
     with pytest.raises(ValueError, match="repair the governed.*no model fallback"):
-        _load_ledger(monkeypatch, "{" if fault == "malformed" else json.dumps(payload))
+        _load_ledger(
+            monkeypatch, "{" if fault == "malformed" else json.dumps(payload)
+        ).agy_review_model_binding()
 
 
 @pytest.mark.parametrize(
@@ -154,15 +191,17 @@ def test_malformed_blocked_reasons_has_no_default(monkeypatch, blocked_reasons):
     payload, _, variant = _registry()
     variant["blocked_reasons"] = blocked_reasons
     with pytest.raises(ValueError, match="repair the governed.*no model fallback"):
-        _load_ledger(monkeypatch, json.dumps(payload))
+        _load_ledger(monkeypatch, json.dumps(payload)).agy_review_model_binding()
 
 
 def test_empty_blocked_reasons_allows_binding(monkeypatch):
     payload, route, variant = _registry()
     variant["blocked_reasons"] = []
     ledger = _load_ledger(monkeypatch, json.dumps(payload))
-    assert variant["variant_id"].removeprefix("agy@") == ledger.AGY_ADMISSION_MODEL
-    assert route["execution_descriptor"]["model_id"] == ledger.AGY_ADMISSION_LEGACY_MODEL
+    assert ledger.agy_review_model_binding() == (
+        variant["variant_id"].removeprefix("agy@"),
+        route["execution_descriptor"]["model_id"],
+    )
 
 
 @pytest.mark.parametrize("native_rc", [0, 1])
@@ -234,7 +273,7 @@ def test_changed_binding_crosses_process_and_receipt_consumers(tmp_path, changed
     shutil.copytree(ROOT / "shared", tree / "shared", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(ROOT / "config", tree / "config")
     (tree / "scripts").mkdir()
-    for consumer, _ in CONSUMERS:
+    for consumer in CONSUMERS:
         if consumer.startswith("scripts/"):
             shutil.copy2(ROOT / consumer, tree / consumer)
     (tree / "config/platform-capability-registry.json").write_text(json.dumps(payload))

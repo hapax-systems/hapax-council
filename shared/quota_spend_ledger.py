@@ -59,8 +59,8 @@ GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
 
 
-def _agy_review_model_binding() -> tuple[str, str]:
-    """Read the high-effort variant of the declared base model, never select by availability.
+def agy_review_model_binding() -> tuple[str, str]:
+    """Resolve the declared model at use, never at import or by availability.
 
     The base descriptor supplies the compatibility alias. Catalog availability
     and review-family qualification remain separate admission requirements.
@@ -100,8 +100,6 @@ def _agy_review_model_binding() -> tuple[str, str]:
         ) from exc
 
 
-AGY_ADMISSION_MODEL, AGY_ADMISSION_LEGACY_MODEL = _agy_review_model_binding()
-AGY_ADMISSION_MODELS = frozenset({AGY_ADMISSION_MODEL, AGY_ADMISSION_LEGACY_MODEL})
 AGY_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?:[a-z0-9_.+-]*agy-quota-admission[a-z0-9_.+-]*\.yaml|"
@@ -1854,7 +1852,7 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
         AGY_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
         and _has_safe_agy_admission_witness(ref)
         and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
-        and any(f":model:{model}:" in ref for model in AGY_ADMISSION_MODELS)
+        and any(f":model:{model}:" in ref for model in agy_review_model_binding())
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
     )

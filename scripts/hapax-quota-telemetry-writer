@@ -206,10 +206,6 @@ from shared.platform_capability_registry import (  # noqa: E402
     _surface_status_from_reasons,
 )
 from shared.quota_spend_ledger import (  # noqa: E402
-    AGY_ADMISSION_MODEL as AGY_ADMISSION_MODEL,
-)
-from shared.quota_spend_ledger import (
-    AGY_ADMISSION_MODELS,
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     GLMCP_ADMISSION_MODELS,
     GLMCP_MODEL_IDS,
@@ -221,6 +217,7 @@ from shared.quota_spend_ledger import (
     QuotaSpendLedgerError,
     SpendReceipt,
     TransitionBudget,
+    agy_review_model_binding,
     evaluate_paid_route_eligibility,
     frozen_spend_receipt_payload,
     glmcp_payg_usage_ceiling_usd,
@@ -1441,6 +1438,7 @@ def active_agy_admission_receipts(
 
     if not receipt_dir.is_dir():
         return AgyAdmissionScan(admissions=[], ignored_evidence_refs=[])
+    admission_models = agy_review_model_binding()
     refs: list[AgyAdmission] = []
     ignored_refs: list[str] = []
 
@@ -1487,10 +1485,10 @@ def active_agy_admission_receipts(
                 break
         # Same first-failure-only contract as the loop above: one bad receipt
         # must count once, not once per broken field.
-        if not failed and fields.get("model", "") not in AGY_ADMISSION_MODELS:
+        if not failed and fields.get("model", "") not in admission_models:
             reject(
                 path,
-                f"model missing or unsupported; expected {sorted(AGY_ADMISSION_MODELS)}",
+                f"model missing or unsupported; expected {sorted(admission_models)}",
             )
             failed = True
         if failed:
