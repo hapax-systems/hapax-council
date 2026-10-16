@@ -327,7 +327,9 @@ $out"
 
 run_stop() {
   local out status
-  for hook in session-summary.sh conductor-stop.sh; do
+  # Codex Stop ends a turn. The conductor watches the native lane process;
+  # terminating it here loses continuity and reports shutdown for a live lane.
+  for hook in session-summary.sh; do
     [ -x "$SCRIPT_DIR/$hook" ] || continue
     set +e
     out="$(printf '%s' "$INPUT" | "$SCRIPT_DIR/$hook" 2>&1)"
@@ -339,6 +341,11 @@ run_stop() {
       append_notice "$out"
     fi
   done
+  # Kimi also delegates here. Its existing Stop behavior is outside the Codex
+  # process-lifetime change; keep that dispatch for non-Codex callers.
+  if [ "$HAPAX_AGENT_INTERFACE" != "codex" ]; then
+    run_hook conductor-stop.sh "$INPUT" || append_notice "$BLOCK_REASON"
+  fi
   emit_continue "$NOTICES"
 }
 

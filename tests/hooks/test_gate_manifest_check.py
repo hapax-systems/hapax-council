@@ -52,7 +52,10 @@ def _write_claude_settings(
                         {
                             "type": "command",
                             "command": hook_command_overrides.get(
-                                hook_name, f"/tmp/hapax-hooks/{hook_name}"
+                                hook_name,
+                                f'bash "{entry["activation_command"]}"'
+                                if hook_name == "bash" and entry.get("activation_command")
+                                else f"/tmp/hapax-hooks/{hook_name}",
                             ),
                         }
                         for hook_name in hook_names
@@ -208,6 +211,20 @@ def test_codex_adapter_drift_fails(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "codex adapter PreToolUse drift" in result.stderr
     assert "pip-guard.sh" in result.stderr
+
+
+def test_codex_turn_stop_contract_rejects_shutdown_dispatch(tmp_path: Path) -> None:
+    adapter = tmp_path / "codex-hook-adapter.sh"
+    source = (REPO_ROOT / "hooks/scripts/codex-hook-adapter.sh").read_text()
+    unsafe = source.replace(
+        "for hook in session-summary.sh; do",
+        "for hook in session-summary.sh conductor-stop.sh; do",
+    )
+    assert unsafe != source
+    adapter.write_text(unsafe)
+    result = _run("--skip-claude-settings", "--codex-adapter", adapter)
+    assert result.returncode == 1, result.stdout
+    assert "codex adapter Stop drift" in result.stderr
 
 
 def test_antigravity_runtime_is_not_in_gate_manifest() -> None:

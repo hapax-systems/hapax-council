@@ -643,6 +643,11 @@ updated_at: 2026-05-24T00:00:00Z
 
 
 def test_session_start_returns_codex_additional_context(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemd = bin_dir / "systemd-run"
+    systemd.write_text("#!/bin/bash\nexit 0\n")
+    systemd.chmod(0o755)
     relay = tmp_path / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
     (relay / "PROTOCOL.md").write_text("# Relay\n")
@@ -660,6 +665,7 @@ def test_session_start_returns_codex_additional_context(tmp_path: Path) -> None:
             "tool_input": {},
         },
         home=tmp_path,
+        extra_env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
     )
     assert result["continue"] is True
     assert result["hookSpecificOutput"]["hookEventName"] == "SessionStart"

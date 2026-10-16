@@ -86,11 +86,19 @@ class SessionState:
     gap_rounds: int = 0
     design_doc_path: str | None = None
     plan_doc_path: str | None = None
+    session_id_kind: str = "conductor"
+    native_session_id: str | None = None
+    owner_pid: int | None = None
+    owner_start_ticks: int | None = None
 
     def save(self, path: Path) -> None:
         """Serialize state to JSON file."""
         data = {
             "session_id": self.session_id,
+            "session_id_kind": self.session_id_kind,
+            "native_session_id": self.native_session_id,
+            "owner_pid": self.owner_pid,
+            "owner_start_ticks": self.owner_start_ticks,
             "pid": self.pid,
             "started_at": self.started_at.isoformat(),
             "parent_session": self.parent_session,
@@ -135,6 +143,10 @@ class SessionState:
         data = json.loads(path.read_text())
         state = cls(
             session_id=data["session_id"],
+            session_id_kind=data.get("session_id_kind", "conductor"),
+            native_session_id=data.get("native_session_id"),
+            owner_pid=data.get("owner_pid"),
+            owner_start_ticks=data.get("owner_start_ticks"),
             pid=data["pid"],
             started_at=datetime.fromisoformat(data["started_at"]),
             parent_session=data.get("parent_session"),

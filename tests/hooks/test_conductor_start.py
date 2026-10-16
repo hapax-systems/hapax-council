@@ -41,7 +41,11 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["HAPAX_AGENT_ROLE"] = role
+    env["HAPAX_AGENT_NAME"] = role
+    env["CLAUDE_ROLE"] = role
+    env["HAPAX_AGENT_INTERFACE"] = "claude"
     env["HOME"] = str(home)
+    env["PATH"] = f"{home / 'bin'}:{os.environ['PATH']}"
     return subprocess.run(
         ["bash", str(HOOK)],
         input=json.dumps(payload),
@@ -58,6 +62,12 @@ def _isolated_home(tmp_path: Path) -> Iterator[Path]:
     """Yield a tmp HOME with the conductor cache dir pre-created."""
     pid_dir = tmp_path / ".cache" / "hapax" / "conductor"
     pid_dir.mkdir(parents=True, exist_ok=True)
+    # Never contact the live user manager, even when testing the launch branch.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemd = bin_dir / "systemd-run"
+    systemd.write_text("#!/bin/bash\nexit 0\n")
+    systemd.chmod(0o755)
     yield tmp_path
 
 

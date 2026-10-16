@@ -83,7 +83,7 @@ def test_writes_status_on_pr_event(tmp_path: Path):
     event = _make_bash_event("Created PR: https://github.com/foo/bar/pull/99")
     rule.on_post_tool_use(event)
 
-    status_file = tmp_path / "alpha-status.yaml"
+    status_file = tmp_path / "conductor/alpha.yaml"
     assert status_file.exists()
     data = yaml.safe_load(status_file.read_text())
     assert data["event_type"] == "pr_create"
@@ -104,7 +104,7 @@ def test_periodic_sync_when_never_synced(tmp_path: Path):
     )
     rule.on_post_tool_use(event)
 
-    status_file = tmp_path / "alpha-status.yaml"
+    status_file = tmp_path / "conductor/alpha.yaml"
     assert status_file.exists()
     data = yaml.safe_load(status_file.read_text())
     assert data["event_type"] == "periodic"
@@ -156,3 +156,36 @@ def test_no_conflicts_when_no_in_flight(tmp_path: Path):
 
     conflicts = rule.check_peer_conflicts()
     assert conflicts == []
+
+
+def test_conductor_never_overwrites_lane_records(tmp_path):
+    predecessors = [tmp_path / "cx-fixture.yaml", tmp_path / "cx-fixture-status.yaml"]
+    for path in predecessors:
+        path.write_bytes(b"lane-owned predecessor\n")
+    rule = RelayRule(TopologyConfig(), _make_state(), relay_dir=tmp_path, role="cx-fixture")
+    rule.write_relay_status()
+    rule.write_final_status()
+    assert all(path.read_bytes() == b"lane-owned predecessor\n" for path in predecessors)
+    data = yaml.safe_load((tmp_path / "conductor/cx-fixture.yaml").read_text())
+    assert data["producer"] == "session_conductor"
+    assert data["event_type"] == "shutdown"
+
+
+def test_conductor_timestamp_is_aware_utc(tmp_path):
+    from datetime import timedelta
+
+    rule = RelayRule(TopologyConfig(), _make_state(), relay_dir=tmp_path, role="alpha")
+    rule.write_relay_status()
+    data = yaml.safe_load(next(tmp_path.rglob("*.yaml")).read_text())
+    assert datetime.fromisoformat(data["timestamp"]).utcoffset() == timedelta(0)
+
+
+def test_conductor_peer_projection_is_consumed(tmp_path):
+    peer = RelayRule(TopologyConfig(), _make_state("peer"), relay_dir=tmp_path, role="beta")
+    peer._state.in_flight_files.add("/foo.py")
+    peer.write_relay_status()
+    rule = RelayRule(TopologyConfig(), _make_state(), relay_dir=tmp_path, role="alpha")
+    rule._state.in_flight_files.add("/foo.py")
+    assert rule.check_peer_conflicts() == ["/foo.py"]
+    peer.write_final_status()
+    assert rule.check_peer_conflicts() == []

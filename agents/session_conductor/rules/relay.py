@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -52,8 +52,11 @@ class RelayRule(RuleBase):
         super().__init__(topology)
         self._state = state
         self.relay_dir = relay_dir or DEFAULT_RELAY_DIR
+        # Lane status/retirement/MQ consumers own the root namespace. Conductor
+        # projections have one producer and never adopt or migrate a lane file.
+        self.projection_dir = self.relay_dir / "conductor"
         self.role = role
-        self.relay_dir.mkdir(parents=True, exist_ok=True)
+        self.projection_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -66,18 +69,26 @@ class RelayRule(RuleBase):
     ) -> None:
         """Write the current relay status YAML for peer sessions to read."""
         status: dict[str, object] = {
+            "producer": "session_conductor",
             "session_id": self._state.session_id,
+            "session_id_kind": self._state.session_id_kind,
+            "native_session_id": self._state.native_session_id,
+            "conductor_pid": self._state.pid,
+            "owner_pid": self._state.owner_pid,
+            "owner_start_ticks": self._state.owner_start_ticks,
             "role": self.role,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "event_type": event_type,
             "in_flight_files": sorted(self._state.in_flight_files),
         }
         if pr_event:
             status["pr_event"] = pr_event
-        status_path = self.relay_dir / f"{self.role}-status.yaml"
+        status_path = self.projection_dir / f"{self.role}.yaml"
+        pending_path = status_path.with_suffix(".tmp")
         try:
-            status_path.write_text(yaml.dump(status, default_flow_style=False))
-            self._state.last_relay_sync = datetime.now()
+            pending_path.write_text(yaml.safe_dump(status, default_flow_style=False))
+            pending_path.replace(status_path)
+            self._state.last_relay_sync = datetime.now(UTC)
             log.debug("RelayRule: wrote relay status (%s)", event_type)
         except OSError:
             log.exception("RelayRule: failed to write relay status")
@@ -92,9 +103,9 @@ class RelayRule(RuleBase):
         if not self._state.in_flight_files:
             return conflicts
 
-        for yaml_path in self.relay_dir.glob("*-status.yaml"):
+        for yaml_path in (*self.relay_dir.glob("*.yaml"), *self.projection_dir.glob("*.yaml")):
             # Skip our own status file
-            if yaml_path.name == f"{self.role}-status.yaml":
+            if yaml_path.name in {f"{self.role}-status.yaml", f"{self.role}.yaml"}:
                 continue
             try:
                 raw = yaml.safe_load(yaml_path.read_text()) or {}
@@ -102,7 +113,12 @@ class RelayRule(RuleBase):
                 log.debug("RelayRule: could not parse peer status %s", yaml_path.name)
                 continue
 
-            peer_files: set[str] = set(raw.get("in_flight_files", []))
+            if not isinstance(raw, dict) or raw.get("event_type") == "shutdown":
+                continue
+            files = raw.get("in_flight_files", [])
+            if not isinstance(files, list):
+                continue
+            peer_files = {path for path in files if isinstance(path, str)}
             overlaps = self._state.in_flight_files & peer_files
             conflicts.extend(overlaps)
 
@@ -150,7 +166,8 @@ class RelayRule(RuleBase):
 
         # Periodic sync — every 30 minutes
         if self._state.last_relay_sync is None or (
-            datetime.now() - self._state.last_relay_sync >= RELAY_SYNC_INTERVAL
+            self._state.last_relay_sync.tzinfo is None
+            or datetime.now(UTC) - self._state.last_relay_sync >= RELAY_SYNC_INTERVAL
         ):
             self.write_relay_status(event_type="periodic")
 
