@@ -4680,6 +4680,369 @@ def test_damaged_terminal_journal_of_another_task_holds_only_the_estate_inspecti
     assert any(item.publication_id == other_id and item.disposition == "hold" for item in estate)
 
 
+# ── terminal journals archived out of the live root (2026-10-16) ─────────────
+
+_ARCHIVE_NOW = 2_000_000_000.0
+_ARCHIVE_OLD = _ARCHIVE_NOW - 30 * 86_400
+_ARCHIVE_BOUND = 7 * 86_400
+
+
+def _close_task(fixture: ClaimFixture, *, status: str = "done", move: bool = True) -> None:
+    task_id = fixture.intent.task_id
+    active = fixture.vault / "active" / f"{task_id}.md"
+    text = active.read_text(encoding="utf-8").replace("status: claimed", f"status: {status}")
+    target = fixture.vault / ("closed" if move else "active") / f"{task_id}.md"
+    if move:
+        active.unlink()
+    target.write_text(text, encoding="utf-8")
+
+
+def _archive_root(tmp_path: Path) -> tuple[ClaimFixture, dict[str, str]]:
+    """One journal per archive rule in one live root; only ``archive`` qualifies."""
+
+    journals: dict[str, str] = {}
+    fixtures: dict[str, ClaimFixture] = {}
+    for case, state in (
+        ("archive", "applied"),
+        ("marked", "applied"),
+        ("active", "applied"),
+        ("done_in_active", "applied"),
+        ("closed_not_terminal", "applied"),
+        ("young", "applied"),
+        ("unfinished", "projecting"),
+        ("unreadable", "applied"),
+        ("misnamed", "applied"),
+    ):
+        fixture = _fixture(tmp_path, task_id=f"task-{case}")
+        fixtures[case] = fixture
+        journals[case] = _materialize_v1_history(fixture, state=state)
+    for case in ("archive", "marked", "young", "unfinished", "unreadable", "misnamed"):
+        _close_task(fixtures[case])
+    _close_task(fixtures["done_in_active"], move=False)
+    _close_task(fixtures["closed_not_terminal"], status="claimed")
+    root = fixtures["archive"].transactions
+    manifest = root / journals["unreadable"] / "manifest.json"
+    manifest.write_bytes(manifest.read_bytes() + b" ")
+    misnamed = f"claim-pub-{'e' * 64}"
+    (root / journals["misnamed"]).rename(root / misnamed)
+    journals["misnamed"] = misnamed
+    for marker in fixtures["archive"].cache.glob("cc-active-task-*"):
+        marker.unlink()
+    (fixtures["archive"].cache / "cc-active-task-cx-blue").write_text("task-marked\n")
+    for case, publication_id in journals.items():
+        stamp = _ARCHIVE_NOW - 60 if case == "young" else _ARCHIVE_OLD
+        os.utime(root / publication_id, (stamp, stamp))
+    return fixtures["archive"], journals
+
+
+def _archive(fixture: ClaimFixture, *, apply: bool, observed_at: str = "20261016T030000Z"):
+    return sdlc_claim.archive_terminal_claim_publications(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        older_than_seconds=_ARCHIVE_BOUND,
+        observed_at=observed_at,
+        now_epoch=_ARCHIVE_NOW,
+        apply=apply,
+    )
+
+
+def test_archive_decides_only_terminal_journals_of_closed_unmarked_old_tasks(
+    tmp_path: Path,
+) -> None:
+    fixture, journals = _archive_root(tmp_path)
+    before = _tree_snapshot(tmp_path)
+
+    decisions = {item.publication_id: item for item in _archive(fixture, apply=False)}
+
+    assert _tree_snapshot(tmp_path) == before  # deciding writes nothing
+    assert {case: decisions[pid].reason for case, pid in journals.items()} == {
+        "archive": "terminal_journal_of_closed_task",
+        "marked": "task_named_by_claim_marker",
+        "active": "task_not_closed",
+        "done_in_active": "task_not_closed",
+        "closed_not_terminal": "task_not_closed",
+        "young": "younger_than_bound",
+        "unfinished": "journal_unfinished",
+        "unreadable": "manifest_unproven",
+        "misnamed": "manifest_unproven",
+    }
+    assert [pid for pid, item in decisions.items() if item.archive] == [journals["archive"]]
+
+
+def test_archive_moves_the_journal_byte_for_byte_into_a_create_once_archive(
+    tmp_path: Path,
+) -> None:
+    fixture, journals = _archive_root(tmp_path)
+    source = fixture.transactions / journals["archive"]
+    content = _tree_snapshot(source)
+
+    moved = [item for item in _archive(fixture, apply=True) if item.archived_to is not None]
+
+    archive = fixture.transactions.with_name(
+        f"{fixture.transactions.name}.terminal-archive-20261016T030000Z"
+    )
+    assert [item.archived_to for item in moved] == [archive / journals["archive"]]
+    assert not source.exists()
+    assert _tree_snapshot(archive / journals["archive"]) == content
+    remaining = {path.name for path in fixture.transactions.iterdir()}
+    assert remaining == {pid for case, pid in journals.items() if case != "archive"}
+
+
+@pytest.mark.parametrize(
+    "collision", ["closed_prefix", "wrong_identity", "missing_identity", "active", "active_title"]
+)
+def test_archive_requires_exact_closed_identity_without_an_active_note(
+    tmp_path: Path, collision: str
+) -> None:
+    fixture, journals = _archive_root(tmp_path)
+    task_id = fixture.intent.task_id
+    closed = fixture.vault / "closed" / f"{task_id}.md"
+    text = closed.read_text()
+    if collision == "closed_prefix":
+        closed.unlink()
+        (closed.parent / f"{task_id}-child.md").write_text(
+            text.replace(f"task_id: {task_id}\n", f"task_id: {task_id}-child\n")
+        )
+    elif collision == "wrong_identity":
+        closed.write_text(text.replace(f"task_id: {task_id}\n", "task_id: another-task\n"))
+    elif collision == "missing_identity":
+        closed.write_text(text.replace(f"task_id: {task_id}\n", ""))
+    if collision in {"closed_prefix", "active", "active_title"}:
+        name = f"{task_id}-title.md" if collision == "active_title" else f"{task_id}.md"
+        (fixture.vault / "active" / name).write_text(
+            text.replace("status: done", "status: claimed")
+        )
+    before = _tree_snapshot(tmp_path)
+
+    decisions = {item.publication_id: item for item in _archive(fixture, apply=True)}
+
+    assert decisions[journals["archive"]].archive is False
+    assert decisions[journals["archive"]].reason == "task_not_closed"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_archive_resolves_closed_title_by_identity_among_unrelated_prefix_notes(
+    tmp_path: Path,
+) -> None:
+    fixture, journals = _archive_root(tmp_path)
+    task_id = fixture.intent.task_id
+    closed = fixture.vault / "closed" / f"{task_id}.md"
+    text = closed.read_text()
+    closed.rename(closed.with_name(f"{task_id}-title.md"))
+    unrelated = text.replace(f"task_id: {task_id}\n", f"task_id: {task_id}-child\n")
+    (closed.parent / f"{task_id}-child.md").write_text(unrelated)
+    (fixture.vault / "active" / f"{task_id}-child.md").write_text(
+        unrelated.replace("status: done", "status: claimed")
+    )
+
+    decisions = {item.publication_id: item for item in _archive(fixture, apply=True)}
+
+    assert decisions[journals["archive"]].archived_to is not None
+
+
+def _two_archivable_journals(tmp_path: Path) -> tuple[ClaimFixture, list[str]]:
+    journals = []
+    for task_id in ("task-first", "task-second"):
+        fixture = _fixture(tmp_path, task_id=task_id)
+        publication_id = _materialize_v1_history(fixture, state="applied")
+        _close_task(fixture)
+        os.utime(fixture.transactions / publication_id, (_ARCHIVE_OLD, _ARCHIVE_OLD))
+        journals.append(publication_id)
+    for marker in fixture.cache.glob("cc-active-task-*"):
+        marker.unlink()
+    return fixture, sorted(journals)
+
+
+def test_archive_syncs_completed_moves_when_the_second_rename_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, journals = _two_archivable_journals(tmp_path)
+    root = fixture.transactions
+    archive = root.with_name(f"{root.name}.terminal-archive-20261016T030000Z")
+    contents = {pid: _tree_snapshot(root / pid) for pid in journals}
+    events: list[tuple[str, Path]] = []
+    original_rename = sdlc_claim.os.rename
+    original_fsync = sdlc_claim._fsync_directory
+
+    def rename(source: object, target: object) -> None:
+        source_path = Path(str(source))
+        events.append(("rename", source_path))
+        if source_path.name == journals[1]:
+            raise OSError("second rename failed")
+        original_rename(source, target)
+
+    def fsync(path: Path) -> None:
+        events.append(("fsync", path))
+        original_fsync(path)
+
+    monkeypatch.setattr(sdlc_claim.os, "rename", rename)
+    monkeypatch.setattr(sdlc_claim, "_fsync_directory", fsync)
+
+    with pytest.raises(OSError, match="second rename failed"):
+        _archive(fixture, apply=True)
+
+    assert not (root / journals[0]).exists()
+    assert _tree_snapshot(archive / journals[0]) == contents[journals[0]]
+    assert _tree_snapshot(root / journals[1]) == contents[journals[1]]
+    assert not (archive / journals[1]).exists()
+    failed_rename = events.index(("rename", root / journals[1]))
+    assert ("fsync", root) in events[failed_rename + 1 :]
+    assert ("fsync", archive) in events[failed_rename + 1 :]
+
+
+@pytest.mark.parametrize("failure", ["parent", "source", "archive"])
+def test_archive_propagates_fsync_failures_and_preserves_journal_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    fixture, journals = _two_archivable_journals(tmp_path)
+    root = fixture.transactions
+    archive = root.with_name(f"{root.name}.terminal-archive-20261016T030000Z")
+    paths = {"parent": root.parent, "source": root, "archive": archive}
+    contents = {pid: _tree_snapshot(root / pid) for pid in journals}
+    synced: list[Path] = []
+    original_fsync = sdlc_claim._fsync_directory
+
+    def fsync(path: Path) -> None:
+        synced.append(path)
+        if path == paths[failure]:
+            raise OSError(f"{failure} fsync failed")
+        original_fsync(path)
+
+    monkeypatch.setattr(sdlc_claim, "_fsync_directory", fsync)
+    with pytest.raises(OSError, match=f"{failure} fsync failed"):
+        _archive(fixture, apply=True)
+
+    retained = root if failure == "parent" else archive
+    absent = archive if failure == "parent" else root
+    for pid in journals:
+        assert _tree_snapshot(retained / pid) == contents[pid]
+        assert not (absent / pid).exists()
+    if failure != "parent":
+        assert root in synced
+        assert archive in synced
+
+
+def test_archive_refuses_an_existing_archive_and_an_unreadable_marker(
+    tmp_path: Path,
+) -> None:
+    fixture, journals = _archive_root(tmp_path)
+    fixture.transactions.with_name(
+        f"{fixture.transactions.name}.terminal-archive-20261016T030000Z"
+    ).mkdir()
+
+    with pytest.raises(ClaimPublicationError) as exists:
+        _archive(fixture, apply=True)
+    assert exists.value.reason_code == "claim_publication_archive_exists"
+    assert (fixture.transactions / journals["archive"]).is_dir()
+
+    unreadable = fixture.cache / "cc-active-task-cx-green"
+    unreadable.write_bytes(b"\xff\xfe")
+    with pytest.raises(ClaimPublicationError) as marker:
+        _archive(fixture, apply=False, observed_at="20261016T030500Z")
+    assert marker.value.reason_code == "claim_publication_archive_marker_unreadable"
+
+
+@pytest.mark.parametrize(
+    ("bound", "now"),
+    [
+        (float("nan"), _ARCHIVE_NOW),
+        (float("inf"), _ARCHIVE_NOW),
+        (0.0, _ARCHIVE_NOW),
+        (-1.0, _ARCHIVE_NOW),
+        (_ARCHIVE_BOUND, float("nan")),
+        (_ARCHIVE_BOUND, float("inf")),
+        (_ARCHIVE_BOUND, float("-inf")),
+    ],
+)
+def test_archive_refuses_a_non_finite_or_non_positive_age_before_deciding(
+    tmp_path: Path, bound: float, now: float
+) -> None:
+    """codex on #5177: a NaN bound made every journal old enough (NaN compares false)."""
+
+    fixture, _journals = _archive_root(tmp_path)
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ClaimPublicationError) as invalid:
+        sdlc_claim.archive_terminal_claim_publications(
+            vault_root=fixture.vault,
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            older_than_seconds=bound,
+            observed_at="20261016T030000Z",
+            now_epoch=now,
+            apply=True,
+        )
+
+    assert invalid.value.reason_code == "claim_publication_archive_bound_invalid"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_archive_fsyncs_the_shared_parent_before_the_first_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codex on #5177: the archive directory's own entry must be durable before any journal
+    leaves the live root, or a crash can lose the archive that now holds it."""
+
+    fixture, _journals = _archive_root(tmp_path)
+    events: list[tuple[str, str]] = []
+    original_fsync = sdlc_claim._fsync_directory
+    original_rename = sdlc_claim.os.rename
+
+    def fsync(path: Path) -> None:
+        events.append(("fsync", Path(path).name))
+        original_fsync(path)
+
+    def rename(source: object, target: object) -> None:
+        events.append(("rename", Path(str(source)).name))
+        original_rename(source, target)
+
+    monkeypatch.setattr(sdlc_claim, "_fsync_directory", fsync)
+    monkeypatch.setattr(sdlc_claim.os, "rename", rename)
+
+    _archive(fixture, apply=True)
+
+    first_rename = next(index for index, event in enumerate(events) if event[0] == "rename")
+    assert ("fsync", fixture.transactions.parent.name) in events[:first_rename]
+
+
+@pytest.mark.parametrize("shape", ["missing", "file", "symlink"])
+def test_archive_decides_nothing_for_a_root_that_is_not_one_real_directory(
+    tmp_path: Path, shape: str
+) -> None:
+    fixture, _journals = _archive_root(tmp_path)
+    root = tmp_path / "other-root"
+    if shape == "file":
+        root.write_text("not a directory\n")
+    elif shape == "symlink":
+        root.symlink_to(fixture.transactions, target_is_directory=True)
+
+    decisions = sdlc_claim.archive_terminal_claim_publications(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=root,
+        older_than_seconds=_ARCHIVE_BOUND,
+        observed_at="20261016T030000Z",
+        now_epoch=_ARCHIVE_NOW,
+        apply=True,
+    )
+
+    assert decisions == ()
+    assert all(path.is_dir() for path in fixture.transactions.iterdir())
+
+
+def test_archive_leaves_a_journal_named_entry_that_is_not_a_directory(tmp_path: Path) -> None:
+    fixture, _journals = _archive_root(tmp_path)
+    stray = fixture.transactions / f"claim-pub-{'d' * 64}"
+    stray.write_text("not a journal\n")
+
+    decisions = {item.publication_id: item for item in _archive(fixture, apply=True)}
+
+    assert decisions[stray.name].reason == "not_a_journal_directory"
+    assert decisions[stray.name].archive is False
+    assert stray.is_file()
+
+
 # ── task resolution retaken through task-store frontier churn (M95) ──────────
 # claim-publication-frontier-churn-bounded-retry-m95-20260927
 
