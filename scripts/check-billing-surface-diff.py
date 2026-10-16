@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -45,6 +46,13 @@ def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult 
     ``error`` (exit 2) means git refused; ``result`` is then None, so unusable input never
     scans clean. No diff text is accepted: the only input is the diff generated here.
     """
+    # GIT_ATTR_SOURCE (below) is ignored by git < 2.40: refuse rather than silently lose it.
+    version = re.match(r"git version (\d+)\.(\d+)", _run_git(["--version"], repo=repo).stdout)
+    if version is None or (int(version[1]), int(version[2])) < (2, 40):
+        return None, (
+            "FAIL-CLOSED: git >= 2.40 is required for attribute-source hardening. Next action: "
+            "upgrade git or run on a host with git >= 2.40"
+        )
     # ONE base for diff and index seed: a moved base can misplace zero-context hunks.
     merge_base = _run_git(["merge-base", base, head], repo=repo)
     if merge_base.returncode != 0:

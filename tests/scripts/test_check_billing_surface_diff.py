@@ -382,6 +382,24 @@ def test_an_unusable_invocation_refuses_with_a_next_action(tmp_path: Path, args:
         assert "is not a directory" in result.stderr
 
 
+@pytest.mark.parametrize("version", ["git version 2.39.5", "git version unknown"])
+def test_a_git_below_the_attribute_source_floor_refuses(tmp_path: Path, version: str) -> None:
+    """GIT_ATTR_SOURCE needs git >= 2.40; an older git would silently ignore it, so refuse."""
+    repo, base, _head, _diff = _fixture(tmp_path)
+    stub = tmp_path / "bin" / "git"
+    stub.parent.mkdir()
+    real = subprocess.run(["which", "git"], capture_output=True, text=True).stdout.strip()
+    stub.write_text(
+        f'#!/bin/sh\n[ "$1" = --version ] && echo "{version}" && exit 0\nexec {real} "$@"\n'
+    )
+    stub.chmod(0o755)
+    argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base, "--head", "HEAD"]
+    env = {"PATH": f"{stub.parent}:/usr/bin:/bin"}
+    result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "git >= 2.40 is required" in result.stderr and "Next action" in result.stderr
+
+
 def test_git_unavailable_during_generation_refuses_with_a_next_action(tmp_path: Path) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     argv = [sys.executable, str(SCRIPT), "--repo", str(repo), "--base", base, "--head", "HEAD"]
