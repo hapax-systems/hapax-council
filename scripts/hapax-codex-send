@@ -252,7 +252,7 @@ wait_for_ack() {
     if [ "$USED_TRANSPORT" = "tmux" ] && [ "$SUBMIT" -eq 1 ] && [ "$nudges" -lt "$ACK_NUDGE_LIMIT" ]; then
       nudge_after="$(awk -v n="$nudges" -v s="$ACK_NUDGE_SECONDS" 'BEGIN { print (n + 1) * s }')"
       if awk -v elapsed="$elapsed" -v nudge_after="$nudge_after" 'BEGIN { exit !(elapsed >= nudge_after) }'; then
-        tmux send-keys -t "hapax-codex-$SESSION" C-m 2>/dev/null || true
+        tmux send-keys -t "hapax-codex-$SESSION" Enter 2>/dev/null || true
         nudges=$((nudges + 1))
       fi
     fi
@@ -337,7 +337,8 @@ send_tmux() {
   tmux delete-buffer -b "$buffer" 2>/dev/null || true
   if [ "$SUBMIT" -eq 1 ]; then
     sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-1.10}"
-    tmux send-keys -t "$target" C-m
+    # With extended keys, C-m is CSI-u Ctrl+M; Enter remains the submit key.
+    tmux send-keys -t "$target" Enter
   fi
 }
 
