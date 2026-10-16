@@ -39,6 +39,7 @@ _SECTION_META_PREFIXES: tuple[str, ...] = (
     "copy to ",
 )
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_NUMSTAT_ROW_RE = re.compile(r"(\d+)\t(\d+)\t.+|-\t-\t.+")
 
 
 def _run_git(
@@ -76,23 +77,15 @@ def _resolve_base(base: str, *, repo: Path) -> str:
     return proc.stdout.strip()
 
 
-def _input_hunk_line_counts(diff_text: str) -> tuple[int, int]:
-    """Count the input's own added and removed lines, skipping only file headers.
+def _input_signed_line_counts(diff_text: str) -> tuple[int, int]:
+    """Count every input line that starts with `+` or `-`, with no exemption.
 
-    A `---`/`+++` line is a header only between a `diff --git` line and that section's first
-    `@@`; every other `+`/`-` line counts, including any after a hunk, a binary note or the
-    end of git's counted body. Counting too much can only refuse; it never names a file.
+    No text decides what is a header, so no forged preamble can hide a line. Git's own
+    `---`/`+++` pair per changed text file is accounted for structurally by the caller.
     """
     added = removed = 0
-    in_preamble = False
     for raw in diff_text.splitlines():
-        if raw.startswith("diff --git "):
-            in_preamble = True
-        elif raw.startswith("@@"):
-            in_preamble = False
-        elif in_preamble and raw.startswith(("--- ", "+++ ")):
-            continue
-        elif raw.startswith("+"):
+        if raw.startswith("+"):
             added += 1
         elif raw.startswith("-"):
             removed += 1
@@ -100,7 +93,7 @@ def _input_hunk_line_counts(diff_text: str) -> tuple[int, int]:
 
 
 def _require_whole_input_consumed(diff_text: str, *, repo: Path, env: dict[str, str]) -> None:
-    """Refuse an input whose own hunk lines git did not all consume (codex, #4844 round 6)."""
+    """Refuse an input with any `+`/`-` line git did not consume (codex, #4844 r6, #5180 r1)."""
     numstat = _run_git(
         ["apply", "--cached", "--numstat", "--unidiff-zero", "--whitespace=nowarn", "-"],
         repo=repo,
@@ -114,22 +107,28 @@ def _require_whole_input_consumed(diff_text: str, *, repo: Path, env: dict[str, 
         )
     consumed_added = consumed_removed = 0
     for line in numstat.stdout.splitlines():
-        fields = line.split("\t", 2)
-        if len(fields) != 3:
+        row = _NUMSTAT_ROW_RE.fullmatch(line)
+        if row is None:
             raise UnusableInput(
                 f"git's --numstat gave an unexpected line {line!r}. Next action: rerun with a "
                 "supported git; this input is billing-scan-unusable-input and is never scanned"
             )
-        # A binary patch counts as `-\t-`: it carries no added text lines to compare.
-        consumed_added += int(fields[0]) if fields[0] != "-" else 0
-        consumed_removed += int(fields[1]) if fields[1] != "-" else 0
-    own_added, own_removed = _input_hunk_line_counts(diff_text)
+        if row.group(1) is None:
+            continue  # A binary row (`-\t-`): git writes no `---`/`+++` pair for it.
+        row_added, row_removed = int(row.group(1)), int(row.group(2))
+        # Git writes one `---`/`+++` pair per changed text file; a mode-only, pure-rename or
+        # empty-file row (`0\t0`) carries none.
+        headers = 1 if row_added + row_removed > 0 else 0
+        consumed_added += row_added + headers
+        consumed_removed += row_removed + headers
+    own_added, own_removed = _input_signed_line_counts(diff_text)
     if (own_added, own_removed) != (consumed_added, consumed_removed):
         raise UnusableInput(
-            f"git consumed {consumed_added} added and {consumed_removed} removed lines, but the "
-            f"input carries {own_added} and {own_removed}: material git did not consume would "
-            "never be scanned. Next action: regenerate the diff with `git diff <base>...HEAD` "
-            "(nothing appended after its hunks); this input is billing-scan-unusable-input"
+            f"git accounts for {consumed_added} `+` and {consumed_removed} `-` lines (file "
+            f"headers included), but the input carries {own_added} and {own_removed}: material "
+            "git did not consume would never be scanned. Next action: regenerate the diff with "
+            "`git diff <base>...HEAD` (nothing appended after its hunks); this input is "
+            "billing-scan-unusable-input"
         )
 
 
