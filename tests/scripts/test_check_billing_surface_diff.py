@@ -427,3 +427,48 @@ def test_an_unusable_git_refuses(tmp_path: Path, version: str | None, refusal: s
     result = _run(repo, base, env={"PATH": str(stub.parent)})
     assert result.returncode == 2, result.stdout + result.stderr
     assert refusal in result.stderr and "Next action" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "",
+        "not a patch\n",
+        "\ufffd\n",
+        _CLEAN,
+        # Supplied-text refusal fixtures, not spend routes.
+        '+client = OpenAI(base_url="http://127.0.0.1:4000", api_key=os.environ["K"])\n',  # billing-scan:allow
+        "+value = 1  # billing-scan:allow\n",
+        "diff --git a/tests/fixture.py b/tests/fixture.py\n+not python (\n",
+        "diff --git a/docs/guide.md b/docs/guide.md\n+documentation\n",
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+value = 1\n",
+    ],
+)
+def test_legacy_corpus_text_cannot_supply_billing_gate_evidence(tmp_path, payload):
+    """#4805's former text-acceptance cases now refuse even beside valid git refs."""
+    repo, base, head, _ = _fixture(tmp_path)
+    case = tmp_path / "legacy.diff"
+    case.write_text(payload)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--diff-file",
+            str(case),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert (
+        "unusable for a gate" in result.stderr
+        and "--base" in result.stderr
+        and "--head" in result.stderr
+    )
+    assert "OK:" not in result.stdout

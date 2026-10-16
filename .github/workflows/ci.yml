@@ -1619,6 +1619,38 @@ jobs:
           fi
           uv run --no-project --with pyyaml==6.0.3 python scripts/check-outbound-send-surface-diff.py --base "$base" --head "$PR_HEAD"
 
+  billing-surface-scan:
+    # Class-specific release evidence, outside all-green. No job/docs-only skip:
+    # only the post-merge duplicate sentinel reuses a queue-validated SHA.
+    # The strict gate accepts git-owned revisions, never supplied patch text.
+    needs: [post_merge_duplicate_filter]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; billing-surface-scan reports success."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          enable-cache: true
+      - name: Scan the diff for billing-surface mutations
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base="$PR_BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$PR_HEAD^"
+          fi
+          uv run --no-project python scripts/check-billing-surface-diff.py --base "$base" --head "$PR_HEAD"
+
   all-green:
     # Single aggregate required context (task reform-native-merge-queue). Collapses
     # the literal required checks into one job so the merge queue can't be

@@ -545,6 +545,14 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # CORRECTNESS of such a change is separately gated by the general test/review
     # checks every PR already carries.
     "privacy_or_secret_sensitive": ("secrets-scan",),
+    # Git-owned diff scan SUCCESS plus source-pinned review quorum mitigate a
+    # billing-adjacent source change. The scan is a lower bound over recognized
+    # surfaces, not proof that arbitrary code cannot spend. Provider spend
+    # itself remains auto-arm-ineligible below, regardless of this evidence.
+    "provider_billing_sensitive": (
+        "billing-surface-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
     # An audio/live-egress change (audio routing, live broadcast, the session-send
     # relay boundary) needs three layers of evidence. First, the behavioural
     # egress pins (egress-boundary-pin). Second, the authority binding,

@@ -156,9 +156,7 @@ def test_every_sensitive_class_has_an_evidence_gate() -> None:
     from shared.sdlc_lifecycle import SENSITIVE_RISK_FLAGS
 
     missing = [name for name in SENSITIVE_RISK_FLAGS if not RELEASE_MITIGATION_CHECKS.get(name)]
-    # provider_billing_sensitive's gate is PR #4805 (open at this writing); the
-    # subset form keeps either merge order green.
-    assert set(missing) <= {"provider_billing_sensitive"}
+    assert not missing
 
 
 def _audio_frontmatter() -> dict[str, object]:
@@ -1118,3 +1116,35 @@ def test_top_level_risk_flags_win_a_conflict_with_nested(
     assessment = assess_release_auto_arm(fm)
 
     assert (f"risk_flag:{_EGRESS}" in assessment.blockers) is held
+
+
+@pytest.mark.parametrize(
+    "verified",
+    [
+        set(),
+        {"billing-surface-scan"},
+        {REVIEW_TEAM_QUORUM_EVIDENCE},
+        {"billing-surface-scan", REVIEW_TEAM_QUORUM_EVIDENCE},
+    ],
+)
+def test_billing_requires_exactly_scan_and_quorum(verified):
+    required = ("billing-surface-scan", REVIEW_TEAM_QUORUM_EVIDENCE)
+    assert RELEASE_MITIGATION_CHECKS["provider_billing_sensitive"] == required
+    fm = _eligible_frontmatter(risk_flags={"provider_billing_sensitive": True})
+    assessment = assess_release_auto_arm(fm, verified_checks=verified)
+    missing = [c for c in required if c not in verified]
+    assert assessment.eligible == (not missing)
+    assert assessment.blockers == tuple(
+        f"needs_mitigation:provider_billing_sensitive:{c}" for c in missing
+    )
+
+
+def test_billing_full_evidence_never_authorizes_provider_spend():
+    fm = _eligible_frontmatter(
+        mutation_surface="provider_spend", risk_flags={"provider_billing_sensitive": True}
+    )
+    assessment = assess_release_auto_arm(
+        fm, verified_checks={"billing-surface-scan", REVIEW_TEAM_QUORUM_EVIDENCE}
+    )
+    assert not assessment.eligible
+    assert assessment.blockers == ("mutation_surface:provider_spend",)

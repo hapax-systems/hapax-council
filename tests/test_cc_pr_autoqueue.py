@@ -12636,3 +12636,66 @@ def test_queued_pr_missing_note_only_holds_and_posts_pending(tmp_path: Path) -> 
     assert "state=pending" in posts[0]
     assert "state=failure" not in posts[0]
     assert any("vault task note" in part or "missing_cc_task_link" in part for part in posts[0])
+
+
+@pytest.mark.parametrize("armed", [False, True])
+@pytest.mark.parametrize("state", [None, "SUCCESS", "FAILURE", "SKIPPED", "NEUTRAL", "PENDING"])
+def test_billing_autoqueue_requires_success_at_current_head(tmp_path, monkeypatch, armed, state):
+    monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    vault = _make_vault(tmp_path)
+    task_id = "billing-evidence"
+    _write_task(
+        vault,
+        task_id=task_id,
+        status="pr_open",
+        pr=733,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": armed,
+            "release_authorized_head_sha": "sha-733",
+            "release_authorized_head_ref": "feat/733",
+            "risk_flags": {"provider_billing_sensitive": True},
+        },
+    )
+    _write_review_dossier(vault, task_id, head_sha="sha-733", pr=733)
+    runner = _FakeRunner()
+    checks = _governance_mitigation_checks()
+    if state:
+        checks.append(_check("billing-surface-scan", state))
+    runner.open_prs = [_pr(733, checks=checks)]
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, runner=runner
+    )
+    decision = next(d for d in report["decisions"] if d["pr"] == 733)
+    if state == "SUCCESS":
+        assert decision["action"] == "queue", decision
+        assert decision.get("auto_arm", False) == (not armed)
+    else:
+        assert decision["action"] == "blocked", decision
+        assert decision["reasons"] == [
+            "release_auto_arm_ineligible:needs_mitigation:provider_billing_sensitive:billing-surface-scan"
+        ]
+
+
+@pytest.mark.parametrize("state", ["FAILURE", "SKIPPED", "NEUTRAL", "PENDING"])
+def test_billing_scan_is_class_evidence_not_a_universal_check(tmp_path, state):
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="ordinary-change",
+        status="pr_open",
+        pr=734,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {"provider_billing_sensitive": False},
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(734, checks=[*_governance_mitigation_checks(), _check("billing-surface-scan", state)])
+    ]
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, runner=runner
+    )
+    decision = next(d for d in report["decisions"] if d["pr"] == 734)
+    assert decision["action"] == "queue", decision

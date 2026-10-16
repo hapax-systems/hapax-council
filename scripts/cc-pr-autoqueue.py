@@ -175,6 +175,8 @@ AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
     "governance-gate",
     "hkp-advisory",
     "pr-admission",
+    # Class-specific arm evidence; SUCCESS is still read through the canon map.
+    "billing-surface-scan",
 }
 VIRTUAL_RELEASE_MITIGATION_CONTEXTS = frozenset({REVIEW_TEAM_QUORUM_EVIDENCE})
 RELEASE_MITIGATION_CHECK_CONTEXTS = frozenset(
