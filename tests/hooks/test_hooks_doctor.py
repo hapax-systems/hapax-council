@@ -102,6 +102,143 @@ def test_service_execstart_passes_activation_root(tmp_path: Path, doctor_dir: st
     ]
 
 
+def test_service_prefers_activated_doctor_before_canonical_refresh(tmp_path: Path) -> None:
+    unit = configparser.ConfigParser(interpolation=None, strict=False)
+    unit.read(REPO_ROOT / "systemd" / "units" / "hapax-hooks-doctor.service")
+    for directory, label in (
+        (".local/lib/hapax/hooks", "canonical"),
+        (".cache/hapax/rebuild/worktree/hooks/scripts", "rebuild"),
+        (".cache/hapax/source-activation/worktree/hooks/scripts", "activated"),
+    ):
+        _write(tmp_path / directory / "hooks-doctor.sh", f"#!/bin/sh\necho {label}\n")
+    result = subprocess.run(
+        shlex.split(unit["Service"]["ExecStart"]),
+        env={**os.environ, "HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "activated"
+
+
+def _notification_fixture(tmp_path: Path):
+    root = tmp_path / "hapax-council"
+    _seed_repo(root, gate_body=SHIM.read_text(), impl_body=IMPL.read_text())
+    _write(root / "shared" / "__init__.py", "")
+    _write(root / "shared" / "cc_task_root.py", (REPO_ROOT / "shared/cc_task_root.py").read_text())
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "fixture")
+    canonical = tmp_path / "canonical"
+    mailbox = tmp_path / "vault/30-areas/hapax/lanebus/dev1"
+    mailbox.mkdir(parents=True)
+    tools = tmp_path / "tools"
+    _write(tools / "hapax-notify", '#!/bin/sh\ntouch "$NOTIFY_CAPTURE"\n')
+    env = {
+        "HOME": str(tmp_path / "home"),
+        "PATH": f"{tools}:{os.defpath}",
+        "PYTHONPATH": "",
+        "PERSONAL_VAULT_PATH": str(tmp_path / "vault"),
+        "HAPAX_CANONICAL_HOOKS": str(canonical),
+        "HAPAX_LOCAL_BIN": str(tmp_path / "bin"),
+        "NOTIFY_CAPTURE": str(tmp_path / "legacy-notify-called"),
+    }
+    deployed = _run("--deploy-canonical", env=env)
+    assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+    return root, canonical, mailbox, env
+
+
+@pytest.mark.parametrize("mode,expected_rc", [("--session", 0), ("--check", 1)])
+def test_notify_delivers_real_drift_and_provenance(tmp_path: Path, mode: str, expected_rc: int):
+    root, canonical, mailbox, env = _notification_fixture(tmp_path)
+    (canonical / "agent-role.sh").unlink()
+    result = _run(mode, "--notify", "--root", str(root), env=env)
+    assert result.returncode == expected_rc
+    drops = list(mailbox.glob("*.md"))
+    assert len(drops) == 1, result.stdout + result.stderr
+    body = drops[0].read_text()
+    diagnostic = f"CRITICAL canonical closure missing sibling: {canonical}/agent-role.sh"
+    head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    for value in (diagnostic, str(root), str(canonical), head, f'mode: "{mode[2:]}"'):
+        assert value in body
+    assert re.search(r'created_at: "\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z"', body)
+    assert "Next action:" in body
+    assert "drift delivered" in result.stdout
+    assert not Path(env["NOTIFY_CAPTURE"]).exists()
+
+
+def test_notify_preserves_prior_drops_and_refuses_timestamp_collision(tmp_path: Path):
+    root, canonical, mailbox, env = _notification_fixture(tmp_path)
+    (canonical / "agent-role.sh").unlink()
+    date = tmp_path / "tools/date"
+    _write(date, '#!/bin/sh\necho "2026-10-16T18:00:00.000000001Z"\n')
+    first = _run("--session", "--notify", "--root", str(root), env=env)
+    assert first.returncode == 0
+    drops = list(mailbox.glob("*.md"))
+    assert len(drops) == 1, first.stdout + first.stderr
+    before = drops[0].read_bytes(), drops[0].stat().st_mtime_ns
+    collided = _run("--session", "--notify", "--root", str(root), env=env)
+    assert collided.returncode == 0
+    assert "drift delivery FAILED" in collided.stderr
+    assert (drops[0].read_bytes(), drops[0].stat().st_mtime_ns) == before
+    _write(date, '#!/bin/sh\necho "2026-10-16T18:00:00.000000002Z"\n')
+    second = _run("--session", "--notify", "--root", str(root), env=env)
+    assert second.returncode == 0
+    assert "drift delivered" in second.stdout
+    assert len(list(mailbox.glob("*.md"))) == 2
+    assert (drops[0].read_bytes(), drops[0].stat().st_mtime_ns) == before
+    assert not Path(env["NOTIFY_CAPTURE"]).exists()
+
+
+@pytest.mark.parametrize("mode,expected_rc", [("--session", 0), ("--check", 1)])
+@pytest.mark.parametrize("failure", ["missing-mailbox", "relative-vault"])
+def test_notify_failure_is_loud_without_fallback(
+    tmp_path: Path, mode: str, expected_rc: int, failure: str
+):
+    root, canonical, mailbox, env = _notification_fixture(tmp_path)
+    (canonical / "agent-role.sh").unlink()
+    if failure == "missing-mailbox":
+        mailbox.rmdir()
+    else:
+        env["PERSONAL_VAULT_PATH"] = "relative-vault"
+    result = _run(mode, "--notify", "--root", str(root), env=env)
+    assert result.returncode == expected_rc
+    assert "drift delivery FAILED" in result.stderr
+    assert "Next action:" in result.stderr
+    assert not list(mailbox.glob("*.md"))
+    assert not Path(env["NOTIFY_CAPTURE"]).exists()
+    assert not (Path(env["HOME"]) / "Documents").exists()
+
+
+@pytest.mark.parametrize("mode", ["--session", "--check"])
+@pytest.mark.parametrize("drift", [False, True], ids=["clean-notify", "drift-no-notify"])
+def test_clean_or_unrequested_notification_writes_nothing(tmp_path: Path, mode: str, drift: bool):
+    root, canonical, mailbox, env = _notification_fixture(tmp_path)
+    args = [mode, "--root", str(root)]
+    if drift:
+        (canonical / "agent-role.sh").unlink()
+    else:
+        args.append("--notify")
+    result = _run(*args, env=env)
+    assert result.returncode == (1 if drift and mode == "--check" else 0)
+    assert not list(mailbox.glob("*.md"))
+    assert not Path(env["NOTIFY_CAPTURE"]).exists()
+
+
+def test_session_missing_canonical_delivers_its_actual_diagnostic(tmp_path: Path):
+    root, _, mailbox, env = _notification_fixture(tmp_path)
+    env["HAPAX_CANONICAL_HOOKS"] = str(tmp_path / "absent-canonical")
+    result = _run("--session", "--notify", "--root", str(root), env=env)
+    assert result.returncode == 0
+    drops = list(mailbox.glob("*.md"))
+    assert len(drops) == 1, result.stdout + result.stderr
+    assert f"no deployed canonical gate at {env['HAPAX_CANONICAL_HOOKS']}" in drops[0].read_text()
+
+
 # --- classify --------------------------------------------------------------
 
 

@@ -25,7 +25,8 @@
 #
 # Options: --from DIR (deploy source, default this repo), --root DIR (override the
 # repo/worktree root for --check/fleet, for tests), --dry-run, --verbose|-v,
-# --notify (best-effort ntfy on drift, for the timer/service).
+# --notify (create-once Crow mailbox drop on critical drift; delivery errors
+# are visible on stderr without changing advisory/strict exit semantics).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -155,17 +156,53 @@ check_fleet() {
 
 _notify() {
   [[ "$NOTIFY" = 1 ]] || return 0
-  local msg="$1"
-  if command -v hapax-notify >/dev/null 2>&1; then
-    hapax-notify "hooks-doctor" "$msg" >/dev/null 2>&1 && return 0
+  local stamp
+  if ! stamp="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"; then
+    echo "hooks-doctor: drift delivery FAILED: timestamp unavailable. Next action: repair date -u; drift remains in this report." >&2
+    return 1
   fi
-  ( cd "$REPO_ROOT" 2>/dev/null \
-    && python3 -c 'import sys
+  python3 - "$REPO_ROOT" "$CANONICAL_DIR" "$MODE" "$stamp" "$@" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
 try:
-    from shared.notify import send_notification
-    send_notification("hooks-doctor: gate drift", sys.argv[1], priority="high", tags=["warning"])
-except Exception:
-    pass' "$msg" ) >/dev/null 2>&1 || true
+    root = Path(sys.argv[1]).resolve(strict=True)
+    sys.path.insert(0, str(root))
+    # This existing binding is stdlib-only; notification dependencies are not needed.
+    from shared.cc_task_root import _personal_vault
+
+    mailbox = _personal_vault() / "30-areas/hapax/lanebus/dev1"
+    canonical, mode, stamp = sys.argv[2:5]
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    diagnostics = "\n".join(part for part in sys.argv[5:] if part.strip())
+    metadata = {"created_at": stamp, "root": str(root), "head": head,
+                "canonical_dir": canonical, "mode": mode}
+    report = "\n".join([
+        "---", "from: hooks-doctor", "to: dev1",
+        *(f"{key}: {json.dumps(value)}" for key, value in metadata.items()),
+        "---", "", "# Hooks-doctor gate drift", "", "Observed diagnostics:", "",
+        *(f"    {line}" for line in diagnostics.splitlines()), "",
+        "Next action: inspect hooks-doctor --check against the recorded root, then "
+        "route any fanout or canonical repair through the governed task and deploy.", "",
+    ])
+    name = stamp.replace("-", "").replace(":", "") + "-hooks-doctor-drift.md"
+    drop = mailbox / name
+    with drop.open("x", encoding="utf-8") as stream:
+        stream.write(report)
+    print(f"hooks-doctor: drift delivered to {drop}")
+except Exception as exc:
+    print(
+        f"hooks-doctor: drift delivery FAILED: {exc}. Next action: verify the activated "
+        "root, PERSONAL_VAULT_PATH and writable lanebus/dev1; drift remains in this report.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
 }
 
 deploy_canonical() {
@@ -307,7 +344,7 @@ case "$MODE" in
     fi
     if (( rc >= 3 )); then
       echo "hooks-doctor: CRITICAL gate drift — REFUSE"
-      _notify "CRITICAL gate drift detected"
+      _notify "${out:-}" "${cout:-}" "${fout:-}"
       exit 1
     fi
     echo "hooks-doctor: gate fleet clean (no critical drift)"
@@ -320,7 +357,8 @@ case "$MODE" in
       cout="$(check_canonical)" || crit=1
       [[ "$VERBOSE" = 1 || "$crit" = 1 ]] && echo "$cout"
     else
-      echo "hooks-doctor: no deployed canonical gate at $CANONICAL_DIR — run 'hapax-hooks-doctor --deploy-canonical'"
+      cout="hooks-doctor: no deployed canonical gate at $CANONICAL_DIR — run 'hapax-hooks-doctor --deploy-canonical'"
+      echo "$cout"
       crit=1
     fi
     if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
@@ -330,7 +368,7 @@ case "$MODE" in
     fi
     if (( crit == 1 )); then
       echo "hooks-doctor: gate drift present (advisory) — run 'hapax-hooks-doctor --check' / '--fanout' / '--deploy-canonical'"
-      _notify "gate drift present (advisory)"
+      _notify "${cout:-}" "${fout:-}"
     fi
     exit 0
     ;;

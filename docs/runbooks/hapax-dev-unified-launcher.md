@@ -39,19 +39,20 @@ uv run pytest tests/scripts/test_hapax_dev.py -q
 uv run pytest tests/scripts/test_hapax_methodology_dispatch.py::test_dispatch_worker_adapter_map_includes_live_worker_families tests/test_capability_adapter_protocol.py::test_platform_classvars_are_pinned -q
 ```
 
-## Identities (interactive pools, distinct from the supervised fleet)
+## Identities and governed JIT lanes
 
 | Platform | Spawner | Interactive pool | tmux session |
 |----------|---------|------------------|--------------|
 | `claude` | `hapax-claude` | `dev`, `dev2`, `dev3`, … | `hapax-claude-<name>` |
 | `codex`  | `hapax-codex`  | `cx-blue`, `cx-green`, `cx-cyan`, … | `hapax-codex-<name>` |
 
-- **Why a `dev` pool for claude?** The greek roles `alpha..theta` are the
-  *supervised headless reform fleet* — `hapax-lane-supervisor` auto-respawns them
-  and the dispatcher hands them governed tasks. An interactive operator session
-  must never land there. The non-greek `dev` pool is reserved for operators and
-  is invisible to the supervisor/dispatcher. (See `hapax-claude`'s dev-pool
-  extension below.) `codex` reserves `cx-red` (primary) and `cx-violet`
+- **Why a `dev` pool for claude?** The greek roles `alpha..theta` identify legacy
+  coordination slots. Persistent lane supervision is parked: worker lanes launch
+  for admitted work and end after acceptance, as required by the operator's
+  2026-10-16 JIT ruling (canonical vault:
+  `30-areas/hapax/lanebus/dev1/20261016T160555Z-dev47-OPERATOR-P0-lanes-are-jit-census-and-teardown.md`).
+  The `dev` pool keeps interactive sessions separate from those slots. (See
+  `hapax-claude`'s dev-pool extension below.) `codex` reserves `cx-red` (primary) and `cx-violet`
   (protected); the interactive pool is the remaining colors.
 - **Auto-selection** (name omitted) picks the **lowest free** pool slot. A slot
   is *free* only when there is no live tmux session **and** no active claim file
