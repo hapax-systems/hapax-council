@@ -216,10 +216,15 @@ _CASES = {
     ),
     "plan-type-api": ("app.py", None, "plan_type = 'api'\n", 1, ("capacity-pool-payg",), ()),
 }
+# codex r10
+_CASES |= {
+    f"sep-{c:x}": ("app.py", None, f'x = "a{chr(c)} b"\n{KEY_LINE}\n', 1, ("app.py:2: api",), ())
+    for c in (0x2028, 0x2029, 0x85, 0xC, 0x1C)
+}
 
 
 @pytest.mark.parametrize("case", list(_CASES), ids=list(_CASES))
-def test_a_scan_case_through_the_entry_point(tmp_path: Path, case: str) -> None:
+def test_a_scan_case(tmp_path: Path, case: str) -> None:
     path, pre, post, code, present, absent = _CASES[case]
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
@@ -384,7 +389,7 @@ def test_no_opaque_change_passes_the_strict_gate(
         "nonexistent-repo",
     ],
 )
-def test_an_unusable_invocation_refuses_with_a_next_action(tmp_path: Path, args: list[str]) -> None:
+def test_an_unusable_invocation_refuses(tmp_path: Path, args: list[str]) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     (tmp_path / "plain").mkdir()
     subs = {"{R}": str(repo), "{B}": base, "{T}": str(tmp_path)}
@@ -408,9 +413,7 @@ def test_an_unusable_invocation_refuses_with_a_next_action(tmp_path: Path, args:
         (None, "git is unavailable"),
     ],
 )
-def test_an_unusable_git_refuses_with_a_next_action(
-    tmp_path: Path, version: str | None, refusal: str
-) -> None:
+def test_an_unusable_git_refuses(tmp_path: Path, version: str | None, refusal: str) -> None:
     """git < 2.41 ignores GIT_ATTR_SOURCE."""
     repo, base, _head, _diff = _fixture(tmp_path)
     stub = tmp_path / "bin" / "git"

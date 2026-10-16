@@ -7,7 +7,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-billing-surface-diff.py"
 
 
-def test_the_strict_gate_fails_a_billing_surface_from_base_and_head(tmp_path: Path) -> None:
+def test_the_strict_gate_fails_a_billing_surface(tmp_path: Path) -> None:
     def git(*args: str) -> str:
         done = subprocess.run(
             ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True

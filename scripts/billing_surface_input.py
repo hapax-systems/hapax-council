@@ -135,12 +135,12 @@ def parse_path_added_lines(text: str) -> tuple[dict[int, str], str | None]:
     The file is the path Git was asked about, never text in the output: before the first hunk
     header only Git's own preamble is accepted, and after it no header is recognised, so an
     added line shaped like one (`++ b/docs/x` renders `+++ b/docs/x`) is content. A binary note
-    before any hunk is opaque and refused; any other shape fails closed.
+    before any hunk is opaque; any other shape fails closed.
     """
     added: dict[int, str] = {}
     new_line = 0
     in_hunks = False
-    for raw in text.splitlines():
+    for raw in text.removesuffix("\n").split("\n") if text else ():
         if raw.startswith("@@"):
             header = _HUNK_HEADER_RE.match(raw)
             if header is None:
