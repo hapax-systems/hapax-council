@@ -76,6 +76,63 @@ def _resolve_base(base: str, *, repo: Path) -> str:
     return proc.stdout.strip()
 
 
+def _input_hunk_line_counts(diff_text: str) -> tuple[int, int]:
+    """Count the input's own added and removed lines, skipping only file headers.
+
+    A `---`/`+++` line is a header only between a `diff --git` line and that section's first
+    `@@`; every other `+`/`-` line counts, including any after a hunk, a binary note or the
+    end of git's counted body. Counting too much can only refuse; it never names a file.
+    """
+    added = removed = 0
+    in_preamble = False
+    for raw in diff_text.splitlines():
+        if raw.startswith("diff --git "):
+            in_preamble = True
+        elif raw.startswith("@@"):
+            in_preamble = False
+        elif in_preamble and raw.startswith(("--- ", "+++ ")):
+            continue
+        elif raw.startswith("+"):
+            added += 1
+        elif raw.startswith("-"):
+            removed += 1
+    return added, removed
+
+
+def _require_whole_input_consumed(diff_text: str, *, repo: Path, env: dict[str, str]) -> None:
+    """Refuse an input whose own hunk lines git did not all consume (codex, #4844 round 6)."""
+    numstat = _run_git(
+        ["apply", "--cached", "--numstat", "--unidiff-zero", "--whitespace=nowarn", "-"],
+        repo=repo,
+        env=env,
+        stdin=diff_text,
+    )
+    if numstat.returncode != 0:
+        raise UnusableInput(
+            f"git could not count this input's changes: {_git_out(numstat)}. Next action: "
+            "regenerate the diff with `git diff <base>...HEAD` in this repository and rerun"
+        )
+    consumed_added = consumed_removed = 0
+    for line in numstat.stdout.splitlines():
+        fields = line.split("\t", 2)
+        if len(fields) != 3:
+            raise UnusableInput(
+                f"git's --numstat gave an unexpected line {line!r}. Next action: rerun with a "
+                "supported git; this input is billing-scan-unusable-input and is never scanned"
+            )
+        # A binary patch counts as `-\t-`: it carries no added text lines to compare.
+        consumed_added += int(fields[0]) if fields[0] != "-" else 0
+        consumed_removed += int(fields[1]) if fields[1] != "-" else 0
+    own_added, own_removed = _input_hunk_line_counts(diff_text)
+    if (own_added, own_removed) != (consumed_added, consumed_removed):
+        raise UnusableInput(
+            f"git consumed {consumed_added} added and {consumed_removed} removed lines, but the "
+            f"input carries {own_added} and {own_removed}: material git did not consume would "
+            "never be scanned. Next action: regenerate the diff with `git diff <base>...HEAD` "
+            "(nothing appended after its hunks); this input is billing-scan-unusable-input"
+        )
+
+
 @contextmanager
 def materialise_post_image(
     diff_text: str, *, repo: Path, base: str
@@ -105,6 +162,7 @@ def materialise_post_image(
                 "regenerate the diff with `git diff <base>...HEAD` in this repository (or fix the "
                 "input); a diff git cannot apply is billing-scan-unusable-input and is never scanned"
             )
+        _require_whole_input_consumed(diff_text, repo=repo, env=env)
         applied = _run_git(
             ["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "-"],
             repo=repo,

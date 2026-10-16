@@ -62,6 +62,46 @@ def test_missing_or_truncated_diff_never_materialises(tmp_path: Path, bad_diff: 
             pytest.fail("unusable input was admitted")
 
 
+@pytest.mark.parametrize(
+    "trailing",
+    [
+        # codex (#4844 round 6): git applied the clean hunk and silently dropped the rest.
+        '\nBinary files a/app.py and b/app.py differ\n+client = OpenAI(api_key=os.environ["K"])\n',
+        '+client = OpenAI(api_key=os.environ["K"])\n',
+        "-first\n",
+    ],
+)
+def test_patch_material_git_does_not_consume_is_unusable_input(
+    tmp_path: Path, trailing: str
+) -> None:
+    repo, base, diff = _repo(tmp_path)
+    with pytest.raises(source.UnusableInput, match="Next action"):
+        with source.materialise_post_image(diff + trailing, repo=repo, base=base):
+            pytest.fail("input git did not wholly consume was admitted")
+
+
+def test_a_clean_multi_file_patch_is_wholly_consumed(tmp_path: Path) -> None:
+    repo, base, _diff = _repo(tmp_path)
+    (repo / "app.py").write_text("first\nsecond\n+++ b/x\n")
+    (repo / "docs.md").write_text("--- a/y\nnote\n")
+    _git(repo, "add", "-A")
+    diff = _git(repo, "diff", "--cached", "--unified=0", base)
+    _git(repo, "reset", "-q")
+    with source.materialise_post_image(diff, repo=repo, base=base) as (_index, env):
+        assert _git_with_env(repo, env, "show", ":docs.md") == "--- a/y\nnote"
+
+
+def test_a_full_binary_patch_is_consumed_and_counts_nothing(tmp_path: Path) -> None:
+    repo, base, _diff = _repo(tmp_path)
+    (repo / "blob.bin").write_bytes(b"text\x00binary")
+    _git(repo, "add", "-A")
+    diff = _git(repo, "diff", "--cached", "--binary", "--unified=0", base)
+    _git(repo, "reset", "-q")
+    assert "GIT binary patch" in diff
+    with source.materialise_post_image(diff, repo=repo, base=base) as (_index, env):
+        assert source.post_image_blob("blob.bin", repo=repo, env=env) is None
+
+
 def test_unresolvable_base_has_a_next_action(tmp_path: Path) -> None:
     repo, _base, diff = _repo(tmp_path)
     with pytest.raises(source.UnusableInput, match="Next action"):
