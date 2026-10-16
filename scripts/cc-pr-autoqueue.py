@@ -230,11 +230,12 @@ FRESH_EVIDENCE_TIMESTAMP_FIELDS = ("timestamp", "constituted_at")
 # cc-pr-autoqueue-armed-note-reconciliation-gap-20260914, item 2): a PR whose
 # task note is release-armed but whose autoMergeRequest is absent (e.g. dropped
 # by a dequeue) is offered a full-exam re-arm seat after this many consecutive
-# divergent ticks, instead of waiting ~102 minutes for the fair rotation.
+# divergent ticks, instead of waiting for the estate-wide fair rotation.
 ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES = 2
-# Retries are bounded per continuous divergence episode; exhaustion is reported,
-# never silently looped. The divergence clearing (armed, queued, note unarmed,
-# or PR gone from the listing) resets the episode.
+# Only admission-ready re-arm attempts spend retries, bounded per continuous
+# divergence episode. Blocked exams and failed proof writes spend no retries.
+# Exhaustion remains visible and does not remove a PR from the fair rotation.
+# The divergence clearing (armed, queued, note unarmed, or PR gone) resets it.
 ARMED_NOTE_REARM_MAX_RETRIES = 3
 # Failure proofs intentionally refresh less often than success proofs: blocked
 # PRs can sit for days, and GitHub caps commit statuses per SHA+context. Still,
@@ -2386,15 +2387,10 @@ def fetch_rotating_open_prs(
             continue
         prs.append(hydrated)
     if armed_note_reconciliation is not None:
-        # A retry counts only when the seat was served AND the exam hydrated; an
-        # overflowed or unhydrated candidate keeps its passes for the next tick.
-        hydrated_numbers = {pr.number for pr in prs}
-        armed_note_reconciliation.note_served(
-            {row["number"] for row in selection.full_exam_rows} & hydrated_numbers
-        )
         # A full exam from any source is the estate's response to the
-        # divergence; only exam-free ticks move the retry hysteresis.
-        armed_note_reconciliation.note_examined(hydrated_numbers)
+        # divergence. Hydration does not establish admission readiness, so it
+        # resets hysteresis but cannot spend a re-arm retry.
+        armed_note_reconciliation.note_examined({pr.number for pr in prs})
     return prs, route, len(rows), failures, selection
 
 
@@ -5066,7 +5062,7 @@ class _ArmedNoteReconciliation:
 
     Defect cc-pr-autoqueue-armed-note-reconciliation-gap-20260914 item 2: a PR
     whose task note is release-armed but whose autoMergeRequest is absent (e.g.
-    dropped by a dequeue) waited for the ~102-minute fair rotation after the R6
+    dropped by a dequeue) waited for the estate-wide fair rotation after the R6
     one-shot exam; a transient blocker on that exam stranded it until an
     external actor intervened. The divergence is observed from the un-hydrated
     listing every determinate tick; at ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES
@@ -5078,7 +5074,10 @@ class _ArmedNoteReconciliation:
     hysteresis measures how long the divergence stood un-responded, and an exam
     is the estate's response. Served retries are recorded in the report; an
     unserved candidate (window cap) keeps accumulating passes instead of
-    burning a retry. Dry runs preview but never advance the persisted state.
+    burning a retry. Blocked exams and failed admission-proof writes do not
+    spend retries. A same-head blocked exam also repairs legacy counters that
+    were spent before the blockers were known; it grants only another exam,
+    never admission. Dry runs never advance the persisted state.
     """
 
     def __init__(
@@ -5090,12 +5089,14 @@ class _ArmedNoteReconciliation:
         repo: str,
         now: datetime,
         persist: bool,
+        exam_ledger: Mapping[int, Mapping[str, Any]] | None = None,
     ) -> None:
         self._queued = set(queued_prs)
         self._state_path = state_path
         self._repo = repo
         self._now = now
         self._persist = persist
+        self._exam_ledger = exam_ledger or {}
         self._armed_by_pr: set[int] = set()
         self._armed_by_branch: set[str] = set()
         for task in tasks:
@@ -5107,7 +5108,6 @@ class _ArmedNoteReconciliation:
                 self._armed_by_branch.add(task.branch)
         self._entries = _load_armed_note_reconciliation(state_path, repo=repo, now=now)
         self._candidates: set[int] = set()
-        self._served_retries: set[int] = set()
         self._retried: list[dict[str, Any]] = []
 
     def _note_armed(self, row: dict[str, Any]) -> bool:
@@ -5132,10 +5132,21 @@ class _ArmedNoteReconciliation:
             if not diverged:
                 continue  # a cleared divergence resets the episode
             previous = self._entries.get(number) or {}
+            head_sha = _listing_head_sha(row)
+            retries = int(previous.get("retries") or 0)
+            exam = self._exam_ledger.get(number)
+            if (
+                head_sha
+                and previous.get("head_sha") == head_sha
+                and exam is not None
+                and exam.get("head_sha") == head_sha
+                and exam.get("blockers")
+            ):
+                retries = 0
             entry = {
                 "consecutive_passes": int(previous.get("consecutive_passes") or 0) + 1,
-                "retries": int(previous.get("retries") or 0),
-                "head_sha": _listing_head_sha(row),
+                "retries": retries,
+                "head_sha": head_sha,
                 "last_seen_at": self._now.isoformat(),
             }
             if (
@@ -5149,24 +5160,20 @@ class _ArmedNoteReconciliation:
         return frozenset(candidates)
 
     def note_served(self, served: set[int] | frozenset[int]) -> None:
-        """Record the retry for candidates the window actually served this tick."""
-        self._served_retries = set()
+        """Count candidates only when admission permits a re-arm attempt."""
         for number in sorted(self._candidates & set(served)):
             entry = self._entries[number]
             entry["consecutive_passes"] = 0
             entry["retries"] += 1
-            self._served_retries.add(number)
             self._retried.append({"pr": number, "retry": entry["retries"]})
 
     def note_examined(self, examined: set[int] | frozenset[int]) -> None:
         """Reset the pass count for diverged PRs fully examined this tick.
 
         An exam is the estate's response to the divergence; only ticks with no
-        exam move the hysteresis. Served retries already reset in note_served.
+        exam move the hysteresis. Retry accounting happens after admission.
         """
         for number in examined:
-            if number in self._served_retries:
-                continue
             entry = self._entries.get(number)
             if entry is not None:
                 entry["consecutive_passes"] = 0
@@ -5552,6 +5559,14 @@ def run_reconciler(
     # selection) — the fair rotation alone would keep them waiting ~100+ min
     # for the re-arm decision after a dequeue.
     dequeued_followup = frozenset(must_include_state) - queued_prs
+    exam_ledger_path = (
+        _exam_ledger_path(rotation_state_path) if rotation_state_path is not None else None
+    )
+    exam_ledger = (
+        _load_exam_ledger(exam_ledger_path, repo=repo, now=now)
+        if exam_ledger_path is not None
+        else {}
+    )
     armed_note_reconciliation = None
     if rotation_state_path is not None and not _must_include_guarantee_disabled():
         # Bounded re-arm retry for armed-note/unarmed-PR divergence (defect
@@ -5564,6 +5579,7 @@ def run_reconciler(
             repo=repo,
             now=now,
             persist=apply,
+            exam_ledger=exam_ledger,
         )
     if expected_auto_merge_method_override is not None:
         expected_auto_merge_method = _normalize_merge_method(expected_auto_merge_method_override)
@@ -5582,14 +5598,6 @@ def run_reconciler(
         )
     hydration_failures: dict[int, dict[str, Any]] = {}
     window: _WindowSelection | None = None
-    exam_ledger_path = (
-        _exam_ledger_path(rotation_state_path) if rotation_state_path is not None else None
-    )
-    exam_ledger = (
-        _load_exam_ledger(exam_ledger_path, repo=repo, now=now)
-        if exam_ledger_path is not None
-        else {}
-    )
     live_route_state = _once(lambda: _live_review_route_blocked_families())
     try:
         if rotation_state_path is not None:
@@ -6016,6 +6024,13 @@ def run_reconciler(
                         }
                     )
                     continue
+                if armed_note_reconciliation is not None and decision.action in {
+                    "queue",
+                    "enable_auto_merge",
+                }:
+                    # Admission blockers, release-head revalidation and proof
+                    # publication have all passed. Only now is this a retry.
+                    armed_note_reconciliation.note_served({decision.pr.number})
                 ok, message = merge_pr(
                     decision,
                     repo=repo,
