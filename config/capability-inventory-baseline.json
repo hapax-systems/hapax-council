@@ -1,5 +1,5 @@
 {
-  "count": 187,
+  "count": 188,
   "records": {
     "agy.review.direct": {
       "fingerprint": "4ea797143ee0282ae82de6de2fa3a874990802f455005825b9eaf48a87da9e68",
@@ -732,6 +732,10 @@
     "publication_bus.zenodo-related-identifier-graph": {
       "fingerprint": "093c1842bde09000ae2a7aafa3d5cf3580c123b415bb317ed6659318b39a6039",
       "inventory_disposition": "admitted_supply"
+    },
+    "research.external_primary_source_fetch": {
+      "fingerprint": "42586532c03ad524f4c84f4cedca51d621fd5fee56c8bf6e1dd79b7ad6fda2f4",
+      "inventory_disposition": "evidence_only_non_supply"
     },
     "self_inline.current_session_surface": {
       "fingerprint": "bf6d0b86834b89f8cb96ac05d4c69f4ee174245b065058473567dbad92385256",
