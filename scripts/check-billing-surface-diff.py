@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """Git-validated provider-billing surface scan.
 
-Strict mode exits 0 clean, 1 on findings, 2 on unusable input. The PR CI lint
-step uses ``--report-only`` to record redacted finding locations and kinds without
-blocking. A later row may enable a blocking gate after a clean week of reports.
-
-Git first applies the diff to a temporary index seeded from the named base.
-The scanner reads only Git's regenerated added lines and post-image; unknown
-diff structure rejects. A proxy exemption needs a literal governed base URL
-on the same Python call. A fixture marker exempts only its own added lines.
-Findings are a lower bound, never proof that a change cannot spend.
+Exits 0 clean, 1 on findings, 2 on unusable input; ``--report-only`` records redacted
+findings without blocking. Git applies the diff to an index seeded from the merge base;
+only Git's added lines and post-image are scanned. Findings are a lower bound.
 """
 
 from __future__ import annotations
@@ -49,12 +43,10 @@ from scripts.billing_surface_input import (  # noqa: E402
 def scan_git_validated(
     diff_text: str, *, repo: Path, base: str
 ) -> tuple[ScanResult | None, str | None]:
-    """Scan the added lines GIT derives from the validated input.
+    """Scan the added lines git derives from the validated input: ``(result, error)``.
 
-    Returns ``(result, error)``. ``error`` is a fail-closed message with a next action (exit 2):
-    git will not apply the input, git could not regenerate the diff, or git's own output carried a
-    line the closed grammar refuses. ``result`` is None whenever ``error`` is set — there is no
-    path from an unusable input to a clean scan.
+    ``error`` (exit 2) means git refused the input; ``result`` is then None, so unusable
+    input never scans clean.
     """
     if not diff_text.strip():
         return None, (
@@ -86,16 +78,10 @@ def _scan_validated_files(
         *,
         covers: tuple[int, ...] = (),
     ) -> None:
-        """Record one added line's kinds, applying the marker decision.
+        """Record one added line's kinds: the ONE place an exemption is decided.
 
-        The marker is honoured only on an allowlisted path. Anywhere else it does NOT exempt the
-        line (the underlying findings stand) and it is itself a finding — never a silent ignore.
-        **This is the ONE place a finding's exemption is decided.** It is decided from the ADDED
-        lines the finding COVERS: for a line-level class that is the line itself, and for a
-        node-decided finding it is every added line inside the node (`covers`). A marker on an
-        unchanged line therefore cannot exempt a newly added line — codex's r1 critical on #4844,
-        where a marker on a call's unchanged opening line exempted an added ``api_key=`` argument
-        further down. An empty ``covers`` falls back to the line's own text only.
+        A marker exempts only on an allowlisted path (elsewhere it is itself a finding), and only
+        when every added line the finding covers carries it; empty ``covers`` means this line.
         """
         covered_texts = [added[line] for line in covers if line in added] or [content]
         marked = all(ALLOW_MARKER in text_of_line for text_of_line in covered_texts)
@@ -147,8 +133,7 @@ def _scan_validated_files(
                     line_kinds += ("api-key-route",)
                 emit(path, line_no, line_kinds, text)
             continue
-        # An unparseable Python post-image fails closed in the detector (`unparseable-python`).
-        # It goes straight to the findings: no marker can exempt what cannot be parsed.
+        # `unparseable-python` goes straight to the findings: no marker exempts it.
         findings.extend(node_findings)
         for line_no, text in sorted(added.items()):
             emit(path, line_no, _text_classes(text), text)
@@ -188,8 +173,7 @@ def _strict_main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        # ONE base for the diff and the index seed: zero-context hunks applied to a moved base
-        # can land elsewhere silently, so the scanned post-image would not be the PR's.
+        # ONE base for diff and index seed: a moved base can misplace zero-context hunks.
         merge_base = _run_git(["merge-base", args.base, args.head], repo=repo)
         if merge_base.returncode != 0:
             print(

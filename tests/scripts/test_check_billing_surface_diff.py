@@ -1,11 +1,5 @@
-"""Tests for the git-validated provider-billing surface scanner.
-
-Two families, both through the FULL entry point (``main``, not a helper):
-
-- the detectors, marker contract and proxy exemption ported from #4795/#4808;
-- every malformed-input shape those reviews found, which must now exit NONZERO: the scanner applies
-  the input with git first, so a shape git will not apply is refused instead of parsed permissively.
-"""
+"""The git-validated billing scanner, through its full entry point: the ported detectors, marker
+and proxy contracts, and every malformed-input shape, which must exit nonzero."""
 
 from __future__ import annotations
 
@@ -108,7 +102,7 @@ def _run_text(repo: Path, base: str, tmp_path: Path, text: str) -> subprocess.Co
     return _run(repo, base, diff_file=path)
 
 
-# ── detectors, marker contract, proxy exemption (ported) ─────────────
+# ── detectors, marker contract, proxy exemption (ported)
 
 
 def test_a_credential_route_on_an_added_line_is_a_finding(tmp_path: Path) -> None:
@@ -176,8 +170,7 @@ def test_an_unparseable_python_post_image_fails_closed(tmp_path: Path, content: 
 
 
 def test_an_advanced_base_cannot_misplace_the_prs_added_line(tmp_path: Path) -> None:
-    # The PR inserts a key line after line 1; main then prepends a string block. Applied to
-    # main's tree, the zero-context hunk would land inside that string and scan clean.
+    # Applied to main's tree, the PR's zero-context hunk would land inside the string.
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
     _git(repo, "checkout", "-q", "-b", "pr")
@@ -265,21 +258,17 @@ def test_a_dynamic_proxy_target_is_not_a_binding(tmp_path: Path) -> None:
     assert "api-key-route" in result.stdout
 
 
-# ── malformed input: every shape must exit NONZERO ───────────────────
+# ── malformed input: every shape must exit NONZERO
 
 
-def test_a_headerless_hunk_is_never_a_clean_scan(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "prefixes",
+    [("diff --git",), ("diff --git", "index ", "--- ")],
+    ids=["headerless-hunk", "ppp-without-diff-git"],
+)
+def test_a_stripped_header_is_never_a_clean_scan(tmp_path: Path, prefixes: tuple[str, ...]) -> None:
     repo, base, _head, diff = _fixture(tmp_path)
-    stripped = "\n".join(l for l in diff.splitlines() if not l.startswith("diff --git"))
-    result = _run_text(repo, base, tmp_path, stripped + "\n")
-    assert result.returncode != 0, result.stdout + result.stderr
-
-
-def test_a_ppp_header_without_diff_git_is_never_a_clean_scan(tmp_path: Path) -> None:
-    repo, base, _head, diff = _fixture(tmp_path)
-    stripped = "\n".join(
-        l for l in diff.splitlines() if not l.startswith(("diff --git", "index ", "--- "))
-    )
+    stripped = "\n".join(l for l in diff.splitlines() if not l.startswith(prefixes))
     result = _run_text(repo, base, tmp_path, stripped + "\n")
     assert result.returncode != 0, result.stdout + result.stderr
 
@@ -318,47 +307,52 @@ def test_the_fuzzed_corpus_never_scans_a_key_line_clean(tmp_path: Path) -> None:
             assert "OPENAI_API_KEY" not in text, f"scanned clean over a key line:\n{text}"
 
 
-# ── diff-read errors carry next actions ─────────────────────────────
+# ── diff-read errors carry next actions
 
 
-def test_a_missing_diff_file_refuses_with_a_next_action(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("args", "diff_text"),
+    [
+        (["--repo", "{R}", "--base", "{B}", "--diff-file", "{T}/absent.diff"], None),
+        (["--repo", "{R}", "--head", "HEAD"], None),
+        (["--repo", "{R}", "--base", "no-such-revision", "--head", "HEAD"], None),
+        (["--repo", "{R}", "--base", "{B}", "--head", "no-such-head"], None),
+        (["--repo", "{T}/plain", "--base", "abcdef0", "--diff-file", "{F}"], "not a diff at all\n"),
+        (["--repo", "{R}", "--base", "{B}", "--diff-file", "{F}"], ""),
+    ],
+    ids=[
+        "missing-diff-file",
+        "missing-base",
+        "unresolvable-base",
+        "unresolvable-head",
+        "not-a-repository",
+        "empty-diff-file",
+    ],
+)
+def test_an_unusable_invocation_refuses_with_a_next_action(
+    tmp_path: Path, args: list[str], diff_text: str | None
+) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
-    result = _run(repo, base, diff_file=tmp_path / "absent.diff")
-    assert result.returncode == 2
-    assert "Next action" in result.stderr
-
-
-def test_a_missing_base_refuses_with_a_next_action(tmp_path: Path) -> None:
-    repo, _base, _head, _diff = _fixture(tmp_path)
+    (tmp_path / "plain").mkdir()
+    if diff_text is not None:
+        (tmp_path / "case.diff").write_text(diff_text, encoding="utf-8")
+    subs = {"{R}": str(repo), "{B}": base, "{T}": str(tmp_path), "{F}": str(tmp_path / "case.diff")}
+    for key, value in subs.items():
+        args = [arg.replace(key, value) for arg in args]
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--repo", str(repo), "--head", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
+        [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, check=False
     )
     assert result.returncode == 2
     assert "Next action" in result.stderr
 
 
-def test_an_unresolvable_base_refuses_with_a_next_action(tmp_path: Path) -> None:
-    repo, _base, _head, _diff = _fixture(tmp_path)
-    result = _run(repo, "no-such-revision", diff_text="")
-    assert result.returncode == 2
-    assert "Next action" in result.stderr
-
-
-# ── the marker is decided from the added lines a finding COVERS ──────
+# ── the marker is decided from the added lines a finding COVERS
 
 
 def test_a_marker_on_an_unchanged_opening_line_does_not_exempt_an_added_argument(
     tmp_path: Path,
 ) -> None:
-    """codex's r1 critical on #4844.
-
-    A call's opening line is a CONTEXT line when only an argument below it is added. The marker on
-    that unchanged opening line must NOT exempt the newly added ``api_key=`` argument inside the
-    call — the exemption belongs to the added lines the finding covers.
-    """
+    """A marker on an unchanged opening line must not exempt an added ``api_key=`` argument."""
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
     (repo / "tests" / "gen.py").write_text("client = OpenAI(  # billing-scan:allow\n)\n")
@@ -395,9 +389,7 @@ def test_a_marker_on_the_added_calls_own_line_still_exempts(tmp_path: Path) -> N
 def test_a_multi_line_call_needs_the_marker_on_every_added_line_it_covers(
     tmp_path: Path,
 ) -> None:
-    """The rule a reader must know: an exemption covers the ADDED lines that carry the marker, so a
-    multi-line call is exempt only when every added line of it is marked — anything less would let an
-    unmarked added line ride an exempted node."""
+    """A multi-line call is exempt only when every added line of it carries the marker."""
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
     (repo / "tests" / "gen.py").write_text(
@@ -413,60 +405,19 @@ def test_a_multi_line_call_needs_the_marker_on_every_added_line_it_covers(
     assert "allowed tests/gen.py:1" in result.stdout
 
 
-# ── the remaining detector classes and error branches, at the entry point ──
+# ── the remaining detector classes and error branches, at the entry point
 
 
-def test_a_capacity_pool_payg_rebinding_is_a_finding(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "content",
+    ['config = {"capacity_pool": "api_paid_spend"}\n', "plan_type = 'api'\n"],
+    ids=["capacity-pool-payg", "plan-type-api"],
+)
+def test_a_payg_rebinding_is_a_finding(tmp_path: Path, content: str) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text('config = {"capacity_pool": "api_paid_spend"}\n')
+    (repo / "app.py").write_text(content)
     _commit(repo, "payg rebinding")
     result = _run(repo, base)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "capacity-pool-payg" in result.stdout
-
-
-def test_a_plan_type_api_rebinding_is_a_finding(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    _git(repo, "checkout", "-q", base)
-    (repo / "app.py").write_text("plan_type = 'api'\n")
-    _commit(repo, "plan type")
-    result = _run(repo, base)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "capacity-pool-payg" in result.stdout
-
-
-def test_an_unresolvable_head_refuses_with_a_next_action(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--repo",
-            str(repo),
-            "--base",
-            base,
-            "--head",
-            "no-such-head",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 2
-    assert "Next action" in result.stderr
-
-
-def test_a_repo_that_is_not_a_repository_refuses_with_a_next_action(tmp_path: Path) -> None:
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    result = _run_text(plain, "abcdef0", plain, "not a diff at all\n")
-    assert result.returncode == 2
-    assert "Next action" in result.stderr
-
-
-def test_an_empty_diff_file_refuses_with_a_next_action(tmp_path: Path) -> None:
-    repo, base, _head, _diff = _fixture(tmp_path)
-    result = _run_text(repo, base, tmp_path, "")
-    assert result.returncode == 2
-    assert "Next action" in result.stderr
