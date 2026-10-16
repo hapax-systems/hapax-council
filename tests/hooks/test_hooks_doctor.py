@@ -9,8 +9,10 @@ conventions (no shared conftest).
 
 from __future__ import annotations
 
+import configparser
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -60,6 +62,44 @@ def _write(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    "doctor_dir",
+    [
+        ".local/lib/hapax/hooks",
+        ".cache/hapax/rebuild/worktree/hooks/scripts",
+        ".cache/hapax/source-activation/worktree/hooks/scripts",
+    ],
+    ids=["canonical", "rebuild", "activated"],
+)
+def test_service_execstart_passes_activation_root(tmp_path: Path, doctor_dir: str) -> None:
+    """Every executable source must inspect the activated tree, not a lane branch."""
+    unit = configparser.ConfigParser(interpolation=None, strict=False)
+    unit.read(REPO_ROOT / "systemd" / "units" / "hapax-hooks-doctor.service")
+    fixture_home = tmp_path / "home with spaces"
+    args_path = tmp_path / "doctor-args"
+    _write(
+        fixture_home / doctor_dir / "hooks-doctor.sh",
+        '#!/bin/bash\nprintf "%s\\n" "$@" > "$DOCTOR_ARGS_CAPTURE"\n',
+    )
+
+    result = subprocess.run(
+        shlex.split(unit["Service"]["ExecStart"]),
+        env={**os.environ, "HOME": str(fixture_home), "DOCTOR_ARGS_CAPTURE": str(args_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert args_path.read_text().splitlines() == [
+        "--session",
+        "--notify",
+        "--root",
+        str(fixture_home / ".cache/hapax/source-activation/worktree"),
+    ]
 
 
 # --- classify --------------------------------------------------------------
