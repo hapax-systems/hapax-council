@@ -44,12 +44,12 @@ def scan_git_validated(*, repo: Path, base: str, head: str) -> tuple[ScanResult 
     """Scan what git applies of the merge-base..head diff it generates: ``(result, error)``.
 
     An ``error`` (exit 2) has ``result`` None, so unusable input never scans clean."""
-    # GIT_ATTR_SOURCE (below) is ignored by git < 2.40: refuse rather than silently lose it.
+    # GIT_ATTR_SOURCE (below) is ignored by git < 2.41: refuse rather than silently lose it.
     version = re.match(r"git version (\d+)\.(\d+)", _run_git(["--version"], repo=repo).stdout)
-    if version is None or (int(version[1]), int(version[2])) < (2, 40):
+    if version is None or (int(version[1]), int(version[2])) < (2, 41):
         return None, (
-            "FAIL-CLOSED: git >= 2.40 is required for attribute-source hardening. Next action: "
-            "upgrade git or run on a host with git >= 2.40"
+            "FAIL-CLOSED: git >= 2.41 is required for attribute-source hardening. Next action: "
+            "upgrade git or run on a host with git >= 2.41"
         )
     # ONE base for diff and index seed: a moved base can misplace zero-context hunks.
     merge_base = _run_git(["merge-base", base, head], repo=repo)

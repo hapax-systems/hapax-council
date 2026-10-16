@@ -387,15 +387,16 @@ def test_an_unusable_invocation_refuses_with_a_next_action(tmp_path: Path, args:
 @pytest.mark.parametrize(
     ("version", "refusal"),
     [
-        ("2.39.5", "git >= 2.40 is required"),
-        ("unknown", "git >= 2.40"),
+        ("2.39.5", "git >= 2.41 is required"),
+        ("2.40.4", "git >= 2.41 is required"),
+        ("unknown", "git >= 2.41"),
         (None, "git is unavailable"),
     ],
 )
 def test_an_unusable_git_refuses_with_a_next_action(
     tmp_path: Path, version: str | None, refusal: str
 ) -> None:
-    """No git, or one below 2.40 that would silently ignore GIT_ATTR_SOURCE, refuses."""
+    """No git, or one below 2.41 that would silently ignore GIT_ATTR_SOURCE, refuses."""
     repo, base, _head, _diff = _fixture(tmp_path)
     stub = tmp_path / "bin" / "git"
     stub.parent.mkdir()
