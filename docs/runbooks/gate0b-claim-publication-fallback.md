@@ -419,3 +419,58 @@ cc-claim <task-id>
 
 If the normal command still holds, repair the Gate-0B install root or release the
 legacy claim through the exact stale-lease release procedure before continuing.
+
+## Role exclusion and terminal work observation
+
+The public `shared.sdlc_claim.claim_role_exclusion(role, *, lock_root)` factors the
+existing host-local role flock. Obtain the root from the execution host's validated
+`load_claim_publication_composition(...).receipt.roots.claim_lock_root`. The role
+digest and installed namespace are unchanged. Acquire role exclusion before any
+projected task/path locks. Nested acquisition, including a resolver which takes
+the role lock again, is refused. Its ephemeral handle checks the process, thread,
+role, root and held lifetime; it is neither authority nor evidence of liveness.
+
+This protocol was chosen over replacing every lease with a single file: the
+existing journal, admitted receipt, task note and compatibility projections have
+separate consumers. The existing publication protocol can serialize participating
+writers without replacing their durable proof representations.
+
+`observe_terminal_claim` consumes an already-held exclusion. Callers supply the
+original exact task, role, session, epoch and publication ID, plus installed roots.
+Its result is either `TerminalClaimEvidence` or `TerminalClaimHold`, both
+non-authorizing. Success requires a unique terminal note in `closed/`, no active
+twin, the immutable applied admission journal and receipt, and exact retained
+epoch/dispatch after-images or the existing verified archive and staged originals.
+`terminal_applied` describes a journal, not completed work. A release shape such
+as `lapsed_lease` or `returned_claim` does not establish terminality. Old shell
+closes which destroyed unarchived epochs remain unsupported historical evidence.
+
+The original supervisor owner must keep one exclusion continuously through final
+role/task/claim observation, process identity and liveness checks, and the actual
+SIGTERM decision and action. A second observation or a successful Python return
+followed by an unlocked Bash `kill` does not provide that interval. The following
+consumer shape uses a fake action only; signal implementation belongs to the
+original supervisor task:
+
+```python
+with claim_role_exclusion(role, lock_root=installed_lock_root) as held:
+    result = observe_terminal_claim(exclusion=held, **original_claim_and_installed_roots)
+    if isinstance(result, TerminalClaimEvidence):
+        # Final role/process identity and liveness checks also belong inside this span.
+        held.require_held(role=role, lock_root=installed_lock_root)
+        fake_dependent_action(result)
+```
+
+This source tranche depends on the claim-key owner's public exact-role parser
+(PR #5002), ordinary-close retention (#4982), and exact archive README byte
+validation (#4960). A disposable composition of those published diffs is
+unaccepted evidence, not installed qualification. The close serialization replaces
+the old cleanup block while retaining epoch/dispatch evidence; the overlapping
+cleanup hunk still needs root disposition and independent exact-head review.
+
+The boundary is cooperative and host-local. Raw/manual note writers and other
+unconverted ownership writers can bypass it. Preserve their failed historical
+specimens; a participating-writer test does not refute a raw-writer counterexample.
+The broader task's gate, stale-sweeper and other-reader obligations remain open.
+No source result here authorizes deployment, live signals, a Claude launch, or
+closure of that broader task.

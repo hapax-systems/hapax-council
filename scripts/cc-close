@@ -270,19 +270,29 @@ fi
 
 # The close moves the note out of active/ and UNLINKS it. That makes this the only writer
 # that can remove a projected path's subject from under an in-flight transition, so the
-# whole read / rewrite / move / unlink runs under the projection lock — the same primitive
-# the transition takes. cc-close holds no other lock, so there is no ordering to reconcile.
+# whole read / rewrite / move / unlink runs under the publication owner role lock, then
+# the same projected-path locks the transition takes.
 _cc_close_repo_root="$(cd "$SCRIPT_DIR/.." && pwd)" || exit 1
 PYTHONPATH="$_cc_close_repo_root:${PYTHONPATH:-}" \
 "$PROJECT_PYTHON" - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" \
   "${expect_sha256:-}" "$reason" "$witness" <<'PYEOF'
 import hashlib
 import re
+import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shared.sdlc_claim import _frontmatter_key_lines, _release_fields
+from shared.coord_projection import ReadOnlyFsSnapshot, ReadOnlySnapshotError
+from shared.execution_admission import ExecutionAdmissionError
+from shared.gate0b_claim_publication_install import (
+    default_claim_publication_roots, load_claim_publication_composition,
+)
+from shared.sdlc_claim import (
+    ClaimPublicationError, _capture_current_task_note, _frontmatter_key_lines,
+    _release_fields, claim_role_exclusion,
+)
 from shared.sdlc_lifecycle import TASK_MERGED_AWAITING_WITNESS_STATUS as AWAITING
 from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
@@ -293,11 +303,63 @@ path, task_id, final_status, pr, role, vault_root, expect_sha256, reason, witnes
 closed_dir = path.parent.parent / "closed"
 new_path = closed_dir / path.name
 
+@contextmanager
+def _close_exclusion():
+    if not path.exists() and new_path.is_file():
+        # The existing already-closed branch below makes no ownership changes.
+        yield ()
+        return
+    installed = load_claim_publication_composition(
+        Path(default_claim_publication_roots().invocation_store_root)
+    )
+    roots = installed.receipt.roots
+    if Path(vault_root) != Path(roots.claim_vault_root):
+        raise ClaimPublicationError(
+            "claim_close_root_mismatch", "use the installed composition's exact task root",
+        )
+    with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
+        observed = _capture_current_task_note(snapshot, Path(vault_root), task_id)
+        fields = _release_fields(observed.content.decode("utf-8"))
+        owner = str((fields or {}).get("assigned_to") or "").strip()
+        if observed.path != path or not owner or owner in {"unassigned", "null", "none"}:
+            raise ClaimPublicationError(
+                "claim_close_owner_unresolved",
+                "restore the note's original claim owner before closing; the closer is not the owner",
+            )
+        # Consume the claim-key owner's parser; never infer a role from a prefix.
+        try:
+            from shared.sdlc_claim import role_claim_marker_tasks
+        except ImportError as exc:
+            raise ClaimPublicationError(
+                "claim_role_parser_unavailable", "integrate the qualified exact-role parser",
+            ) from exc
+        cache = Path(roots.claim_cache_dir)
+        directory = snapshot.pin_absolute_dir(cache, private_final=False)
+        snapshot.list_names(directory)
+        markers = []
+        for marker, named_task in role_claim_marker_tasks(cache, owner):
+            key = marker.name.removeprefix("cc-active-task-")
+            for name in (marker.name, f"cc-claim-epoch-{key}", f"cc-claim-dispatch-{key}.json"):
+                snapshot.observe_file_at(directory, name, private=False, max_bytes=1024 * 1024)
+            if named_task == task_id:
+                if marker.read_bytes() != f"{task_id}\n".encode():
+                    raise ClaimPublicationError(
+                        "claim_close_marker_noncanonical", "preserve malformed ownership for reconciliation",
+                        str(marker),
+                    )
+                markers.append(marker)
+        with claim_role_exclusion(owner, lock_root=Path(roots.claim_lock_root)):
+            with projected_path_lock(task_id, (path, new_path)):
+                # Recheck the original note, owner, marker list and sidecars after exclusion.
+                snapshot.seal()
+                yield tuple(markers)
+
+
 # Both names are locked: the source this unlinks and the destination it installs. Locking
 # only the source would leave a concurrent writer free to act on the closed/ name while
 # this close was creating it.
 try:
-    with projected_path_lock(task_id, (path, new_path)):
+    with _close_exclusion() as matching_markers:
         if not path.is_file():
             # Re-checked under the lock: the note may have moved between the shell's resolution
             # above and this acquisition. Closing a path that no longer names the task would
@@ -416,45 +478,27 @@ try:
         if receipt.is_file():
             receipt.replace(new_path.parent / receipt.name)
             print(f"cc-close: moved acceptance receipt '{receipt.name}' to closed/")
-except TaskNoteLockError as exc:
+        # Matching activation markers only. Retain exact epoch/dispatch after-images (#4982).
+        for marker in matching_markers:
+            if marker.read_bytes() != f"{task_id}\n".encode():
+                raise ClaimPublicationError(
+                    "claim_close_marker_changed", "preserve changed ownership; use governed reconciliation",
+                    str(marker),
+                )
+            marker.unlink()
+            print(f"cc-close: cleared claim file '{marker}'")
+    if matching_markers:
+        try:
+            subprocess.run(["systemctl", "--user", "start", "hapax-cc-hygiene.service"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except OSError:
+            pass  # Preserve the existing best-effort reconciliation request.
+except (TaskNoteLockError, ClaimPublicationError, ReadOnlySnapshotError, ExecutionAdmissionError) as exc:
     print(f"cc-close: REFUSED — {exc}", file=sys.stderr)
     # Exit 3 is lock contention, matching cc-claim and the gate stamp. Exit 1 is a
     # lost note (neither active/ nor closed/ below). Flattening those was the defect.
     sys.exit(3)
 PYEOF
-
-# Clear the claim file(s) that still name this task. cc-claim writes BOTH a
-# legacy cc-active-task-<role> AND a session-keyed cc-active-task-<role>-<sid>
-# (agent-role.sh hapax_session_id, reform Phase 1 FM-2). Clearing only the
-# legacy file leaked the session-keyed lease until its 6h TTL — and the gate
-# reads the session-keyed file FIRST, so it kept seeing the just-closed task
-# (reform finding #12/#13). Clear this session's lease forms, each only when its
-# head still names the closed task (never clobber a lease for other work).
-if [[ -n "$role" ]]; then
-  session_id=""
-  if declare -F hapax_session_id >/dev/null 2>&1; then
-    session_id="$(hapax_session_id 2>/dev/null || true)"
-  fi
-  cleared_claim=0
-  for claim_key in \
-    "$role" \
-    ${session_id:+"$role-$session_id"}; do
-    claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
-    if [[ -f "$claim_file" ]] &&
-       [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
-      # clear it with its claim file so a stale epoch can never mis-age a
-      # future claim. Explicit path construction — substring substitution on
-      # the full path would rewrite a parent-directory occurrence instead.
-      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
-      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
-      cleared_claim=1
-    fi
-  done
-  if [[ "$cleared_claim" == 1 ]]; then
-    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
-  fi
-fi
 
 # Best-effort request lifecycle reconciliation. `request-intake-consumer`
 # remains read-only; this writer is explicit and conservative, and only runs

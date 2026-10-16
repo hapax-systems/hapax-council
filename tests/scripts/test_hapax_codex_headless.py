@@ -23,6 +23,8 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    for name in ("HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "HAPAX_SESSION_ID", "CODEX_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
     monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
@@ -57,6 +59,139 @@ def _extract_shell_function(name: str) -> str:
     start = text.index(f"{name}() {{")
     end = text.index("\n}\n\n", start) + len("\n}\n")
     return text[start:end]
+
+
+def _materialization_fixture(tmp_path, *, installed=True):
+    from datetime import UTC, datetime
+
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots,
+        install_claim_publication_composition,
+    )
+
+    home = tmp_path / "exec-home"
+    home.mkdir()
+    roots = default_claim_publication_roots(home=home).model_copy(
+        update={"claim_lock_root": str(tmp_path / "exec-installed-locks")}
+    )
+    if installed:
+        install_claim_publication_composition(
+            roots=roots, installed_at=datetime.now(UTC), install_task_ref="materialization-fixture"
+        )
+    calls = tmp_path / "fake-action"
+    binary = tmp_path / "bin" / "codex"
+    _write_executable(binary, f'printf acted > "{calls}"\n')
+    proof = tmp_path / "proof.json"
+    payload = {
+        "workdir": str(tmp_path),
+        "env": {
+            "HOME": str(home),
+            "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(REPO_ROOT),
+            "HAPAX_SESSION_ID": "a1111111-2222-4333-8444-555555555555",
+            "HAPAX_AGENT_ROLE": "cx-materialization",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "fixture-task",
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 fixture-task",
+        },
+        "proof_file": str(proof),
+        "argv": [str(binary)],
+        "codex_bin_path": str(binary),
+    }
+    env = dict(
+        os.environ, HAPAX_REMOTE_PAYLOAD=base64.b64encode(json.dumps(payload).encode()).decode()
+    )
+    env["PATH"] = str(binary.parent) + ":" + os.environ["PATH"]
+    return roots, calls, proof, env
+
+
+def _remote_execution_home(tmp_path):
+    """The fake SSH host has its own installed composition and empty activation cache."""
+    import shlex
+
+    from tests.scripts.test_cc_claim import _install_gate0b_claim_publication_root
+
+    home = tmp_path / "remote-home"
+    _install_gate0b_claim_publication_root(home)
+    return f"export HOME={shlex.quote(str(home))}\nexport HAPAX_SOURCE_ACTIVATE_WORKTREE={shlex.quote(str(REPO_ROOT))}\n"
+
+
+def test_remote_materialization_holds_installed_role_exclusion(tmp_path):
+    from shared.sdlc_claim import claim_role_exclusion
+
+    roots, calls, proof, env = _materialization_fixture(tmp_path)
+    with claim_role_exclusion("cx-materialization", lock_root=Path(roots.claim_lock_root)):
+        child = subprocess.Popen(
+            [sys.executable, "-c", _extract_remote_python("REMOTE_EXEC_PY")],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            with pytest.raises(subprocess.TimeoutExpired):
+                child.communicate(timeout=2)
+            assert not calls.exists() and not proof.exists()
+            assert not list(Path(roots.claim_cache_dir).glob("cc-active-task-*"))
+        finally:
+            if child.poll() is not None:
+                stdout, stderr = child.communicate()
+                assert child.returncode == 0, stdout + stderr
+    stdout, stderr = child.communicate(timeout=20)
+    assert child.returncode == 0, stdout + stderr
+    assert calls.exists() and proof.exists()
+
+
+def test_remote_materialization_missing_install_preserves_identity_and_proof(tmp_path):
+    roots, calls, proof, env = _materialization_fixture(tmp_path, installed=False)
+    result = subprocess.run(
+        [sys.executable, "-c", _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 78
+    assert not calls.exists() and not proof.exists()
+    assert not list(Path(roots.claim_cache_dir).glob("*"))
+
+
+@pytest.mark.parametrize("shape", ["partial", "conflicting", "symlink", "hardlink"])
+def test_remote_materialization_refuses_unsafe_or_partial_projection(tmp_path, shape):
+    roots, calls, proof, env = _materialization_fixture(tmp_path)
+    cache = Path(roots.claim_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    marker = cache / "cc-active-task-cx-materialization"
+    original = tmp_path / "original"
+    original.write_text("fixture-task\n")
+    if shape == "symlink":
+        marker.symlink_to(original)
+    elif shape == "hardlink":
+        os.link(original, marker)
+    else:
+        marker.write_text("fixture-task\n" if shape == "partial" else "successor-task\n")
+    before = marker.read_bytes()
+    result = subprocess.run(
+        [sys.executable, "-c", _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 78
+    assert marker.read_bytes() == before
+    assert not proof.exists() and not calls.exists()
+    assert not list(cache.glob("session-role-*"))
+
+
+def test_remote_materialization_exact_retry_preserves_projection_metadata(tmp_path):
+    roots, _, _, env = _materialization_fixture(tmp_path)
+    command = [sys.executable, "-c", _extract_remote_python("REMOTE_EXEC_PY")]
+    first = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
+    assert first.returncode == 0, first.stderr
+    paths = [p for p in Path(roots.claim_cache_dir).iterdir() if p.is_file()]
+    before = {p: (p.read_bytes(), p.stat().st_ino, p.stat().st_mtime_ns) for p in paths}
+    second = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
+    assert second.returncode == 0, second.stderr
+    assert {p: (p.read_bytes(), p.stat().st_ino, p.stat().st_mtime_ns) for p in paths} == before
 
 
 def _write_rejecting_codex(
@@ -370,8 +505,7 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     _write_executable(
         bin_dir / "ssh",
         # A remote environment override must not move the caller's observer.
-        'export HAPAX_SOURCE_ACTIVATE_WORKTREE="$HAPAX_CODEX_HEADLESS_WORKDIR"\n'
-        'exec bash -c "${@: -1}"\n',
+        _remote_execution_home(tmp_path) + 'exec bash -c "${@: -1}"\n',
     )
     if remote:
         _write_claim_epoch(cache, "cx-amber", "task-x")
@@ -480,7 +614,8 @@ def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> N
     env_file = tmp_path / "codex-env.txt"
     _write_executable(
         bin_dir / "ssh",
-        """remote_cmd="${@: -1}"
+        _remote_execution_home(tmp_path)
+        + """remote_cmd="${@: -1}"
 case "$remote_cmd" in
   HAPAX_REMOTE_PAYLOAD=*)
     echo 'fish: Expected a variable name after this $' >&2
@@ -552,6 +687,7 @@ exit 0
     assert proof["claim_materialized"] is True
     assert proof["claim_epoch_verified"] is True
     sid = proof["session_id"]
+    cache = tmp_path / "remote-home/.cache/hapax"
     assert (cache / f"session-role-{sid}").read_text(encoding="utf-8") == "cx-amber\n"
     assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
     legacy_epoch, _, legacy_task = (
@@ -584,7 +720,8 @@ def test_codex_headless_remote_uses_configured_codex_binary(tmp_path: Path) -> N
     path_marker = tmp_path / "path-codex-used"
     _write_executable(
         bin_dir / "ssh",
-        f"""remote_cmd="${{@: -1}}"
+        _remote_execution_home(tmp_path)
+        + f"""remote_cmd="${{@: -1}}"
 env -u HAPAX_CODEX_BIN -u HAPAX_CODEX_BIN_PATH -u NPM_CONFIG_PREFIX PATH="{remote_path}" bash -c "$remote_cmd"
 """,
     )
@@ -2884,6 +3021,9 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
 
 
 def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: Path) -> None:
+    from tests.scripts.test_cc_claim import _SESSION_ID, _install_gate0b_claim_publication_root
+
+    _install_gate0b_claim_publication_root(tmp_path / "home")
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
@@ -2900,7 +3040,7 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
         "workdir": str(workdir),
         "env": {
             "HOME": str(tmp_path / "home"),
-            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_SESSION_ID": _SESSION_ID,
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
         },
@@ -2931,6 +3071,9 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
 def test_codex_headless_remote_exec_claim_guards_precede_missing_codex(
     tmp_path: Path,
 ) -> None:
+    from tests.scripts.test_cc_claim import _SESSION_ID, _install_gate0b_claim_publication_root
+
+    _install_gate0b_claim_publication_root(tmp_path / "home")
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     no_codex_path = _python_only_remote_path(tmp_path)
 
@@ -2983,7 +3126,7 @@ def test_codex_headless_remote_exec_claim_guards_precede_missing_codex(
         "epoch",
         {
             "HOME": str(tmp_path / "home"),
-            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_SESSION_ID": _SESSION_ID,
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
         },
