@@ -1,8 +1,8 @@
 """FM-11 lane supervisor systemd units (coordination-reform 2026-05-30 Phase 6).
 
-Pins the supervisor oneshot+timer and the Restart=always+StartLimit hardening
-of the claude lane template unit, so the "dead lanes always auto-restart"
-mandate cannot silently regress to the old Restart=no.
+Preserves the supervisor implementation and the lane template's bounded restart
+behavior for governed launches. Automatic fleet supervision stays parked in
+favor of admitted JIT lanes.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def test_supervisor_service_is_oneshot_running_the_supervisor() -> None:
 
 
 def test_supervisor_service_execstart_is_branch_stable() -> None:
-    """A must-always-run supervisor cannot depend on the canonical integrator
+    """A supervisor admitted for a governed run cannot depend on the integrator
     worktree's transient branch — that worktree floats across feature branches
     and frequently lacks the supervisor script (it shipped in #3803), so a
     `%h/projects/hapax-council/scripts/...` ExecStart would fail to start.
@@ -59,19 +59,11 @@ def test_supervisor_timer_ticks_every_60s() -> None:
     assert unit["Install"]["WantedBy"] == "timers.target"
 
 
-def test_supervisor_timer_is_marked_auto_enable() -> None:
-    """reform-improve-deploy-activation: the deploy auto-enables units that
-    carry a `# Hapax-Auto-Enable: true` marker, so a newly-merged supervisor
-    timer is `enable --now`'d instead of installed-but-sleeping (the FM-11
-    live gap). The marker is meaningless without an [Install] section.
-    """
-    markers = [
-        line.strip()
-        for line in SUPERVISOR_TIMER.read_text(encoding="utf-8").splitlines()
-        if line.lstrip().startswith("#") and "hapax-auto-enable" in line.lower()
-    ]
-    assert markers, "lane-supervisor.timer must carry a `# Hapax-Auto-Enable` marker"
-    assert any("true" in marker.lower() for marker in markers)
+def test_supervisor_timer_is_parked_for_governed_activation() -> None:
+    """Keep supervision available without automatically respawning a fleet."""
+    text = SUPERVISOR_TIMER.read_text(encoding="utf-8")
+    assert "# Hapax-Parked: true" in text
+    assert "# Hapax-Auto-Enable: true" not in text
     assert "Install" in _load(SUPERVISOR_TIMER)
 
 
