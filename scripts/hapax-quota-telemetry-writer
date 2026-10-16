@@ -3917,6 +3917,49 @@ def append_operator_report(argv: list[str]) -> int:
     return 0
 
 
+def refresh_glmcp_plan_usage(args: argparse.Namespace) -> bool:
+    """Scheduled read-only meter refresh. No model call; check/test modes stay offline."""
+    if args.check or args.skip_receipts or getattr(args, "now", None):
+        return True
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts/hapax-glmcp-quota-admission"),
+                "--receipt-dir",
+                str(args.relay_receipt_dir),
+                "observe-plan",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=25,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    # Also invalidate an old positive receipt when the child dies before publishing.
+    # This is the same rolling observation, not a new ledger or a synthetic quota wall.
+    path = args.relay_receipt_dir / "glmcp-plan-usage.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".glmcp-plan-usage.")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(
+                "schema: hapax.glmcp_quota_admission.v1\nstatus: hold\nreason_code: plan_usage_unavailable\n"
+            )
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    print(
+        "hapax-quota-telemetry-writer: GLM plan usage unavailable; new lanes hold; "
+        "next action: check the declared credential and monitor, then refresh",
+        file=sys.stderr,
+    )
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     if (argv or sys.argv[1:])[:1] == ["operator-report"]:
         return append_operator_report((argv or sys.argv[1:])[1:])
@@ -4037,6 +4080,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     from shared.quota_headroom import TraceReadError, collect_measurements, enrich_ledger
+
+    refresh_glmcp_plan_usage(args)
 
     # Measurements only add evidence. When they cannot be read, the admission ledger is still
     # written, unenriched: a measurement failure narrows evidence, it never stalls admission.

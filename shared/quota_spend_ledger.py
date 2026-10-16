@@ -10,11 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -36,6 +36,7 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
+GLMCP_LANE_ROUTE_ID = "glmcp.interactive.lane"
 CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {"claude.headless.full", "claude.review.opus", "claude.interactive.full"}
 )
@@ -43,6 +44,7 @@ RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {
         "agy.review.direct",
         "glmcp.review.direct",
+        GLMCP_LANE_ROUTE_ID,
         "kimi.interactive.lane",
         *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
     }
@@ -50,6 +52,7 @@ RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "agy.review.direct": "google-antigravity-cli-agy",
     "glmcp.review.direct": "z_ai-glm-coding-plan",
+    GLMCP_LANE_ROUTE_ID: "z_ai-glm-coding-plan",
     "claude.headless.full": "anthropic-claude-subscription",
     "claude.review.opus": "anthropic-claude-subscription",
     "claude.interactive.full": "anthropic-claude-subscription",
@@ -913,6 +916,95 @@ class QuotaSnapshot(QuotaMeasurement):
         return self
 
 
+def glmcp_lane_quota_snapshot(
+    measurements: list[QuotaMeasurement], *, now: datetime
+) -> QuotaSnapshot:
+    """New-lane pace admission from complete, fresh plan windows; never stop a lane.
+
+    The existing exhausted admission state also holds a pace budget that is spent
+    ahead of its line. reason_code distinguishes that hold from a provider wall.
+    Recompute the line at the observation time; a stale sample cannot age into admission.
+    """
+    windows = {}
+    for name, minutes in (("weekly", 10080), ("five_hour", 300)):
+        candidates = [r for r in measurements if r.capacity_id == f"glm.subscription.{name}"]
+        if len(candidates) != 1:
+            break
+        row = candidates[0]
+        if (
+            row.label != "observed"
+            or row.unit != "percent_used"
+            or row.quantity is None
+            or not 0 <= row.quantity <= 100
+            or row.resets_at is None
+            or row.observed_at is None
+            or not row.source.startswith("local-trace:glmcp_plan_usage:")
+            or row.window != f"{minutes}m"
+            or not row.observed_at < row.resets_at <= row.observed_at + timedelta(minutes=minutes)
+        ):
+            break
+        windows[name] = row
+    state = SubscriptionQuotaState.UNKNOWN
+    reason = "plan_windows_missing_or_invalid"
+    primary = None
+    extras = []
+    fresh_until = None
+    if set(windows) == {"weekly", "five_hour"}:
+        week, hour = windows["weekly"], windows["five_hour"]
+        if week.observed_at == hour.observed_at and week.source == hour.source:
+            primary = week
+            fresh_until = min(
+                week.observed_at + timedelta(minutes=15),
+                cast("datetime", week.resets_at),
+                cast("datetime", hour.resets_at),
+            )
+            line = 100 * (1 - (week.resets_at - week.observed_at).total_seconds() / (168 * 3600))
+            extras = [
+                hour,
+                QuotaMeasurement(
+                    capacity_id="glm.subscription.weekly.even_pace",
+                    quantity=line,
+                    unit="percent_used",
+                    label="derived",
+                    observed_at=week.observed_at,
+                    resets_at=week.resets_at,
+                    measurement_fresh_until=fresh_until,
+                    window="10080m",
+                    source=week.source,
+                ),
+            ]
+            if not week.observed_at <= now < fresh_until:
+                state, reason = SubscriptionQuotaState.STALE, "plan_usage_not_current"
+            elif week.quantity > line:
+                state, reason = SubscriptionQuotaState.EXHAUSTED, "weekly_above_even_pace"
+            elif hour.quantity >= 100 or week.quantity >= 100:
+                state, reason = SubscriptionQuotaState.EXHAUSTED, "plan_window_exhausted"
+            else:
+                state, reason = SubscriptionQuotaState.FRESH, "within_weekly_even_pace"
+    fields = primary.model_dump(include=set(QuotaMeasurement.model_fields)) if primary else {}
+    fields["reason_code"] = reason
+    return QuotaSnapshot(
+        **fields,
+        quota_snapshot_schema=2,
+        snapshot_id="quota-glmcp-interactive-plan",
+        captured_at=primary.observed_at if primary else now,
+        fresh_until=fresh_until,
+        route_id=GLMCP_LANE_ROUTE_ID,
+        family="glm",
+        provider="z_ai-glm-coding-plan",
+        capacity_pool=CapacityPool.SUBSCRIPTION_QUOTA,
+        subscription_quota_state=state,
+        evidence_refs=("glmcp-plan-usage:observed",)
+        if primary
+        else ("glmcp-plan-usage:unavailable",),
+        operator_visible_reason=f"GLM new-lane admission: {reason}; running lanes are untouched",
+        measurements=tuple(extras),
+        stage="declared-measured" if primary else "declared-unmeasured",
+        next_act="Refresh the plan usage monitor; launch only within the weekly pace line",
+        owner="runtime",
+    )
+
+
 class PaidRouteRequest(StrictModel):
     route_id: str = Field(min_length=1)
     task_id: str = Field(min_length=1)
@@ -1687,6 +1779,10 @@ def _effective_subscription_quota_state(
 ) -> SubscriptionQuotaState:
     if _subscription_quota_missing_required_admission_evidence(ledger, snapshot):
         return SubscriptionQuotaState.UNKNOWN
+    if snapshot.route_id == GLMCP_LANE_ROUTE_ID:
+        return glmcp_lane_quota_snapshot(
+            [snapshot, *snapshot.measurements], now=now
+        ).subscription_quota_state
     if _subscription_quota_missing_required_payg_spend_gate(ledger, snapshot, now=now):
         return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_missing_required_fresh_until(snapshot):
@@ -1724,9 +1820,15 @@ def _subscription_quota_missing_required_admission_evidence(
     ledger: QuotaSpendLedger,
     snapshot: QuotaSnapshot,
 ) -> bool:
+    normalized_route_id = _normalize_route_id(snapshot.route_id)
+    if normalized_route_id == GLMCP_LANE_ROUTE_ID:
+        return (
+            snapshot.provider != RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS[GLMCP_LANE_ROUTE_ID]
+            or "glmcp-plan-usage:observed" not in snapshot.evidence_refs
+            or not snapshot.source.startswith("local-trace:glmcp_plan_usage:")
+        )
     if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
         return False
-    normalized_route_id = _normalize_route_id(snapshot.route_id)
     if normalized_route_id not in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return False
     expected_provider = RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS.get(normalized_route_id)

@@ -28,7 +28,8 @@
     "agy.review.direct",
     "glmcp.review.direct",
     "local_tool.local.worker",
-    "vibe.headless.full"
+    "vibe.headless.full",
+    "glmcp.interactive.lane"
   ],
   "omitted_capability_shapes": [
     {
@@ -5500,6 +5501,214 @@
       "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
       "approval_posture": "default_deny_enable_latch",
       "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "glmcp.interactive.lane",
+      "platform": "glmcp",
+      "mode": "interactive",
+      "profile": "lane",
+      "launcher": "scripts/hapax-glmcp-quota-admission launch <lane> --terminal <tmux|none>",
+      "sanctioned_wrapper": "scripts/hapax-glmcp-quota-admission",
+      "summary": "GLM-5.3 interactive Kimi Code lane on the Z.ai Coding Plan",
+      "notes": "The admission wrapper checks the complete, fresh five-hour and weekly token windows before invoking scripts/hapax-glmcp, versioned by PR #5131. Account binding: hapax-secret glmcp-api-key / FileStore; billing_mode=coding_plan_subscription, capacity_pool=subscription_quota. PAYG is structurally off in this path: launch pins the Coding Plan endpoint and glm-5.3, with no API-credit fallback or model substitution. Measurement identity is the Kimi wire record model field per turn, paired with the native session; configured model arguments alone are not observed identity. Scope is support work under frontier independent review. Direct launcher callers must use the same preflight; this registry declaration is not a runtime hook or independent capability acceptance.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "fresh_capability_evidence_absent",
+        "route_specific_quota_receipt_absent"
+      ],
+      "model_or_engine": "glm-5.3",
+      "execution_descriptor": {
+        "model_id": "z_ai-glm-5.3",
+        "effort": "high",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_training_unknown",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "runtime_mutation_without_isap",
+          "provider_spend",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "ledger",
+        "cost_source": "ledger",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "route_specific_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_resource_evidence_absent"
+            ]
+          },
+          "provider_docs": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "provider_docs_evidence_absent"
+            ]
+          }
+        }
+      },
+      "known_unknowns": [
+        "Registry declaration is not independent GLM capability or seat-fitness acceptance.",
+        "Source author cannot authorize release or assert installed launcher/hook activation.",
+        "Plan-monitor windows bound launch admission; running lanes are not touched. A positive model round-trip does not measure plan pace."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": ["task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:unmeasured"],
+          "observed_at": null,
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [{"tool_id": "filesystem", "available": false, "authority_use": ["read", "write"], "observed_at": null, "stale_after": "24h", "evidence_ref": "task:glmcp-lane-declared-route-and-plan-pace-admission-20261012:runtime-unobserved"}],
+      "approval_posture": "no_ask_hooks_enforced",
+      "capability_tier": "frontier_fallback",
       "worker_tier": "bounded_worker"
     }
   ]
