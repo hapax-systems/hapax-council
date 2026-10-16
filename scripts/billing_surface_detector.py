@@ -183,9 +183,8 @@ class Finding:
     line: int
     kind: str
     text: str
-    #: Added post-image lines this finding covers, when it is decided on a NODE. The marker decision
-    #: reads these, so a marker on an unchanged line can never exempt a newly added line inside the
-    #: node (codex's r1 critical on #4844).
+    #: Added lines a NODE finding covers; the marker decision reads only these, so a marker on an
+    #: unchanged line never exempts an added line inside the node.
     covers: tuple[int, ...] = ()
 
 
@@ -289,18 +288,9 @@ def _strip_target_node(node: ast.AST) -> ast.AST | None:
     """The ONE child a recognised protective strip exempts: the credential it strips.
 
     Recognised forms are exactly ``os.environ.pop(<literal>[, default])`` and
-    ``del os.environ[<literal>]``; the exempt node is the **target literal** (for
-    ``del``, the subscript that names it). **Every other child node is scanned as
-    ordinary code — the default argument included** (codex-1's round-4 critical:
-    ``os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])`` was passing
-    because the exemption covered the whole subtree, so the added read in the
-    default argument was never reported).
-
-    ``env.pop(...)`` and shell ``unset`` are **not recognised as strips at all** —
-    not here and not on the text path — because they are not the governed launcher
-    pattern, and exempting whatever object happens to be named ``env`` is how this
-    hole kept re-opening. There is no path on which they are exempt: the text path
-    grants no exemption whatsoever (see ``EXEMPTION_SITES``).
+    ``del os.environ[<literal>]``; the exempt node is the target literal (for ``del``,
+    its subscript). Every other child, the default argument included, is scanned as
+    ordinary code. ``env.pop(...)`` and shell ``unset`` are never strips, on any path.
     """
 
     if isinstance(node, ast.Delete) and len(node.targets) == 1:
@@ -412,25 +402,12 @@ def _unparseable_python_finding(
 def _node_findings_for_postimage(
     path: str, content: str, added_lines: set[int]
 ) -> tuple[list[Finding], list[Finding], bool]:
-    """Per-node findings for the post-image blob GIT materialised (Python).
+    """Per-node findings for git's post-image of ``path`` (absolute file lines).
 
-    ``content`` is git's own post-image for ``path`` (``git show :<path>`` against the index the
-    input diff was applied to), so positions are absolute file lines and nothing is reconstructed
-    from diff text. Returns ``(findings, allowed, parsed)`` — ``allowed`` names every exemption this
-    blob granted, with its path and line, so the report shows what the gate let through.
-
-    **Every exemption is decided on a NODE, never on a line** (round-3 contract):
-
-    - ``protective_strip`` exempts only the strip's **target** node, so a credential read elsewhere
-      on the same line is still counted (the round-3 case,
-      ``os.environ.pop("OLD_API_KEY", None); key = os.environ["OPENAI_API_KEY"]``) **and so is a
-      read in the strip's own default argument** (the round-4 case,
-      ``os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])``);
-    - ``proxy`` exempts only a ``Call`` whose own route target is a governed proxy;
-    - a node is reported only when an ADDED line falls inside it, so pre-existing code is not this
-      change's surface.
-
-    The blob is parsed as-is: it is a whole file, so a dedent fallback would move every line.
+    Returns ``(findings, allowed, parsed)``; ``allowed`` names every exemption granted. Each
+    exemption is decided on a NODE, never a line: a strip exempts only its target, so a read on
+    the same line or in its default is still counted; a proxy exempts only its own ``Call``. A
+    node counts only when an added line falls inside it.
     """
     try:
         tree = ast.parse(content)
