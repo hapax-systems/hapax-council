@@ -3,6 +3,7 @@
 import hashlib
 import importlib.machinery
 import importlib.util
+import ipaddress
 import json
 import socket
 import ssl
@@ -25,6 +26,17 @@ from shared.platform_capability_receipts import PlatformCapabilityReceipt
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/hapax-primary-source-fetch"
 PUBLIC_IP = "93.184.216.34"  # pragma: allowlist secret
+NONPUBLIC_IPS = [
+    "fec0::1",
+    "feff::1",
+    "::ffff:10.0.0.1",
+    "::ffff:127.0.0.1",
+    "2002:a00:1::",
+    "2002:7f00:1::",
+    "64:ff9b::a00:1",
+    "2001:0:808:808:0:ffff:f5ff:fffe",
+    "2001:0:a00:1:0:ffff:f6f6:f6f6",
+]
 
 
 @pytest.fixture
@@ -194,6 +206,118 @@ def bound(rig, **changes):
 def stopped(rig, reason, **kwargs):
     with pytest.raises(rig.module.FetchStop, match=reason):
         run(rig, **kwargs)
+
+
+def failure_manifest(rig, reason):
+    directory = rig.root / "receipts" / "fetch-runs" / f"fetch-fixture-{rig.sequence}"
+    raw = (directory / "run.json").read_bytes()
+    result = json.loads(raw)
+    observation = PlatformCapabilityReceipt.model_validate_json(
+        (directory / "observation.json").read_text()
+    )
+    assert result["stop_reason"] == reason and result["execution_authorized"] is False
+    assert observation.tool_state[0].available is False
+    assert (
+        observation.tool_state[0].evidence_ref
+        == "artifact-sha256:" + hashlib.sha256(raw).hexdigest()
+    )
+    return result, directory
+
+
+@pytest.mark.parametrize("ip", NONPUBLIC_IPS)
+def test_initial_nonpublic_endpoint_stops_before_connection(rig, ip):
+    rig.dns["arxiv.org"] = [ip]
+    stopped(rig, "unsafe_endpoint")
+    assert rig.requests == rig.connections == []
+    result, _ = failure_manifest(rig, "unsafe_endpoint")
+    assert result["gets"] == result["downloaded_bytes"] == 0
+
+
+@pytest.mark.parametrize("ip", NONPUBLIC_IPS)
+def test_redirect_rejects_nonpublic_in_mixed_dns_answers(rig, ip):
+    rig.responses["/paper"] = (302, {"Location": "https://github.com/source"}, b"")
+    rig.dns["github.com"] = [PUBLIC_IP, ip]
+    stopped(rig, "unsafe_endpoint")
+    assert rig.connections == [(PUBLIC_IP, 443)]
+    assert [path for path, _ in rig.requests] == ["/paper"]
+    result, _ = failure_manifest(rig, "unsafe_endpoint")
+    assert result["gets"] == 1 and result["downloaded_bytes"] == 0
+
+
+@pytest.mark.parametrize("ip", [PUBLIC_IP, "2606:4700:4700::1111"])
+def test_public_dns_answers_remain_usable(rig, ip):
+    rig.dns["arxiv.org"] = [ip]
+    assert rig.module.public_address("arxiv.org") == ip
+    assert rig.connections == rig.requests == []
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "::ffff:10.0.0.1",
+        "2002:a00:1::",
+        "64:ff9b::a00:1",
+        "2001:0:808:808:0:ffff:f5ff:fffe",
+        "2001:0:a00:1:0:ffff:f6f6:f6f6",
+    ],
+)
+def test_embedded_private_ipv4_stops_when_outer_address_is_global(rig, monkeypatch, encoded):
+    # The inner check must survive differences in outer-address classification.
+    class GlobalOuter(ipaddress.IPv6Address):
+        is_global = property(lambda self: True)
+        is_private = property(lambda self: False)
+        is_reserved = property(lambda self: False)
+
+    real_parse = ipaddress.ip_address
+    monkeypatch.setattr(
+        rig.module.ipaddress,
+        "ip_address",
+        lambda value: GlobalOuter(value) if value == encoded else real_parse(value),
+    )
+    rig.dns["arxiv.org"] = [PUBLIC_IP, encoded]
+    stopped(rig, "unsafe_endpoint")
+    assert rig.requests == rig.connections == []
+    result, _ = failure_manifest(rig, "unsafe_endpoint")
+    assert result["gets"] == 0 and result["documents"] == []
+
+
+@pytest.mark.parametrize("header", ["WWW-Authenticate", "Proxy-Authenticate"])
+def test_authentication_header_stops_even_on_success_status(rig, header):
+    rig.responses["/paper"] = (200, {header: "Basic realm=fixture"}, b"must not read")
+    stopped(rig, "unexpected_authentication")
+    assert rig.connections == [(PUBLIC_IP, 443)] and len(rig.requests) == 1
+    result, directory = failure_manifest(rig, "unexpected_authentication")
+    assert result["downloaded_bytes"] == 0 and result["documents"] == []
+    assert list(directory.glob("*.body")) == []
+
+
+def test_redirect_without_location_stops_before_another_request(rig):
+    rig.responses["/paper"] = (302, {}, b"")
+    stopped(rig, "unsafe_endpoint")
+    assert rig.connections == [(PUBLIC_IP, 443)] and len(rig.requests) == 1
+    result, _ = failure_manifest(rig, "unsafe_endpoint")
+    assert result["gets"] == 1 and result["documents"] == []
+
+
+def test_empty_dns_answer_stops_before_connection(rig):
+    rig.dns["arxiv.org"] = []
+    stopped(rig, "unsafe_endpoint")
+    assert rig.requests == rig.connections == []
+    result, _ = failure_manifest(rig, "unsafe_endpoint")
+    assert result["gets"] == 0 and result["documents"] == []
+
+
+def test_truncated_body_retains_incomplete_bytes_and_failure(rig):
+    rig.responses["/paper"] = (200, {"Content-Length": "20"}, b"partial")
+    stopped(rig, "failed_admission")
+    assert rig.connections == [(PUBLIC_IP, 443)] and len(rig.requests) == 1
+    result, directory = failure_manifest(rig, "failed_admission")
+    assert result["downloaded_bytes"] == 7
+    assert len(result["documents"]) == 1
+    document = result["documents"][0]
+    assert document["complete"] is False and document["bytes"] == 7
+    assert document["sha256"] == hashlib.sha256(b"partial").hexdigest()
+    assert (directory / document["body"]).read_bytes() == b"partial"
 
 
 def test_production_entry_stays_closed_even_with_matching_receipt(rig, monkeypatch):

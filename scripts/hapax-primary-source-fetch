@@ -114,19 +114,41 @@ def admission(receipt, task_id, binding) -> str:
         raise FetchStop("failed_admission") from exc
 
 
+def embedded_ipv4(ip: ipaddress.IPv6Address) -> tuple[ipaddress.IPv4Address, ...]:
+    for inner in (ip.ipv4_mapped, ip.sixtofour):
+        if inner is not None:
+            return (inner,)
+    if ip.teredo is not None:
+        return ip.teredo  # Both the server and client must pass the public rule.
+    if ip in ipaddress.IPv6Network("64:ff9b::/96"):
+        return (ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF),)
+    return ()
+
+
+def public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if not (
+        ip.is_global
+        and not (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        )
+    ):
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        return not ip.is_site_local and all(public_ip(inner) for inner in embedded_ipv4(ip))
+    return True
+
+
 def public_address(host: str) -> str:
     addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
     if not addresses:
         raise FetchStop("unsafe_endpoint")
     for _, _, _, _, address in addresses:
-        ip = ipaddress.ip_address(address[0])
-        if (
-            not ip.is_global
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_loopback
-            or ip.is_link_local
-        ):
+        if not public_ip(ipaddress.ip_address(address[0])):
             raise FetchStop("unsafe_endpoint")
     return addresses[0][4][0]
 
