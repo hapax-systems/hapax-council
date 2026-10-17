@@ -106,6 +106,21 @@ def test_idle_visible_output_is_not_live_status(tmp_path, status):
 
 
 @pytest.mark.parametrize(
+    "old",
+    ["● Previous answer mentioned Working...", "Working...", "✢ Photosynthesizing… (1m 1s)"],
+)
+def test_empty_status_does_not_promote_previous_output(tmp_path, old):
+    result, _ = send(tmp_path, pane("", output=old))
+    assert result.returncode == 0, result.stderr
+
+
+def test_adjacent_answer_prose_is_not_legacy_status(tmp_path):
+    visible = f"● Previous answer mentioned Working...\n\n{RULE}\n❯ \n{RULE}\n"
+    result, _ = send(tmp_path, visible)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
     "status",
     [
         "✢ Photosynthesizing… (1m 1s · ↓ 4.9k tokens)",
@@ -120,6 +135,7 @@ def test_idle_visible_output_is_not_live_status(tmp_path, status):
         "✻ Swirling...\n  (22s · thinking with high effort)",
         "✢ Photosynthe\x1esizing… (1m 1s · ↓ 4.9k tokens)",
         "Working...",
+        "✻ Working...",
         "esc to interrupt",
         "Messages to be submitted after next tool call",
     ],
@@ -131,12 +147,16 @@ def test_live_busy_refuses_before_input_mutation(tmp_path, status):
 
 
 def test_composer_text_is_not_status(tmp_path):
-    result, _ = send(tmp_path, pane("✻ Worked for 2s", composer="Working...\nLoading… ("))
+    result, _ = send(tmp_path, pane("✻ Worked for 2s", composer="draft\nWorking...\nLoading… ("))
     assert result.returncode == 0, result.stderr
 
 
 def test_tip_text_is_not_status(tmp_path):
-    result, _ = send(tmp_path, pane("✻ Worked for 2s\n  ⎿ Tip: Working... describes an old UI"))
+    result, _ = send(
+        tmp_path,
+        pane("✻ Worked for 2s\n  ⎿ Tip: Working... describes an old UI"),
+        HAPAX_CLAUDE_SEND_BUSY_REGEX=r"Working\.\.\.",
+    )
     assert result.returncode == 0, result.stderr
 
 

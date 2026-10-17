@@ -82,7 +82,7 @@ is_retired_send_target_role() {
 
 # Current status glyph + changing verb + ellipsis + elapsed/hook clause,
 # plus the older activity, queue and interrupt indicators. Pattern is grep -E.
-DEFAULT_BUSY_REGEX='^[[:space:]]*(✢|✳|✶|✻|✽|·|\*)[[:space:]]+[A-Z][[:alpha:]-]*(…|\.\.\.)[[:space:]]+\(([0-9]|running )|(Working|Pondering|Thinking|Investigating|Cogitating|Synthesizing|Considering|Reasoning|Generating|Analyzing|Crystallizing|Refining|Reflecting|Deliberating|Deciding|Exploring|Computing)\.\.\.|Messages to be submitted after next tool call|esc to interrupt'
+DEFAULT_BUSY_REGEX='^[[:space:]]*(✢|✳|✶|✻|✽|·|\*)[[:space:]]+[A-Z][[:alpha:]-]*(…|\.\.\.)[[:space:]]+\(([0-9]|running )|^[[:space:]]*((✢|✳|✶|✻|✽|·|\*)[[:space:]]+)?(Working|Pondering|Thinking|Investigating|Cogitating|Synthesizing|Considering|Reasoning|Generating|Analyzing|Crystallizing|Refining|Reflecting|Deliberating|Deciding|Exploring|Computing)\.\.\.|^[[:space:]]*Messages to be submitted after next tool call|^[[:space:]]*esc to interrupt'
 BUSY_REGEX="${HAPAX_CLAUDE_SEND_BUSY_REGEX:-$DEFAULT_BUSY_REGEX}"
 
 cleanup_tmp_files() {
@@ -466,7 +466,10 @@ tmux_live_status() {
         if (lines[i] ~ /─/ && rule(lines[i])) { bottom = i; break }
       if (!bottom) exit 1
       start = prompt - 2
-      while (start > 0 && lines[start] ~ /^[[:space:]]*$/) start--
+      # The status ends at the single spacer before the composer. An empty
+      # paragraph is no status, not permission to search older answer blocks.
+      if (start > 0 && lines[start] ~ /^[[:space:]]*$/) start--
+      if (start > 0 && lines[start] ~ /^[[:space:]]*$/) start = 0
       last = start
       while (start > 1 && lines[start-1] !~ /^[[:space:]]*$/) start--
       if (start > 0) {
