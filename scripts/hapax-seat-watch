@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Output-only seat snapshots; the caller reads the journal each turn.
+
+No cursor, event store, read receipt, pane text, mail body or HAN content is
+written. Missing producers report unavailable rather than an empty result.
+The `memory` timer instance invokes the separate generated projection.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import stat
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+VAULT = Path.home() / "Documents/Personal"
+DEFAULT_INBOX = VAULT / "30-areas/hapax/lanebus/dev1"
+DEFAULT_HAN = Path.home() / "hapax-state/han-mail/quarantine"
+MAX_ENTRIES = 100
+MAX_PANES = 128
+BLOCK_REASONS = (
+    ("quota", re.compile(r"quota wall|rate limit|usage limit", re.I)),
+    ("hold", re.compile(r"\bHOLD\b", re.I)),
+    ("blocked", re.compile(r"\bBLOCKED\b", re.I)),
+)
+
+
+def _file_snapshot(kind: str, directory: Path) -> dict[str, Any]:
+    if directory.is_symlink() or not directory.is_dir():
+        return {"kind": kind, "status": "unavailable", "reason": "directory_missing_or_symlink"}
+    rows = []
+    try:
+        for entry in directory.iterdir():
+            if kind == "inbox" and entry.suffix != ".md":
+                continue
+            if kind == "han" and entry.suffix != ".eml":
+                continue
+            info = entry.lstat()
+            if stat.S_ISREG(info.st_mode):
+                rows.append(
+                    {"name": entry.name, "mtime_ns": info.st_mtime_ns, "size": info.st_size}
+                )
+    except OSError:
+        return {"kind": kind, "status": "unavailable", "reason": "directory_unreadable"}
+    rows.sort(key=lambda row: (row["mtime_ns"], row["name"]), reverse=True)
+    return {
+        "kind": kind,
+        "status": "ok",
+        "count": len(rows),
+        "latest": rows[:MAX_ENTRIES],
+        "truncated": len(rows) > MAX_ENTRIES,
+    }
+
+
+def _run(args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _pane_snapshot(tmux_bin: str) -> dict[str, Any]:
+    listed = _run([tmux_bin, "list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{pane_dead}"])
+    if listed is None or listed.returncode != 0:
+        return {"kind": "panes", "status": "unavailable", "reason": "tmux_unavailable"}
+    parsed = []
+    for line in listed.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].startswith("hapax-") and re.fullmatch(r"%[0-9]+", parts[1]):
+            parsed.append(parts)
+    blocked = []
+    for session, pane, dead in parsed[:MAX_PANES]:
+        if dead == "1":
+            blocked.append({"session": session, "pane": pane, "reason": "pane_dead"})
+            continue
+        captured = _run([tmux_bin, "capture-pane", "-pt", pane, "-S", "-12"])
+        if captured is None or captured.returncode != 0:
+            blocked.append({"session": session, "pane": pane, "reason": "pane_unreadable"})
+            continue
+        for reason, pattern in BLOCK_REASONS:
+            if pattern.search(captured.stdout):
+                blocked.append({"session": session, "pane": pane, "reason": reason})
+                break
+    return {
+        "kind": "panes",
+        "status": "ok",
+        "scanned": min(len(parsed), MAX_PANES),
+        "blocked": blocked,
+        "truncated": len(parsed) > MAX_PANES,
+    }
+
+
+def _github_snapshot(gh_bin: str) -> dict[str, Any]:
+    result = _run([gh_bin, "api", "rate_limit"])
+    if result is None or result.returncode != 0:
+        return {"kind": "github", "status": "unavailable", "reason": "rate_limit_unavailable"}
+    try:
+        resources = json.loads(result.stdout)["resources"]
+        selected = {}
+        for name in ("core", "search", "graphql"):
+            entry = resources.get(name)
+            if entry is None:
+                continue
+            selected[name] = {key: int(entry[key]) for key in ("limit", "remaining", "reset")}
+        if "core" not in selected:
+            raise ValueError("core absent")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return {"kind": "github", "status": "unavailable", "reason": "rate_limit_malformed"}
+    return {"kind": "github", "status": "ok", **selected}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("kind", choices=("inbox", "han", "panes", "github", "memory"))
+    parser.add_argument("--inbox-dir", type=Path, default=DEFAULT_INBOX)
+    parser.add_argument("--han-dir", type=Path, default=DEFAULT_HAN)
+    parser.add_argument("--tmux-bin", default="tmux")
+    parser.add_argument("--gh-bin", default="gh")
+    parser.add_argument("--source-dir", type=Path)
+    parser.add_argument("--dest-dir", type=Path)
+    args = parser.parse_args()
+    if args.kind == "inbox":
+        payload = _file_snapshot("inbox", args.inbox_dir)
+    elif args.kind == "han":
+        payload = _file_snapshot("han", args.han_dir)
+    elif args.kind == "panes":
+        payload = _pane_snapshot(args.tmux_bin)
+    elif args.kind == "github":
+        payload = _github_snapshot(args.gh_bin)
+    else:
+        command = [sys.executable, str(Path(__file__).with_name("hapax-seat-memory-export"))]
+        if args.source_dir:
+            command.extend(("--source-dir", str(args.source_dir)))
+        if args.dest_dir:
+            command.extend(("--dest-dir", str(args.dest_dir)))
+        result = _run(command)
+        if result is None or result.returncode != 0:
+            payload = {"kind": "memory", "status": "unavailable", "reason": "export_refused"}
+        else:
+            try:
+                payload = {"kind": "memory", **json.loads(result.stdout)}
+            except (ValueError, TypeError):
+                payload = {"kind": "memory", "status": "unavailable", "reason": "export_malformed"}
+    payload["observed_at"] = datetime.now(UTC).isoformat()
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if payload["status"] in {"ok", "updated", "unchanged"} else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
