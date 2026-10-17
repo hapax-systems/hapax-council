@@ -120,6 +120,54 @@ def test_run_auto_persists_invalid_token_repair_and_full_scans(monkeypatch):
     assert full_scans == [True]
 
 
+@pytest.mark.parametrize(
+    ("token_after", "changed", "last_saved_age_s", "expect_save"),
+    [
+        # idle tick, recent save: the 150 MB rewrite is skipped
+        ("tok1", [], 60, False),
+        # idle tick, save older than the interval: health-check mtime refresh
+        ("tok1", [], 3600, True),
+        # token moved with no file changes (folder rename, deletion): must save
+        ("tok2", [], 60, True),
+        # file changes: must save
+        ("tok2", ["abc"], 60, True),
+    ],
+)
+def test_run_auto_skips_state_rewrite_only_on_recent_idle_tick(
+    monkeypatch, token_after, changed, last_saved_age_s, expect_save
+):
+    import time
+
+    import agents._sensor_protocol as sensor
+    import agents.gdrive_sync as mod
+
+    state = SyncState(start_page_token="tok1", last_sync=time.time() - last_saved_age_s)
+    saves: list[str] = []
+    profile_writes: list[bool] = []
+    sensor_writes: list[str] = []
+
+    def incremental(_service, sync_state):
+        sync_state.start_page_token = token_after
+        sync_state.last_sync = time.time()
+        return list(changed)
+
+    monkeypatch.setattr(mod, "_get_drive_service", lambda: object())
+    monkeypatch.setattr(mod, "_load_state", lambda: state)
+    monkeypatch.setattr(mod, "_incremental_sync", incremental)
+    monkeypatch.setattr(mod, "_sync_file", lambda *_a: False)
+    monkeypatch.setattr(mod, "_save_state", lambda s: saves.append(s.start_page_token))
+    monkeypatch.setattr(mod, "_write_profile_facts", lambda _s: profile_writes.append(True))
+    monkeypatch.setattr(sensor, "write_sensor_state", lambda name, _d: sensor_writes.append(name))
+    monkeypatch.setattr(sensor, "emit_sensor_impingement", lambda *_a: None)
+
+    mod.run_auto()
+
+    assert saves == ([token_after] if expect_save else [])
+    assert profile_writes == ([True] if expect_save else [])
+    # liveness is published on every tick, saved or not
+    assert sensor_writes == ["gdrive"]
+
+
 def test_resolve_folder_path():
     """Folder path resolution builds full path from parent chain."""
     from agents.gdrive_sync import _resolve_folder_path
