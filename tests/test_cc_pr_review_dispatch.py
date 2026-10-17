@@ -5512,7 +5512,7 @@ provider: google-antigravity-cli-agy
 capacity_pool: subscription_quota
 route_id: agy.review.direct
 supported_tool: hapax-agy-reviewer
-model: gemini-3.1-pro-preview
+model: {agy_model}
 observed_at: 2026-06-11T20:56:00Z
 stale_after_seconds: 900
 evidence_ref: agy-gemini31pro-smoke-witness
@@ -5559,6 +5559,10 @@ payg_fallback: false
         receipt_name: str,
         receipt_body: str,
     ) -> None:
+        if family == "gemini":
+            from shared.quota_spend_ledger import agy_review_model_binding
+
+            receipt_body = receipt_body.format(agy_model=agy_review_model_binding()[0])
         state, _ = self._isolate_state(monkeypatch, tmp_path)
         observed = "2026-06-11T20:55:00+00:00"
         state.write_text(
