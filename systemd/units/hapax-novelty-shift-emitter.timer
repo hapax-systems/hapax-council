@@ -1,5 +1,6 @@
 [Unit]
 Description=Hapax novelty-shift impingement emitter timer (retired; service owns cadence)
+# Hapax-Parked: true
 ConditionPathExists=/run/hapax/enable-retired-novelty-shift-timer
 
 [Timer]
