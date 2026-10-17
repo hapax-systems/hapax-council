@@ -2017,6 +2017,32 @@ def test_every_per_pr_rest_call_in_the_fleet_is_routed_or_named() -> None:
     )
 
 
+def test_current_pull_rest_read_obeys_cycle_eligibility(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def runner(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"number": 42}), "")
+
+    blocked = github_pr_status.ListingRoute(
+        transport="graphql", rest_blocked=True, reason="core below floor"
+    )
+    eligible = github_pr_status.ListingRoute(
+        transport="graphql", rest_blocked=False, reason="core has headroom"
+    )
+
+    assert github_pr_status.get_pull_rest_routed(
+        42, route=blocked, repo="owner/repo", repo_root=tmp_path, runner=runner
+    ) == (False, None)
+    assert calls == []
+
+    assert github_pr_status.get_pull_rest_routed(
+        42, route=eligible, repo="owner/repo", repo_root=tmp_path, runner=runner
+    ) == (True, {"number": 42})
+    assert len(calls) == 1
+    assert "repos/owner/repo/pulls/42" in calls[0]
+
+
 def test_a_failing_graphql_listing_falls_back_to_a_HEALTHY_rest_pool(tmp_path: Path) -> None:
     """Eligibility turns on `rest_blocked`, never on "we already tried something".
 
