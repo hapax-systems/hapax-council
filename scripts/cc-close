@@ -128,7 +128,7 @@ fi
 
 frontmatter_task_id() {
   local file="$1"
-  python3 - "$file" <<'PYEOF'
+  python3 -P - "$file" <<'PYEOF'
 import re
 import sys
 from pathlib import Path
@@ -165,7 +165,7 @@ fi
 # Rapid-closure flag — require --retroactive for tasks closed <5min after claim.
 # Prevents the 22-second paperwork closure pattern found by CCTV disconfirmation.
 if [[ "$final_status" == "done" && -z "${retroactive:-}" && "${HAPAX_RAPID_CLOSE_OFF:-0}" != "1" ]]; then
-  claimed_at="$(python3 -c "
+  claimed_at="$(python3 -P -c "
 import re, sys
 from pathlib import Path
 text = Path('$note_path').read_text()
@@ -173,7 +173,7 @@ m = re.search(r'^claimed_at:\s*(.+)$', text, re.MULTILINE)
 if m: print(m.group(1).strip().strip(\"'\").strip('\"'))
 " 2>/dev/null || true)"
   if [[ -n "$claimed_at" ]]; then
-    elapsed="$(python3 -c "
+    elapsed="$(python3 -P -c "
 from datetime import datetime, timezone
 try:
     claimed = datetime.fromisoformat('$claimed_at'.replace('Z','+00:00'))
@@ -273,8 +273,10 @@ fi
 # whole read / rewrite / move / unlink runs under the projection lock — the same primitive
 # the transition takes. cc-close holds no other lock, so there is no ordering to reconcile.
 _cc_close_repo_root="$(cd "$SCRIPT_DIR/.." && pwd)" || exit 1
-PYTHONPATH="$_cc_close_repo_root:${PYTHONPATH:-}" \
-"$PROJECT_PYTHON" - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" \
+# Inline Python must not prepend the caller's (possibly stale) checkout. Keep the
+# installed root first, without adding an empty PYTHONPATH entry (also the cwd).
+PYTHONPATH="$_cc_close_repo_root${PYTHONPATH:+:$PYTHONPATH}" \
+"$PROJECT_PYTHON" -P - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" \
   "${expect_sha256:-}" "$reason" "$witness" <<'PYEOF'
 import hashlib
 import re
