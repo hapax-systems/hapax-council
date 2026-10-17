@@ -22,6 +22,18 @@ PROVIDER_ROUTE_ENV = (
     "CLAUDE_CODE_USE_VERTEX",
 )
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
+#: The config-dir variable that selects which Claude subscription account a CLI child bills.
+POOL_CONFIG_ENV = "CLAUDE_CONFIG_DIR"
+# The resolver reads the same registry file the descriptor resolver does (HAPAX_PLATFORM_CAPABILITY_REGISTRY,
+# else the release's own), so the model and the billed pool come from one declaration. It also reads the
+# release's checked-in declaration, so an override that unbinds or rebinds the route is detected here.
+POOL_BINDING_RESOLVER = (
+    "import json,sys; from pathlib import Path; sys.path.insert(0,sys.argv.pop(1)); "
+    "from shared.platform_capability_registry import PLATFORM_CAPABILITY_REGISTRY as d, "
+    "resolve_subscription_pool_binding as r; "
+    "f=lambda b: None if b is None else {'pool':b.pool,'config_dir':str(b.config_dir)}; "
+    "print(json.dumps({'effective':f(r(sys.argv[1])),'release':f(r(sys.argv[1],Path(d)))}))"
+)
 DEFAULT_TIMEOUT_SECONDS = 1140.0
 MAX_TIMEOUT_SECONDS = 1140.0
 STDOUT_QUOTA_WALL_DIAGNOSTIC = "hapax-claude-reviewer: claude stdout quota-wall diagnostic observed"
@@ -163,15 +175,72 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _execution_binding() -> dict:
+def _release_root() -> Path:
     # Use the same explicit source binding as the Codex launchers. Deployment
     # installs a regular copy, so __file__ does not identify a Council release.
     # Freeze the physical target before launching the isolated resolver.
-    root = Path(
+    return Path(
         os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
         or os.environ.get("HAPAX_COUNCIL_DIR")
         or Path.home() / ".cache/hapax/source-activation/worktree"
     ).resolve()
+
+
+def _pool_binding(root: Path) -> dict:
+    """The route's declared subscription pool: {"pool", "config_dir"}. Never inherited.
+
+    Resolved by the selected release's registry in an isolated interpreter, like the descriptor.
+    A route with no declared pool is refused: the config dir, and with it the billed account,
+    would otherwise be whatever CLAUDE_CONFIG_DIR the caller happened to carry.
+    """
+    python = root / ".venv/bin/python"
+    if not python.is_file() or not os.access(python, os.X_OK):
+        raise ValueError(
+            f"missing pool-binding runtime {python}; next action: use a provisioned Council release"
+        )
+    result = subprocess.run(
+        [str(python), "-I", "-c", POOL_BINDING_RESOLVER, str(root), REVIEW_EXECUTION_ROUTE],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    repair = "; next action: restore the selected release pool resolver"
+    if result.returncode:
+        raise ValueError(
+            (result.stderr.strip() or "pool-binding resolver failed without a diagnostic") + repair
+        )
+    try:
+        resolved = json.loads(result.stdout)
+        binding, release = resolved["effective"], resolved["release"]
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ValueError("malformed pool binding" + repair) from exc
+    if binding != release:
+        # HAPAX_PLATFORM_CAPABILITY_REGISTRY points at a declaration that binds, unbinds or
+        # rebinds the route against the release's own: never run on a pool the release did not
+        # declare, including when the release declares none.
+        raise ValueError(
+            f"the registry override's pool binding for {REVIEW_EXECUTION_ROUTE} differs from the "
+            "release's declaration; next action: unset HAPAX_PLATFORM_CAPABILITY_REGISTRY or "
+            "declare the same subscription_pool_binding there"
+        )
+    if binding is None:
+        raise ValueError(
+            f"{REVIEW_EXECUTION_ROUTE} declares no subscription_pool_binding; next action: "
+            "declare the route's pool in config/platform-capability-registry.json"
+        )
+    if (
+        not isinstance(binding, dict)
+        or set(binding) != {"pool", "config_dir"}
+        or not isinstance(binding["pool"], str)
+        or not isinstance(binding["config_dir"], str)
+        or not Path(binding["config_dir"]).is_absolute()
+    ):
+        raise ValueError("malformed pool binding" + repair)
+    return binding
+
+
+def _execution_binding(root: Path | None = None) -> dict:
+    root = _release_root() if root is None else root
     python = root / ".venv/bin/python"
     if not python.is_file() or not os.access(python, os.X_OK):
         raise ValueError(
@@ -311,13 +380,16 @@ def _run_claude(
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        binding = _execution_binding()
+        root = _release_root()
+        binding = _execution_binding(root)
+        pool = _pool_binding(root)
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(
             f"hapax-claude-reviewer: refusing undeclared invocation: {exc}; "
             "next action: repair the selected release descriptor/runtime and retry the review",
             file=sys.stderr,
         )
+        # Declaration refusal is 9; 64 below is only a conflicting --model assertion.
         return 9
     if args.model is not None and args.model != binding["descriptor"]["model_id"]:
         print(
@@ -326,6 +398,29 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 64
+    config_dir = Path(pool["config_dir"])
+    inherited = (os.environ.get(POOL_CONFIG_ENV) or "").strip()
+    if inherited and Path(inherited).expanduser().resolve() != config_dir.resolve():
+        # The caller's own account would otherwise be billed while admission measured the
+        # route's declared pool: the silent billing-surface switch this binding closes.
+        print(
+            f"hapax-claude-reviewer: refusing a conflicting inherited {POOL_CONFIG_ENV}: "
+            f"{REVIEW_EXECUTION_ROUTE} bills subscription pool {pool['pool']}; next action: "
+            f"rerun the review dispatch without {POOL_CONFIG_ENV} or with the route's declared "
+            "config dir",
+            file=sys.stderr,
+        )
+        return 9
+    if not config_dir.is_dir():
+        print(
+            f"hapax-claude-reviewer: refusing: subscription pool {pool['pool']}'s declared config "
+            f"dir is missing; next action: provision and sign in that pool's {POOL_CONFIG_ENV}",
+            file=sys.stderr,
+        )
+        return 9
+    # Nothing is printed on this path: the dispatcher records any success-path stderr as a
+    # diagnostic on every dossier. The declared binding and the platform receipt name the pool.
+    execution_env = {**binding["env"], POOL_CONFIG_ENV: str(config_dir)}
 
     prompt = sys.stdin.read()
     cmd = [
@@ -355,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
             cmd,
             prompt=prompt,
             timeout_seconds=args.timeout_seconds,
-            execution_env=binding["env"],
+            execution_env=execution_env,
         )
         if result.returncode == 0 and _reply_names_no_verdict(result.stdout):
             remaining = deadline - time.monotonic()
@@ -368,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
                     cmd,
                     prompt=prompt + REASK_CORRECTION,
                     timeout_seconds=remaining,
-                    execution_env=binding["env"],
+                    execution_env=execution_env,
                 )
     except OSError as exc:
         print(

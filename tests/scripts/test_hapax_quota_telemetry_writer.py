@@ -7098,18 +7098,21 @@ def _claude_admission(
     lane_presence_used_as_quota_evidence: str = "false",
     probe_environment_scrubbed: str | None = None,
     name: str = "claude-subscription-quota-admission.yaml",
+    pool: str | None = None,
 ) -> None:
     probe_environment_line = (
         f"probe_environment_scrubbed: {probe_environment_scrubbed}\n"
         if probe_environment_scrubbed is not None
         else ""
     )
+    pool_line = f"pool: {pool}\n" if pool is not None else ""
     (relay / name).write_text(
         "schema: hapax.claude_quota_admission.v1\n"
         "status: quota_available\n"
         "provider: anthropic-claude-subscription\n"
         f"route_id: {route_id}\n"
         "capacity_pool: subscription_quota\n"
+        f"{pool_line}"
         "auth_surface: subscription\n"
         f"observation: {observation}\n"
         f"{probe_environment_line}"
@@ -7125,6 +7128,18 @@ def _claude_admission(
         "positive_admission: true\n",
         encoding="utf-8",
     )
+
+
+def _max2_pool(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    """max-2's declared receipt dir under a test HOME, and the env that points the writer there.
+
+    claude.review.opus is bound to max-2 in the registry (subscription_pool_binding); the writer
+    resolves the binding's HOME-relative paths under HOME.
+    """
+    home = tmp_path / "home"
+    pool_dir = home / ".cache" / "hapax" / "relay" / "receipts-max-2"
+    pool_dir.mkdir(parents=True, exist_ok=True)
+    return pool_dir, {"HOME": str(home)}
 
 
 def _claude_snapshot(payload: dict, route_id: str = "claude.headless.full") -> dict:
@@ -7238,15 +7253,16 @@ def test_fresh_claude_admission_receipt_marks_claude_fresh(tmp_path: Path) -> No
 
 
 def test_fresh_claude_review_admission_marks_only_review_route_fresh(tmp_path: Path) -> None:
-    relay = tmp_path / "relay-receipts"
-    relay.mkdir()
+    pool_dir, env = _max2_pool(tmp_path)
     _claude_admission(
-        relay,
+        pool_dir,
         observed_at="2026-06-09T23:55:00Z",
         route_id="claude.review.opus",
+        pool="max-2",
+        name="claude-subscription-quota-admission-claude-review-opus-pool-max-2-20260609t235500z.yaml",
     )
 
-    result, out = _run_writer(tmp_path)
+    result, out = _run_writer(tmp_path, extra_env=env)
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -7254,9 +7270,101 @@ def test_fresh_claude_review_admission_marks_only_review_route_fresh(tmp_path: P
     headless_snapshot = _claude_snapshot(payload, "claude.headless.full")
     assert review_snapshot["subscription_quota_state"] == "fresh"
     assert review_snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    # The ledger's evidence reference embeds the receipt name, so it names the pool.
+    assert any("-pool-max-2-" in ref for ref in review_snapshot["evidence_refs"])
     assert headless_snapshot["subscription_quota_state"] == "unknown"
     assert "claude.review.opus" in review_snapshot["operator_visible_reason"]
     assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
+def test_bound_review_route_receipt_in_the_shared_dir_never_admits(tmp_path: Path) -> None:
+    """The unsafe case: claude.review.opus bills max-2, so a shared-dir (account-1) receipt for it,
+    with or without a pool field, admits nothing."""
+    _pool_dir, env = _max2_pool(tmp_path)
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z", route_id="claude.review.opus")
+    _claude_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        route_id="claude.review.opus",
+        pool="max-2",
+        name="claude-subscription-quota-admission-claude-review-opus-pool-max-2.yaml",
+    )
+
+    result, out = _run_writer(tmp_path, extra_env=env)
+
+    assert result.returncode == 0, result.stderr
+    review_snapshot = _claude_snapshot(
+        json.loads(out.read_text(encoding="utf-8")), "claude.review.opus"
+    )
+    assert review_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        ":ignored:receipt-dir-is-not-the-route-s-declared-subscription-pool" in ref
+        for ref in review_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 2
+
+
+@pytest.mark.parametrize("pool", [None, "max-3"])
+def test_pool_dir_review_receipt_naming_no_or_another_pool_never_admits(
+    tmp_path: Path, pool: str | None
+) -> None:
+    pool_dir, env = _max2_pool(tmp_path)
+    _claude_admission(
+        pool_dir, observed_at="2026-06-09T23:55:00Z", route_id="claude.review.opus", pool=pool
+    )
+
+    result, out = _run_writer(tmp_path, extra_env=env)
+
+    assert result.returncode == 0, result.stderr
+    review_snapshot = _claude_snapshot(
+        json.loads(out.read_text(encoding="utf-8")), "claude.review.opus"
+    )
+    assert review_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        ":ignored:receipt-pool-is-not-the-route-s-declared-subscription-pool" in ref
+        for ref in review_snapshot["evidence_refs"]
+    )
+    assert json.loads(result.stdout)["claude_admissions"] == 0
+
+
+def test_unbound_route_receipt_in_a_pool_dir_never_admits_the_default_pool(
+    tmp_path: Path,
+) -> None:
+    """max-2's own headless reading never vouches for the account-1 headless route."""
+    pool_dir, env = _max2_pool(tmp_path)
+    _claude_admission(pool_dir, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path, extra_env=env)
+
+    assert result.returncode == 0, result.stderr
+    headless_snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert headless_snapshot["subscription_quota_state"] == "unknown"
+    assert json.loads(result.stdout)["claude_admissions"] == 0
+
+
+def test_unreadable_pool_bindings_admit_no_claude_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    scan = namespace["active_claude_admission_receipts_for_pools"](
+        relay,
+        now=datetime(2026, 6, 10, 0, 0, tzinfo=UTC),
+        pool_bindings=None,
+    )
+
+    assert scan.admissions == []
+    assert any(
+        ":ignored:route-subscription-pool-bindings-unreadable" in ref
+        for ref in scan.ignored_evidence_refs
+    )
 
 
 def test_claude_admission_writer_output_marks_claude_fresh(tmp_path: Path) -> None:
@@ -7411,39 +7519,56 @@ def test_unreadable_measurements_still_write_the_admission_ledger(
     assert json.loads(out.read_text(encoding="utf-8"))["quota_snapshots"]
 
 
-def test_claude_admission_writer_refuses_the_review_route_off_its_pool(tmp_path: Path) -> None:
-    """claude.review.opus is bound to max-2: a reading on the default pool mints nothing, so the
-    telemetry writer has nothing to admit. (The end-to-end run on the declared pool lands with
-    the pool-aware telemetry writer.)"""
-    relay = tmp_path / "relay-receipts"
-    relay.mkdir()
+def test_claude_admission_writer_can_target_review_route(tmp_path: Path) -> None:
+    """End to end on the declared pool: the admission writer, run inside max-2's chain, mints the
+    receipt into max-2's own dir naming max-2, and the telemetry writer admits it from there."""
+    pool_dir, env = _max2_pool(tmp_path)
+    home = Path(env["HOME"])
+    pool_env = {
+        **os.environ,
+        **env,
+        "PYTHONPATH": str(REPO_ROOT),
+        "CLAUDE_CONFIG_DIR": str(home / ".claude-max-2"),
+        "HAPAX_DURABLE_SINK_ROOT": str(home / ".cache" / "hapax" / "stage0-durable-sink-max-2"),
+    }
     admission_result = subprocess.run(
         [
             sys.executable,
             str(CLAUDE_ADMISSION_SCRIPT),
             "--receipt-dir",
-            str(relay),
+            str(pool_dir),
             "--now",
             "2026-06-09T23:55:00Z",
             "--evidence-ref",
             "claude-subscription-headroom-observed-20260609t2355z",
             "--route-id",
             "claude.review.opus",
+            "--pace-receipt-dir",
+            str(pool_dir),
+            "--pace-headless-glob",
+            str(home / ".cache" / "hapax" / "claude-headless-max-2" / "*" / "output.jsonl"),
+            "--pace-activation",
+            str(home / ".cache" / "hapax" / "claude-pool-pace-max-2" / "activation.json"),
             "--json",
         ],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
+        env=pool_env,
     )
-    assert admission_result.returncode == 2
-    assert "bound to subscription pool max-2" in admission_result.stderr
-    assert list(relay.iterdir()) == []
+    assert admission_result.returncode == 0, admission_result.stderr
+    minted = json.loads(admission_result.stdout)
+    assert minted["route_id"] == "claude.review.opus"
+    assert minted["pool"] == "max-2"
 
-    result, out = _run_writer(tmp_path)
+    result, out = _run_writer(tmp_path, extra_env=env)
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert _claude_snapshot(payload, "claude.review.opus")["subscription_quota_state"] != "fresh"
+    assert _claude_snapshot(payload, "claude.review.opus")["subscription_quota_state"] == "fresh"
+    assert (
+        _claude_snapshot(payload, "claude.headless.full")["subscription_quota_state"] == "unknown"
+    )
 
 
 def test_fresh_claude_admission_ref_passes_ledger_validator(tmp_path: Path) -> None:
@@ -7550,16 +7675,17 @@ def test_claude_admission_rejects_lane_presence_evidence_ref(tmp_path: Path) -> 
 
 
 def test_rejected_claude_review_admission_evidence_stays_route_scoped(tmp_path: Path) -> None:
-    relay = tmp_path / "relay-receipts"
-    relay.mkdir()
+    # In max-2's own dir, naming max-2, so the lane-presence refusal is what rejects it.
+    pool_dir, env = _max2_pool(tmp_path)
     _claude_admission(
-        relay,
+        pool_dir,
         observed_at="2026-06-09T23:55:00Z",
         route_id="claude.review.opus",
         evidence_ref="tmux-hapax-claude-review-present-20260609",
+        pool="max-2",
     )
 
-    result, out = _run_writer(tmp_path)
+    result, out = _run_writer(tmp_path, extra_env=env)
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -7567,6 +7693,10 @@ def test_rejected_claude_review_admission_evidence_stays_route_scoped(tmp_path: 
     headless_snapshot = _claude_snapshot(payload, "claude.headless.full")
     assert review_snapshot["subscription_quota_state"] == "unknown"
     assert any(":route_id:claude.review.opus" in ref for ref in review_snapshot["evidence_refs"])
+    assert any(
+        ":ignored:evidence-ref-names-lane-session-presence" in ref
+        for ref in review_snapshot["evidence_refs"]
+    )
     assert not any(
         ":route_id:claude.review.opus" in ref for ref in headless_snapshot["evidence_refs"]
     )
@@ -9212,3 +9342,44 @@ class TestGlmcpSecretSourceMigration:
         reviewer = (REPO_ROOT / "scripts" / "hapax-glmcp-reviewer").read_text(encoding="utf-8")
         assert '("secret_source", "filestore:glmcp/api-key")' in reviewer
         assert '("secret_source", "pass:glmcp/api-key")' not in reviewer
+
+
+@pytest.mark.parametrize("failure", ["missing", "malformed"])
+def test_real_pool_binding_load_failure_refuses_receipts(tmp_path, monkeypatch, capsys, failure):
+    namespace = runpy.run_path(str(SCRIPT))
+    registry = tmp_path / "registry.json"
+    if failure == "malformed":
+        registry.write_text("{not json")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    bindings = namespace["_claude_subscription_pool_bindings"]()
+    assert bindings is None
+    assert "Next: repair" in capsys.readouterr().err
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+    scan = namespace["active_claude_admission_receipts_for_pools"](
+        relay, now=datetime(2026, 6, 10, tzinfo=UTC), pool_bindings=bindings
+    )
+    assert scan.admissions == [] and len(scan.ignored_evidence_refs) == 1
+
+
+def test_shared_directory_cannot_be_scanned_again_as_a_pool(tmp_path):
+    from dataclasses import replace
+
+    from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+    namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    binding = resolve_subscription_pool_binding("claude.review.opus", home=tmp_path)
+    assert binding is not None
+    binding = replace(binding, receipt_dir=relay)
+    _claude_admission(
+        relay, observed_at="2026-06-09T23:55:00Z", route_id="claude.review.opus", pool="max-2"
+    )
+    scan = namespace["active_claude_admission_receipts_for_pools"](
+        relay,
+        now=datetime(2026, 6, 10, tzinfo=UTC),
+        pool_bindings={"claude.review.opus": binding},
+    )
+    assert scan.admissions == [] and len(scan.ignored_evidence_refs) == 1

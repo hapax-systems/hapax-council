@@ -199,11 +199,13 @@ from shared.platform_capability_registry import (  # noqa: E402
     PlatformCapabilityRegistry,
     PlatformCapabilityRegistryError,
     QuotaSource,
+    ResolvedSubscriptionPool,
     _quota_unobservable_nonblocking,
     _route_receipt_capability_reason_codes,
     _route_receipt_resource_reason_codes,
     _route_wrapper_for_receipt,
     _surface_status_from_reasons,
+    resolve_subscription_pool_bindings,
 )
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
@@ -550,6 +552,8 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
         "account_live_quota_observed",
         "lane_presence_used_as_quota_evidence",
         "positive_admission",
+        # The declared subscription pool of a pool-bound route (subscription_pool_binding).
+        "pool",
         # Probe-reported subscription windows; shared/quota_headroom.py reads them.
         "five_hour_used_percent",
         "five_hour_resets_at",
@@ -1670,10 +1674,66 @@ def active_kimi_admission_receipts(
     return AgyAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
 
 
+def active_claude_admission_receipts_for_pools(
+    shared_receipt_dir: Path,
+    *,
+    now: datetime,
+    pool_bindings: dict[str, ResolvedSubscriptionPool] | None,
+) -> ClaudeAdmissionScan:
+    """Claude admissions from the shared relay dir AND each declared pool's own receipt dir.
+
+    ``pool_bindings`` comes from the registry's ``subscription_pool_binding`` declarations. A
+    pool-bound route is admitted only by a receipt in its pool's dir naming its pool; an unbound
+    route only by a pool-less receipt in the shared dir. ``None`` means the bindings could not be
+    read, which refuses every Claude receipt: an unbound route cannot be told from a bound one.
+    """
+
+    scans = [
+        active_claude_admission_receipts(
+            shared_receipt_dir, now=now, pool_bindings=pool_bindings, receipt_dir_pool=None
+        )
+    ]
+    # A pool dir that is the shared dir is scanned once, as the shared dir, so its bound-route
+    # receipts are refused rather than double-counted.
+    seen = {shared_receipt_dir.expanduser().resolve()}
+    for binding in sorted((pool_bindings or {}).values(), key=lambda item: item.pool):
+        key = binding.receipt_dir.expanduser().resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        scans.append(
+            active_claude_admission_receipts(
+                binding.receipt_dir,
+                now=now,
+                pool_bindings=pool_bindings,
+                receipt_dir_pool=binding.pool,
+            )
+        )
+    return ClaudeAdmissionScan(
+        admissions=[admission for scan in scans for admission in scan.admissions],
+        ignored_evidence_refs=[ref for scan in scans for ref in scan.ignored_evidence_refs],
+    )
+
+
+def _claude_subscription_pool_bindings() -> dict[str, ResolvedSubscriptionPool] | None:
+    try:
+        return resolve_subscription_pool_bindings()
+    except PlatformCapabilityRegistryError:
+        print(
+            "hapax-quota-telemetry-writer: route subscription pool bindings unreadable; every "
+            "claude admission receipt is refused this tick. Next: repair "
+            "config/platform-capability-registry.json and rerun with --json.",
+            file=sys.stderr,
+        )
+        return None
+
+
 def active_claude_admission_receipts(
     receipt_dir: Path,
     *,
     now: datetime,
+    pool_bindings: dict[str, ResolvedSubscriptionPool] | None,
+    receipt_dir_pool: str | None,
 ) -> ClaudeAdmissionScan:
     """Return fresh positive claude subscription-quota admission evidence refs.
 
@@ -1681,6 +1741,10 @@ def active_claude_admission_receipts(
     (scripts/hapax-claude-subscription-quota-admission), NEVER by lane/tmux/session presence. Each
     fresh receipt yields a composite evidence ref ending in :account-live-quota:observed so the
     availability guarantor attests; a secretish or lane/session-shaped witness is refused.
+
+    ``receipt_dir_pool`` is the declared pool whose dir this is (None: the shared relay dir). A
+    receipt admits only when its route's declared pool, this dir's pool and its own ``pool`` field
+    all agree; see ``active_claude_admission_receipts_for_pools``.
     """
 
     if not receipt_dir.is_dir():
@@ -1751,6 +1815,21 @@ def active_claude_admission_receipts(
                 + ", ".join(CLAUDE_SUBSCRIPTION_ROUTES),
                 route_id,
             )
+            continue
+        if pool_bindings is None:
+            reject(path, "route subscription pool bindings unreadable", route_id)
+            continue
+        declared = pool_bindings.get(route_id)
+        declared_pool = None if declared is None else declared.pool
+        if receipt_dir_pool != declared_pool:
+            reject(
+                path,
+                "receipt dir is not the route's declared subscription pool",
+                route_id,
+            )
+            continue
+        if (fields.get("pool", "").strip() or None) != declared_pool:
+            reject(path, "receipt pool is not the route's declared subscription pool", route_id)
             continue
         observation = fields.get("observation", "").strip()
         if observation not in CLAUDE_ADMISSION_OBSERVATIONS:
@@ -4156,7 +4235,11 @@ def main(argv: list[str] | None = None) -> int:
             walls = active_quota_walls(args.relay_receipt_dir, now=current_now)
             agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=current_now)
             kimi_scan = active_kimi_admission_receipts(args.relay_receipt_dir, now=current_now)
-            claude_scan = active_claude_admission_receipts(args.relay_receipt_dir, now=current_now)
+            claude_scan = active_claude_admission_receipts_for_pools(
+                args.relay_receipt_dir,
+                now=current_now,
+                pool_bindings=_claude_subscription_pool_bindings(),
+            )
             glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=current_now)
             glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
                 args.relay_receipt_dir,
