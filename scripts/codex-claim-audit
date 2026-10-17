@@ -324,7 +324,7 @@ _claim_waits_for_activation() {
 # Incomplete I/O/scan coverage cannot establish staleness. Completed reads of
 # malformed evidence report UNKNOWN with bounded grace, without a new store.
 _vault_docs_freshness_for() {
-  timeout 5s python3 - "$1" "$2" "$3" "$VAULT_ROOT" "$RELAY_STATE_DIR" \
+  timeout -k 2s 5s python3 - "$1" "$2" "$3" "$VAULT_ROOT" "$RELAY_STATE_DIR" \
     "${HAPAX_WORKTREE_REGISTRY_DIR:-$HOME/.cache/hapax/worktree-registry}" "$now_epoch" <<'PYEOF'
 import json
 import os
@@ -555,7 +555,7 @@ _cache_role_matches_note() {
 _held_cache_protection_for() {
   local role="$1" task_id="$2" status="$3" claimed_at="$4" branch="$5" source_root
   source_root="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
-  timeout 5s python3 - "$role" "$task_id" "$status" "$claimed_at" "$branch" \
+  timeout -k 2s 5s python3 - "$role" "$task_id" "$status" "$claimed_at" "$branch" \
     "$CLAIM_CACHE_DIR" "$CLAIM_AUDIT_REPO" "$source_root" "$now_epoch" "$stale_threshold" <<'PYEOF'
 import json
 import os

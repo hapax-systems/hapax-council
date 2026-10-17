@@ -295,6 +295,35 @@ def _run_audit(
     )
 
 
+def _sigterm_ignoring_reader_stub(tmp_path: Path, argument_suffix: str) -> Path:
+    """Stall only the selected reader; the test-owned alarm bounds a broken audit."""
+    stub = tmp_path / "bin" / "python3"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    observed = tmp_path / "ignoring-reader-started"
+    stub.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import os
+        import signal
+        import sys
+        import time
+        from pathlib import Path
+        if len(sys.argv) > 2 and sys.argv[1] == "-" and sys.argv[2].endswith({argument_suffix!r}):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.alarm(11)
+            Path({str(observed)!r}).write_text("SIGTERM ignored; test cleanup alarm armed\\n")
+            time.sleep(30)
+        os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+        """)
+    )
+    stub.chmod(0o755)
+    # Keep the reader deadline independent of the audit's notification transport.
+    notify = stub.parent / "curl"
+    notify.write_text("#!/bin/sh\nexit 0\n")
+    notify.chmod(0o755)
+    return observed
+
+
 class TestVaultDocsFreshness:
     """Exercise the real release path against isolated notes, artifacts and lane state."""
 
@@ -960,6 +989,24 @@ class TestVaultDocsFreshness:
         assert "VAULT_DOCS_UNKNOWN_EXPIRED" not in result.stdout
         reported_note = re.search(r" note=(\S+)", result.stdout)
         assert reported_note and Path(reported_note[1]).samefile(note)
+        assert "retained: unobservable" in result.stdout
+        assert "1 claim coherence issue(s) found" in result.stdout
+
+    def test_sigterm_ignoring_freshness_reader_has_kill_bound(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        observed = _sigterm_ignoring_reader_stub(tmp_path, "/research-task.md")
+        before = note.read_bytes()
+        started = time.monotonic()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        elapsed = time.monotonic() - started
+        assert observed.exists(), result.stdout + result.stderr
+        assert elapsed < 10, f"reader exceeded kill deadline: {elapsed:.2f}s"
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_INCOMPLETE" in result.stdout
         assert "retained: unobservable" in result.stdout
         assert "1 claim coherence issue(s) found" in result.stdout
 
@@ -2729,6 +2776,23 @@ class TestLiveHeldStatusCache:
         original = note.read_bytes()
         result = _run_audit(tmp_path, vault, cache, gh_stub_path=gh)
         assert marker.exists() and note.read_bytes() == original, result.stdout + result.stderr
+        assert "unknown_holder_probe_failed" in result.stdout
+
+    def test_sigterm_ignoring_holder_reader_has_kill_bound(self, tmp_path: Path) -> None:
+        vault, cache, note, marker = self._held(tmp_path, "blocked")
+        observed = _sigterm_ignoring_reader_stub(tmp_path, self.ROLE)
+        original, claim = note.read_bytes(), marker.read_bytes()
+        started = time.monotonic()
+
+        result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
+
+        elapsed = time.monotonic() - started
+        assert observed.exists(), result.stdout + result.stderr
+        assert elapsed < 10, f"reader exceeded kill deadline: {elapsed:.2f}s"
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert marker.exists(), result.stdout
+        assert marker.read_bytes() == claim and note.read_bytes() == original
+        assert "HELD_STATUS_PROTECTED" in result.stdout
         assert "unknown_holder_probe_failed" in result.stdout
 
     @pytest.mark.parametrize("claimed_at", ["null", "invalid", "2999-01-01T00:00:00Z"])
