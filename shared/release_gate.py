@@ -948,6 +948,22 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
     "tests/test_cc_pr_autoqueue.py",
 )
 
+#: Root dependency changes have separate executed evidence: the existing
+#: python_prod_dependency_witness runs constraints and locked audio/host plans
+#: for 3.12/3.13/3.14 in the required test job (shard 1 on merge_group). Its
+#: changed-path trigger and all three invocations are pinned by the CI suites.
+#: These exact paths are covered only with that current-head successful check,
+#: in addition to the unchanged live-egress mitigation tuple. A skipped check
+#: is not verified evidence; unrelated paths gain no coverage.
+ROOT_DEPENDENCY_WITNESS = "test"
+ROOT_DEPENDENCY_COVERAGE: tuple[str, ...] = (
+    "pyproject.toml",
+    "uv.lock",
+    "tests/test_dependency_resolution_markers.py",
+    "tests/test_python_prod_dependency_constraints.py",
+    "tests/test_ci_required_coverage_claims.py",
+)
+
 #: The consent-containment lane: the estate's person-data consent/containment
 #: surfaces, enumerated EXACTLY for production sources — a future file added
 #: beside them is NOT admitted (fail-closed; extend the lane by another gate
@@ -1056,7 +1072,9 @@ def _path_in_consent_containment_lane(path: str) -> bool:
     )
 
 
-def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
+def _egress_uncovered_paths(
+    changed_files: Sequence[str], *, dependency_witness: bool = False
+) -> list[str]:
     def _is_doc(path: str) -> bool:
         lowered = path.strip().lower()
         return lowered.endswith((".md", ".rst", ".txt")) or lowered.startswith("docs/")
@@ -1069,6 +1087,7 @@ def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
             and not _is_doc(path)
             and path.strip() not in LIVE_EGRESS_AUTO_ARM_COVERAGE
             and not _path_in_consent_containment_lane(path)
+            and not (dependency_witness and path.strip() in ROOT_DEPENDENCY_COVERAGE)
         }
     )
 
@@ -1089,7 +1108,8 @@ def assess_release_auto_arm_estate(
       AUDIO_ROUTING_EVIDENCE;
     - once the class's evidence is complete, every other non-doc path must lie
       inside LIVE_EGRESS_AUTO_ARM_COVERAGE or the consent-containment lane
-      (LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES).
+      (LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES), or in the exact root dependency
+      coverage set with the current successful ROOT_DEPENDENCY_WITNESS check.
     With no changed-file list the bound is unevaluable and the class stays held.
     Everything else is the canon assessment verbatim.
 
@@ -1108,6 +1128,11 @@ def assess_release_auto_arm_estate(
         audio_paths = [path for path in changed_files if _path_is_audio_routing_surface(path)]
         if audio_paths and AUDIO_ROUTING_EVIDENCE not in verified_checks:
             blockers.append(missing_prefix + AUDIO_ROUTING_EVIDENCE)
+        if (
+            any(path.strip() in ROOT_DEPENDENCY_COVERAGE for path in changed_files)
+            and ROOT_DEPENDENCY_WITNESS not in verified_checks
+        ):
+            blockers.append(missing_prefix + ROOT_DEPENDENCY_WITNESS)
     if not any(blocker.startswith(missing_prefix) for blocker in blockers):
         if changed_files is None:
             # The coverage bound is unevaluable without the PR's real file list —
@@ -1115,7 +1140,8 @@ def assess_release_auto_arm_estate(
             blockers.append("egress_evidence_coverage_unevaluable:no_changed_files")
         else:
             uncovered = _egress_uncovered_paths(
-                [path for path in changed_files if not _path_is_audio_routing_surface(path)]
+                [path for path in changed_files if not _path_is_audio_routing_surface(path)],
+                dependency_witness=ROOT_DEPENDENCY_WITNESS in verified_checks,
             )
             if uncovered:
                 blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))

@@ -101,6 +101,54 @@ def test_egress_boundary_pin_job_executes_the_pin_file_per_pr() -> None:
     ), "egress-boundary-pin no longer executes the egress pin file"
 
 
+def test_root_dependency_witness_executes_both_suites_before_test_success() -> None:
+    # The existing test context carries dependency evidence on PRs and via
+    # shard 1 on merge_group. No new context or docs-only success is evidence
+    # for these non-doc paths. Pin the three actual invocations, not a comment.
+    jobs = _ci()["jobs"]
+    assert "test" in jobs["all-green"]["needs"]
+    assert "test-full-shard" in jobs["test"]["needs"]
+    seen = []
+    for job_name in ("test", "test-full-shard"):
+        job = jobs[job_name]
+        assert "docs_only_filter" in job["needs"]
+        assert not job.get("continue-on-error", False)
+        for step in job["steps"]:
+            if step.get("name") != "Run python-prod optional dependency witness":
+                continue
+            assert not step.get("continue-on-error", False)
+            command = str(step["run"])
+            assert re.search(
+                r"pytest\s+tests/test_python_prod_dependency_constraints\.py\s+"
+                r"tests/test_dependency_resolution_markers\.py\s+-q -rs\s*$",
+                command.replace("\\\n", " "),
+            ), "Dependency witness must execute constraints AND actual root locked plans"
+            condition = str(step.get("if", ""))
+            assert "python_prod_dependency_witness == 'true'" in condition
+            seen.append((job_name, condition))
+    assert seen == [
+        (
+            "test",
+            "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && "
+            "needs.docs_only_filter.outputs.docs_only != 'true' && "
+            "steps.test_mode.outputs.mode == 'pr-admission' && "
+            "needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'",
+        ),
+        (
+            "test",
+            "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && "
+            "needs.docs_only_filter.outputs.docs_only != 'true' && "
+            "steps.test_mode.outputs.mode == 'full' && "
+            "needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'",
+        ),
+        (
+            "test-full-shard",
+            "matrix.shard == 1 && "
+            "needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'",
+        ),
+    ]
+
+
 def test_egress_boundary_pin_job_executes_the_consent_containment_pins_per_pr() -> None:
     # The consent-containment lane's coverage admission
     # (LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES, shared/release_gate.py) is

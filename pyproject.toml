@@ -142,7 +142,11 @@ audio = [
     "obsws-python>=1.7.0",
     "hsemotion-onnx>=0.3",
     "praat-parselmouth>=0.4.5",
-    "essentia>=2.1b6.dev1091,<=2.1b6.dev1389",
+    # dev1389 supplies cp312/cp313; dev1438 supplies cp314 only. Preserve
+    # the reviewed older ceiling instead of raising it across Python ABIs.
+    # Recheck: tests/test_dependency_resolution_markers.py and isolated audio sync.
+    "essentia>=2.1b6.dev1091,<=2.1b6.dev1389; python_version < '3.14'",
+    "essentia==2.1b6.dev1438; python_version >= '3.14'",
     # laion-clap: install separately — pins numpy<2.0.0 which conflicts with qdrant-client on 3.14
     #   uv pip install 'laion-clap>=1.1.6' --no-deps
     #   uv pip install transformers ftfy h5py braceexpand webdataset wget --no-deps
@@ -254,6 +258,9 @@ markers = [
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
 constraint-dependencies = [
+    # The locked 3.8.14 has no cp314 wheel or sdist. Keep older Python's
+    # transitive floor while selecting the compatible 3.8.16 release on 3.14.
+    "spacy>=3.8.16; python_version >= '3.14'",
     "authlib>=1.6.9",
     "fastmcp>=3.2.0",
     "mako>=1.3.12",

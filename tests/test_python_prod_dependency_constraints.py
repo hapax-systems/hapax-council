@@ -58,7 +58,8 @@ REQUIRED_SPECS = {
     ("project.optional-dependencies.audio", "pvporcupine"): ">=4.0.3",
     ("project.optional-dependencies.audio", "soundfile"): ">=0.14.0",
     ("project.optional-dependencies.audio", "torchcodec"): "==0.10.*",
-    ("project.optional-dependencies.audio", "essentia"): ">=2.1b6.dev1091,<=2.1b6.dev1389",
+    # Essentia's ceiling is Python-specific; the disjoint requirements and
+    # installable lock branches are guarded in test_dependency_resolution_markers.py.
     ("project.optional-dependencies.logos-api", "langfuse"): ">=3.14.5,<4",
     ("project.optional-dependencies.logos-api", "sse-starlette"): ">=2.0.0,<3",
     ("project.optional-dependencies.sync-pipeline", "langfuse"): ">=3.14.5,<4",

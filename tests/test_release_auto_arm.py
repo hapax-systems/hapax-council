@@ -389,6 +389,43 @@ def _egress_frontmatter() -> dict[str, object]:
     return _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "pyproject.toml",
+        "uv.lock",
+        "tests/test_dependency_resolution_markers.py",
+        "tests/test_python_prod_dependency_constraints.py",
+        "tests/test_ci_required_coverage_claims.py",
+    ],
+)
+def test_root_dependency_paths_require_the_executed_python_witness(path: str) -> None:
+    checks = set(LIVE_EGRESS_MITIGATION_CHECKS)
+    missing = assess_release_auto_arm_estate(
+        _egress_frontmatter(), verified_checks=checks, changed_files=[path]
+    )
+    assert not missing.eligible
+    assert "needs_mitigation:audio_or_live_egress_sensitive:test" in missing.blockers
+    covered = assess_release_auto_arm_estate(
+        _egress_frontmatter(), verified_checks=checks | {"test"}, changed_files=[path]
+    )
+    assert covered.eligible, covered.blockers
+
+
+@pytest.mark.parametrize(
+    "unrelated",
+    ["uv.lock.backup", "pyproject.toml/other", "tests/new_dependency.py", "shared/runtime.py"],
+)
+def test_root_dependency_witness_does_not_cover_unrelated_paths(unrelated: str) -> None:
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS) | {"test"},
+        changed_files=["pyproject.toml", unrelated],
+    )
+    assert not assessment.eligible
+    assert assessment.blockers == ("egress_evidence_uncovered_paths:" + unrelated,)
+
+
 def test_egress_auto_arm_coverage_bound_admits_covered_paths() -> None:
     # The behavioral evidence covers exactly the pinned surface; a PR changing
     # only it (plus docs) auto-arms with the full mitigation set.

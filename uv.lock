@@ -22,6 +22,7 @@ constraints = [
     { name = "pyasn1", specifier = ">=0.6.3" },
     { name = "pyjwt", specifier = ">=2.12.0" },
     { name = "python-multipart", specifier = ">=0.0.27" },
+    { name = "spacy", marker = "python_full_version >= '3.14'", specifier = ">=3.8.16" },
     { name = "urllib3", specifier = ">=2.7.0" },
 ]
 overrides = [
@@ -1241,14 +1242,37 @@ wheels = [
 name = "essentia"
 version = "2.1b6.dev1389"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version == '3.13.*' and platform_machine != 's390x' and sys_platform == 'linux'",
+    "python_full_version == '3.13.*' and platform_machine == 's390x' and sys_platform == 'linux'",
+    "python_full_version < '3.13' and platform_machine != 's390x' and sys_platform == 'linux'",
+    "python_full_version < '3.13' and platform_machine == 's390x' and sys_platform == 'linux'",
+]
 dependencies = [
-    { name = "numpy", marker = "sys_platform == 'linux'" },
-    { name = "pyyaml", marker = "sys_platform == 'linux'" },
-    { name = "six", marker = "sys_platform == 'linux'" },
+    { name = "numpy", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "six", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c0/24/8ed5806bb62c4d8e5bb6a83bda4d03d501465c804f6d7d2a678defb4f0e2/essentia-2.1b6.dev1389-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5905c38da25d8ccf4259bd045e50242103a47f482b77559ec6899d4b463ca4e7", size = 13763604, upload-time = "2025-07-24T21:08:14.54Z" },
     { url = "https://files.pythonhosted.org/packages/7f/3e/c54b925a3582cc7e06ef578aa54fe174d5ea65fa7b12128bde7b1bde0128/essentia-2.1b6.dev1389-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:40815e145dc8841d464fc1af935ef7e6ff1d310ef8169019e8cf22c7670c8830", size = 13762439, upload-time = "2025-07-24T21:08:23.31Z" },
+]
+
+[[package]]
+name = "essentia"
+version = "2.1b6.dev1438"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine != 's390x' and sys_platform == 'linux'",
+    "python_full_version >= '3.14' and platform_machine == 's390x' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "numpy", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "six", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d9/dc/feafca6d0989e40a324b5e977054ec1eb7a7d93260e023b4e5c5071202c7/essentia-2.1b6.dev1438-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1ee6107fe63fb3b50f8aa68466951f6ca1e162a700d8deffd46ab0506dab9acb", size = 14104978, upload-time = "2026-05-19T16:25:56.314Z" },
 ]
 
 [[package]]
@@ -2080,7 +2104,8 @@ dependencies = [
 
 [package.optional-dependencies]
 audio = [
-    { name = "essentia", marker = "sys_platform == 'linux'" },
+    { name = "essentia", version = "2.1b6.dev1389", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "essentia", version = "2.1b6.dev1438", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
     { name = "faster-whisper", marker = "sys_platform == 'linux'" },
     { name = "hsemotion-onnx", marker = "sys_platform == 'linux'" },
     { name = "mediapipe", marker = "sys_platform == 'linux'" },
@@ -2125,7 +2150,8 @@ ci = [
     { name = "watchdog", marker = "sys_platform == 'linux'" },
 ]
 host = [
-    { name = "essentia", marker = "sys_platform == 'linux'" },
+    { name = "essentia", version = "2.1b6.dev1389", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "essentia", version = "2.1b6.dev1438", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
     { name = "fastapi", marker = "sys_platform == 'linux'" },
     { name = "faster-whisper", marker = "sys_platform == 'linux'" },
     { name = "google-api-python-client", marker = "sys_platform == 'linux'" },
@@ -2224,7 +2250,8 @@ requires-dist = [
     { name = "atproto", specifier = ">=0.0.65" },
     { name = "chat-downloader", specifier = ">=0.2.8" },
     { name = "chatterbox-tts", git = "https://github.com/resemble-ai/chatterbox.git" },
-    { name = "essentia", marker = "extra == 'audio'", specifier = ">=2.1b6.dev1091,<=2.1b6.dev1389" },
+    { name = "essentia", marker = "python_full_version >= '3.14' and extra == 'audio'", specifier = "==2.1b6.dev1438" },
+    { name = "essentia", marker = "python_full_version < '3.14' and extra == 'audio'", specifier = ">=2.1b6.dev1091,<=2.1b6.dev1389" },
     { name = "evdev", specifier = ">=1.9.3" },
     { name = "fastapi", specifier = ">=0.139.0" },
     { name = "fastapi", marker = "extra == 'logos-api'", specifier = ">=0.139.0" },
@@ -3399,7 +3426,8 @@ en = [
     { name = "espeakng-loader", marker = "sys_platform == 'linux'" },
     { name = "num2words", marker = "sys_platform == 'linux'" },
     { name = "phonemizer-fork", marker = "sys_platform == 'linux'" },
-    { name = "spacy", marker = "sys_platform == 'linux'" },
+    { name = "spacy", version = "3.8.14", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "spacy", version = "3.8.16", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
     { name = "spacy-curated-transformers", marker = "sys_platform == 'linux'" },
 ]
 
@@ -6303,26 +6331,32 @@ wheels = [
 name = "spacy"
 version = "3.8.14"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version == '3.13.*' and platform_machine != 's390x' and sys_platform == 'linux'",
+    "python_full_version == '3.13.*' and platform_machine == 's390x' and sys_platform == 'linux'",
+    "python_full_version < '3.13' and platform_machine != 's390x' and sys_platform == 'linux'",
+    "python_full_version < '3.13' and platform_machine == 's390x' and sys_platform == 'linux'",
+]
 dependencies = [
-    { name = "catalogue", marker = "sys_platform == 'linux'" },
-    { name = "confection", marker = "sys_platform == 'linux'" },
-    { name = "cymem", marker = "sys_platform == 'linux'" },
-    { name = "jinja2", marker = "sys_platform == 'linux'" },
-    { name = "murmurhash", marker = "sys_platform == 'linux'" },
-    { name = "numpy", marker = "sys_platform == 'linux'" },
-    { name = "packaging", marker = "sys_platform == 'linux'" },
-    { name = "preshed", marker = "sys_platform == 'linux'" },
-    { name = "pydantic", marker = "sys_platform == 'linux'" },
-    { name = "requests", marker = "sys_platform == 'linux'" },
-    { name = "setuptools", marker = "sys_platform == 'linux'" },
-    { name = "spacy-legacy", marker = "sys_platform == 'linux'" },
-    { name = "spacy-loggers", marker = "sys_platform == 'linux'" },
-    { name = "srsly", marker = "sys_platform == 'linux'" },
-    { name = "thinc", marker = "sys_platform == 'linux'" },
-    { name = "tqdm", marker = "sys_platform == 'linux'" },
-    { name = "typer", marker = "sys_platform == 'linux'" },
-    { name = "wasabi", marker = "sys_platform == 'linux'" },
-    { name = "weasel", marker = "sys_platform == 'linux'" },
+    { name = "catalogue", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "confection", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "cymem", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "jinja2", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "murmurhash", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "numpy", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "preshed", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "requests", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "setuptools", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "spacy-legacy", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "spacy-loggers", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "srsly", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "thinc", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "tqdm", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "typer", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "wasabi", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "weasel", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ff/e8/048d83b73b28686307bd9a60878a58de7b7b21b562ca4de8b5bd558031e9/spacy-3.8.14-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:daeb64b048f12c059997281aed53eb8776d26416dd313cf17ad6f63124b2b564", size = 32725099, upload-time = "2026-03-29T10:40:50.194Z" },
@@ -6333,6 +6367,52 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/ce/cae678f664d5467016819253f5d6e52f8e68a12d8e799b651d73ec2a9a4b/spacy-3.8.14-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:9699c1248d115d5825987c287a6f6acd66386ef3ebee7994ee67ba093e932c59", size = 32841057, upload-time = "2026-03-29T10:41:12.585Z" },
     { url = "https://files.pythonhosted.org/packages/04/d4/419868afd449bdd367df005932537eea66c71e97c899ba278f3124933f3c/spacy-3.8.14-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:042d799e342fdb6bb5b02a4213a95acc9116c40ed3c849bb0a8296fbe648ec22", size = 31763252, upload-time = "2026-03-29T10:41:15.569Z" },
     { url = "https://files.pythonhosted.org/packages/ec/53/df5c1fee45f200b749ba72eeb536fbb2c545fc56230324954263b2f3be00/spacy-3.8.14-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:69b2264294097336e86832e8663f1ab3a7215621184863c96c082ab17ee11937", size = 32717872, upload-time = "2026-03-29T10:41:18.193Z" },
+]
+
+[[package]]
+name = "spacy"
+version = "3.8.16"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine != 's390x' and sys_platform == 'linux'",
+    "python_full_version >= '3.14' and platform_machine == 's390x' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "catalogue", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "click", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "confection", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "cymem", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "jinja2", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "murmurhash", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "numpy", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "preshed", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "requests", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "setuptools", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "spacy-legacy", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "spacy-loggers", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "srsly", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "thinc", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "tqdm", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "typer", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "wasabi", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+    { name = "weasel", marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/69/5d/b0b4cd2f6e8a0470e50f7f0cfc1cea6e2f25572e97fb5d404c7941d5e88a/spacy-3.8.16.tar.gz", hash = "sha256:a3d19da23637cc396b42d22fc33852680f675d8ddcb847d3e2a0d094712d1794", size = 1330989, upload-time = "2026-08-24T10:05:57.936Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/8c/2b150ea6e9b667b710e7365328edfdd3c6729af4e48124baa80c4784c26b/spacy-3.8.16-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a2c46c35467d963a62dc0407c99d3a18562d4c85ee887a57e4a07dde020f1a38", size = 34901687, upload-time = "2026-08-24T10:04:44.138Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/9c/3b5d64a72ac40cf584134c6639ac67f8f2d504eb081c91da3ad2ffae5c04/spacy-3.8.16-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8d0f63c3124d0a34a37e9b519d004cee1269744be07f91f843902e6c9f3e557a", size = 35496883, upload-time = "2026-08-24T10:04:48.383Z" },
+    { url = "https://files.pythonhosted.org/packages/45/16/8c9d9afed3afbfd585e876c330ec8dcff878a64bc99c108355c8b59ea954/spacy-3.8.16-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:397a80c4d09a6237eebaaee00a2e5f8732ff4cc165f94679b899f30179d38ea8", size = 35012008, upload-time = "2026-08-24T10:04:52.983Z" },
+    { url = "https://files.pythonhosted.org/packages/32/dd/eeaf28004591f0d282da809194d9f7bfb6a1c0626ca0d7d69e8b5436751f/spacy-3.8.16-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:2810fd2ce41f6a8dde62642dad0d11fd9db7cb6a1cd40b1c8b70a01586e6ff9f", size = 36028110, upload-time = "2026-08-24T10:04:56.874Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/5f/b039865cf4e2fa82c8defc737c37af4480e70a56d1e1c380865b3df89f54/spacy-3.8.16-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f765cb6cbef82b5d98c46936a1385e87fb05919433fbc6b953e3c093ac30f8ef", size = 34527537, upload-time = "2026-08-24T10:05:11.65Z" },
+    { url = "https://files.pythonhosted.org/packages/12/48/60048a3558f591fbaf11a73b342262699178cf44dd6fb88827118be34335/spacy-3.8.16-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:111d817b32755d869e5ed6cc258b55c50c6687f47b78f6ebb2c14b1ce5ee707c", size = 35151231, upload-time = "2026-08-24T10:05:15.911Z" },
+    { url = "https://files.pythonhosted.org/packages/96/6e/3e09ebd5635e1c6a2b92baee5d593a907908ce1b38fb1f011dbb0d66c411/spacy-3.8.16-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:8a8a2bf3eb3486a0992176b77ac1d38ca9c669623941fdb8d3dddacb44dfd28e", size = 34649694, upload-time = "2026-08-24T10:05:20.225Z" },
+    { url = "https://files.pythonhosted.org/packages/78/8c/b31440943778f8c6a63dc568df5d0d3b4a58c9472784416474e71d04eca5/spacy-3.8.16-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:a237491463e351755f0167546f6a821d42971c5275a219a62d468f19f654138b", size = 35664934, upload-time = "2026-08-24T10:05:24.369Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/68/ec6fbae239df6e1ba1b8c7187fb9d3654b908c9789be5288004b8665fd56/spacy-3.8.16-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:04fd0206c9f33a0542a40049211528742b5492ef5f971d06b151b9cc49b9237b", size = 34427589, upload-time = "2026-08-24T10:05:38.32Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/1c/439d28bda90d057e0688c80c89487174e8dae4988268abea461edaf4f28b/spacy-3.8.16-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6c51eac85344784ca7b184f0c3f7da0fca47c354d63e05e733d90cae35a2ecc4", size = 34800189, upload-time = "2026-08-24T10:05:42.371Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/c8/5b2392b10f6e7f1d2f8851bef3ddf5a62c949912ef842a62c7f191d6cadd/spacy-3.8.16-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:b741266d901222dde979a802d5e9f3cf3d9bf77a15be3137b387f62905a74d57", size = 34587881, upload-time = "2026-08-24T10:05:46.195Z" },
+    { url = "https://files.pythonhosted.org/packages/64/60/89d411d014ba7edc9603cdacacb7df88ca2b5a7cbde2771dff3f72a7c29d/spacy-3.8.16-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:5e32a51b115674d3f42c6cde696c583dc1594f5bff6b430de4aba4c753d47f93", size = 35369907, upload-time = "2026-08-24T10:05:49.947Z" },
 ]
 
 [[package]]
