@@ -1,0 +1,808 @@
+#!/usr/bin/env python3
+"""Read-only owed set for the coordinator seat.
+
+Promoted from frame/coordination-lossiness-20260924/scripts/derived_obligations.py (v3).
+A checkpoint is not an input. Nothing leaves the set because of its age.
+
+  hapax-seat-owed-set --commit <vault-sha> [--at ISO] [--bus-until ISO] [--activation ISO]
+  hapax-seat-owed-set --commit WORKTREE --text-block
+  hapax-seat-owed-set --session-start
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+DEFAULT_VAULT = Path.home() / "Documents" / "Personal"
+TASKS = "20-projects/hapax-cc-tasks/active"
+BUS = "30-areas/hapax/lanebus"
+SEAT_FILE = "30-areas/hapax/frame/COORDINATOR-SEAT.md"
+
+S1_MARKER = re.compile(
+    r"(authority (fields )?(are |is )?(intentionally )?(left|unset)"
+    r"( for (you|the coordinator|the seat))?"
+    r"|authority left to the (coordinator|seat)|build authority unset"
+    r"|for the coordinator[;,.]? authority"
+    r"|the seat grants|seat grants it|a drafter does not grant)",
+    re.I,
+)
+S1_BLOCKED = re.compile(
+    r"(awaiting_(coordinator|seat)|\bawait(s|ing)? (on )?(the )?(coordinator|seat)\b)",
+    re.I,
+)
+S3_MARKER = re.compile(
+    r"(closure is for the seat|acceptance (receipt )?(is )?for the seat"
+    r"|for the seat or the independent acceptor"
+    r"|awaiting (the )?(seat|coordinator)('s)? (acceptance|close|closure|signed review)"
+    r"|closure requested|route is the seat's call|is the seat's call)",
+    re.I,
+)
+ASK_MARKER = re.compile(
+    r"(authority (fields )?(are |is )?(left|unset)|left for you|your call|decide whether"
+    r"|has not yet decided|awaiting (your|the seat)|^\*\*Ask|^Ask:)",
+    re.I | re.M,
+)
+ACTOR = re.compile(
+    r"^- \S+?Z\s*[—–-]?\s*(?:\*\*)?"
+    r"(?:(?:MINTED|minted|filed|created|drafted)(?: offered)? by\s+)?"
+    r"([A-Za-z0-9/._-]+)(.{0,40})"
+)
+NULLS = ("", "null", "none", "~")
+OPEN_STATUS = {"offered", "blocked", "claimed", "in_progress", "pr_open"}
+
+
+def _incumbent_line(text: str) -> str:
+    for line in text.splitlines():
+        if line.startswith("| incumbent |"):
+            return line
+    return ""
+
+
+def roles_from_seat_text(text: str) -> set[str]:
+    """Seat actors named on the §0 incumbent row. No role is added by hand."""
+    line = _incumbent_line(text)
+    roles: set[str] = set()
+    named = re.search(r"process role is `([^`]+)`", line)
+    if named:
+        roles.add(named.group(1).strip())
+    row = re.search(r"^\| incumbent \| ([a-z]*/[a-z0-9-]*)", line)
+    if row:
+        full = row.group(1)
+        roles.add(full)
+        roles.add(full.split("/", 1)[1])
+    return roles
+
+
+def actor_is_seat(log_line: str, roles: set[str]) -> bool:
+    """Author is the token after the stamp, not a search for the word seat.
+
+    v1 treated "dev3: … at the seat's request" as seat-authored.
+    """
+    match = ACTOR.match(log_line)
+    if not match:
+        return False
+    actor, rest = match.group(1).rstrip(":"), match.group(2)
+    return actor in roles or bool(re.match(r"\s*\((coordinator|the coordinator)", rest))
+
+
+def git(vault: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    proc = subprocess.run(
+        ["git", "-C", str(vault), *args],
+        input=stdin,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        message = detail[-1] if detail else f"git exit {proc.returncode}"
+        raise RuntimeError(message)
+    return proc.stdout
+
+
+def list_md(vault: Path, commit: str, rel_dir: str) -> list[str]:
+    if commit == "WORKTREE":
+        base = vault / rel_dir
+        if not base.is_dir():
+            return []
+        return [str(path.relative_to(vault)) for path in base.rglob("*.md")]
+    out = git(vault, "ls-tree", "-r", "--name-only", commit, "--", rel_dir).decode()
+    return [path for path in out.splitlines() if path.endswith(".md")]
+
+
+def read_many(vault: Path, commit: str, rels: list[str]) -> dict[str, str]:
+    if not rels:
+        return {}
+    if commit == "WORKTREE":
+        found: dict[str, str] = {}
+        for rel in rels:
+            try:
+                found[rel] = (vault / rel).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                found[rel] = ""
+        return found
+    raw = git(
+        vault,
+        "cat-file",
+        "--batch",
+        stdin="".join(f"{commit}:{rel}\n" for rel in rels).encode(),
+    )
+    found = {}
+    pos = 0
+    for rel in rels:
+        newline = raw.index(b"\n", pos)
+        header = raw[pos:newline].split()
+        if len(header) < 3 or header[1] == b"missing":
+            found[rel] = ""
+            pos = newline + 1
+            continue
+        size = int(header[2])
+        start = newline + 1
+        found[rel] = raw[start : start + size].decode("utf-8", errors="replace")
+        pos = start + size + 1
+    return found
+
+
+def front(text: str) -> dict[str, str]:
+    match = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    out: dict[str, str] = {}
+    if not match:
+        return out
+    for line in match.group(1).splitlines():
+        if ":" in line and not line.startswith((" ", "-")):
+            key, value = line.split(":", 1)
+            out[key.strip()] = value.strip().strip("'\"")
+    return out
+
+
+def session_log(text: str) -> list[str]:
+    if "## Session log" not in text:
+        return []
+    body = text.split("## Session log", 1)[1]
+    return [line for line in body.splitlines() if line.startswith("- 20")]
+
+
+def parse_ts(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+BACKLOG_OLDEST = 15
+REPLY_RESIDUAL = (
+    "Reply residual: a seat drop in the sender inbox disposes an ask when re: "
+    "contains the filename, the stem, or a shared #NNNN, or when a later created_at "
+    "shares thread. A reply that does none of those stays owed. A later drop on the "
+    "same thread clears every earlier ask on that thread. A shared #NNNN clears every "
+    "ask that carries that token. Prose in section 5 does not dispose an ask."
+)
+
+
+def normalize_off(raw: str) -> set[str]:
+    off = {part.strip() for part in raw.split(",") if part.strip()}
+    if "S1" in off:
+        off |= {"S1.marker", "S1.blocked"}
+    if "S1-field" in off or "S1.field" in off:
+        off.add("S1.blocked")
+    if "S1-marker" in off:
+        off.add("S1.marker")
+    return off
+
+
+def _stamp_from_name(name: str) -> datetime | None:
+    match = re.match(r"(\d{8})T(\d{4})(\d{2})?Z", name)
+    if not match:
+        return None
+    day, hm, sec = match.group(1), match.group(2), match.group(3) or "00"
+    return parse_ts(f"{day[:4]}-{day[4:6]}-{day[6:]}T{hm[:2]}:{hm[2:]}:{sec}+00:00")
+
+
+def _message_time(fm: dict[str, str], name: str) -> datetime | None:
+    return parse_ts(fm.get("created_at")) or _stamp_from_name(name)
+
+
+def _sender_token(from_field: str) -> str:
+    raw = from_field.split("(", 1)[0].strip()
+    raw = raw.split()[0] if raw else ""
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1]
+    return raw.strip(",;")
+
+
+def _is_seat_from(from_field: str, process_role: str, inbox: str) -> bool:
+    tokens = set(re.findall(r"[A-Za-z0-9][A-Za-z0-9-]*", from_field))
+    if process_role and process_role in tokens:
+        return True
+    return bool(inbox and inbox in tokens)
+
+
+DISPOSITION_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:granted|declined|done|admitted|held:|deferred_until:)(?![A-Za-z0-9_])",
+    re.I,
+)
+DECISIONS_REL = "30-areas/hapax/frame/seat-stop-decisions.yaml"
+CONDUCTOR_DIRECTIVE = (
+    "CONDUCTOR: stop yours now: uv run --project ~/projects/hapax-council "
+    "--directory ~/projects/hapax-council python -m agents.session_conductor "
+    "--role {role} stop (M103; conductor-start re-creates it on every session start)"
+)
+
+
+def _re_names(re_value: str, inbound_name: str, inbound_text: str) -> bool:
+    if not re_value:
+        return False
+    stem = Path(inbound_name).stem
+    if inbound_name in re_value or (stem and stem in re_value):
+        return True
+    title = ""
+    for line in inbound_text.splitlines():
+        if line.startswith("# "):
+            title = line
+            break
+    # Match the ticket number, not digits inside the filename's timestamp.
+    stamped = re.sub(r"^\d{8}T\d{4,6}Z-?", "", Path(inbound_name).stem)
+    segments = set(re.findall(r"\d+", stamped))
+    titled = set(re.findall(r"#(\d+)", title))
+    return any(number in segments or number in titled for number in re.findall(r"#(\d+)", re_value))
+
+
+def _reply_disposes(
+    inbound_name: str,
+    inbound_text: str,
+    inbound_fm: dict[str, str],
+    inbound_time: datetime | None,
+    replies: list[tuple[str, dict[str, str], str]],
+    *,
+    process_role: str,
+    inbox: str,
+    at: datetime,
+) -> bool:
+    for reply_name, reply_fm, reply_text in replies:
+        if not DISPOSITION_TOKEN.search(reply_text):
+            continue
+        if not _is_seat_from(reply_fm.get("from", ""), process_role, inbox):
+            continue
+        reply_time = _message_time(reply_fm, reply_name)
+        if reply_time is not None and reply_time > at:
+            continue
+        if reply_time is not None and inbound_time is not None and reply_time <= inbound_time:
+            continue
+        if _re_names(reply_fm.get("re", ""), inbound_name, inbound_text):
+            return True
+        thread = inbound_fm.get("thread", "")
+        if (
+            thread
+            and reply_fm.get("thread", "") == thread
+            and inbound_time is not None
+            and reply_time is not None
+            and inbound_time < reply_time
+        ):
+            return True
+    return False
+
+
+def project(
+    vault: Path,
+    commit: str,
+    *,
+    seat: str,
+    at: datetime,
+    bus_until: str,
+    activation: datetime,
+    off: set[str],
+    process_role: str = "",
+) -> dict:
+    members: dict[str, set[str]] = {}
+    cohort: dict[str, str] = {}
+    ages: dict[str, float | None] = {}
+    rels = [rel for rel in list_md(vault, commit, TASKS) if "/" not in rel[len(TASKS) + 1 :]]
+    texts = read_many(vault, commit, rels)
+    roles = roles_from_seat_text(read_many(vault, commit, [SEAT_FILE]).get(SEAT_FILE, ""))
+    for rel in rels:
+        text = texts.get(rel, "")
+        fm = front(text)
+        if fm.get("type") not in (None, "cc-task") and "task_id" not in fm:
+            continue
+        task_id = fm.get("task_id") or Path(rel).stem
+        status = fm.get("status", "")
+        if status not in OPEN_STATUS:
+            continue
+        created = parse_ts(fm.get("created_at") or fm.get("created"))
+        if created and created > at:
+            continue
+        body = text.split("\n---\n", 1)[1] if "\n---\n" in text else text
+        body = re.sub(r"\s+", " ", body)
+        impl = fm.get("implementation_authorized", "false").lower() == "true"
+        blocked = fm.get("blocked_reason", "") or ""
+        if blocked.lower() in NULLS:
+            blocked = ""
+        assignee = (fm.get("assigned_to", "") or "").lower()
+        unassigned = assignee in NULLS or assignee == "unassigned"
+        log = session_log(text)
+        first = min(log) if log else ""
+        classes: set[str] = set()
+        if status in ("offered", "blocked") and not impl:
+            field_hit = "S1.blocked" not in off and bool(S1_BLOCKED.search(blocked))
+            marker_hit = "S1.marker" not in off and bool(S1_MARKER.search(body))
+            if field_hit or marker_hit:
+                classes.add("S1")
+        # A blocked_reason that names the seat is owed at any open status.
+        if "S1.blocked" not in off and S1_BLOCKED.search(blocked):
+            classes.add("S1")
+        if "S2" not in off and status == "offered" and impl and unassigned:
+            classes.add("S2")
+        if "S3" not in off and S3_MARKER.search(body + " " + blocked):
+            classes.add("S3")
+        if "S5" not in off and status == "offered" and not impl and not blocked and unassigned:
+            # No session log means the author is unknown, so the row stays in.
+            if not (first and actor_is_seat(first, roles)):
+                classes.add("S5")
+        if classes:
+            members[task_id] = classes
+            cohort[task_id] = "new" if created and created >= activation else "backlog"
+            ages[task_id] = (at - created).total_seconds() / 3600 if created else None
+
+    bus_members: list[tuple[str, str, float]] = []
+    if "S4" not in off:
+        inbox = f"{BUS}/{seat}"
+        paths = list_md(vault, commit, inbox)
+        receipts = {Path(path).name for path in paths if "/read/" in path}
+        candidates: list[tuple[str, str, str]] = []
+        for rel in paths:
+            if "/read/" in rel:
+                continue
+            name = Path(rel).name
+            stamp_m = re.match(r"(\d{8})T(\d{4})(\d{2})?Z", name)
+            if not stamp_m or name in receipts:
+                continue
+            day, hm, sec = stamp_m.group(1), stamp_m.group(2), stamp_m.group(3) or "00"
+            stamp = f"{day[:4]}-{day[4:6]}-{day[6:]}T{hm[:2]}:{hm[2:]}:{sec}"
+            if bus_until and stamp > bus_until:
+                continue
+            candidates.append((rel, name, stamp))
+        bodies = read_many(vault, commit, [item[0] for item in candidates])
+        asks: list[tuple[str, str, str, str, dict[str, str]]] = []
+        for rel, name, stamp in candidates:
+            text = bodies.get(rel, "")
+            msg_fm = front(text)
+            if msg_fm.get("ack", "").lower() == "true":
+                flag = "ack:true"
+            elif ASK_MARKER.search(text):
+                flag = "ask-marker"
+            else:
+                flag = ""
+            if not flag:
+                continue
+            asks.append((rel, name, stamp, flag, msg_fm))
+        replies_by_sender: dict[str, list[tuple[str, dict[str, str], str]]] = {}
+        senders = {
+            _sender_token(item[4].get("from", ""))
+            for item in asks
+            if _sender_token(item[4].get("from", ""))
+        }
+        oldest_ask: dict[str, datetime] = {}
+        for _rel, name, stamp, _flag, msg_fm in asks:
+            sender = _sender_token(msg_fm.get("from", ""))
+            when = parse_ts(stamp + "+00:00") or _message_time(msg_fm, name)
+            if sender and when is not None:
+                prior = oldest_ask.get(sender)
+                if prior is None or when < prior:
+                    oldest_ask[sender] = when
+        for sender in senders:
+            cutoff = oldest_ask.get(sender)
+            reply_rels = []
+            for rel in list_md(vault, commit, f"{BUS}/{sender}"):
+                if "/read/" in rel or not rel.endswith(".md"):
+                    continue
+                # Only open replies newer than this sender's oldest open ask.
+                # An unstamped name is not opened.
+                stamped = _stamp_from_name(Path(rel).name)
+                if cutoff is not None and (stamped is None or stamped <= cutoff):
+                    continue
+                reply_rels.append(rel)
+            reply_bodies = read_many(vault, commit, reply_rels)
+            replies_by_sender[sender] = [
+                (Path(rel).name, front(reply_bodies.get(rel, "")), reply_bodies.get(rel, ""))
+                for rel in reply_rels
+            ]
+        seat_from = process_role or seat
+        for _rel, name, stamp, flag, msg_fm in asks:
+            text = bodies.get(_rel, "")
+            sender = _sender_token(msg_fm.get("from", ""))
+            when = parse_ts(stamp + "+00:00") or _message_time(msg_fm, name)
+            if _reply_disposes(
+                name,
+                text,
+                msg_fm,
+                when,
+                replies_by_sender.get(sender, []),
+                process_role=seat_from,
+                inbox=seat,
+                at=at,
+            ):
+                continue
+            age = (at - when).total_seconds() / 3600 if when else -1.0
+            bus_members.append((name, flag, age))
+
+    def sort_age(task_id: str) -> float:
+        age = ages.get(task_id)
+        return -(age if age is not None else 1e9)
+
+    rows = [
+        {
+            "task_id": task_id,
+            "classes": sorted(members[task_id]),
+            "cohort": cohort[task_id],
+            "age_h": None if ages.get(task_id) is None else round(ages[task_id], 4),
+        }
+        for task_id in sorted(members, key=lambda key: (sort_age(key), key))
+    ]
+    bus = [
+        {"name": name, "flag": flag, "age_h": round(age, 4)}
+        for name, flag, age in sorted(bus_members, key=lambda item: (-item[2], item[0]))
+    ]
+    unknown_age = sum(1 for task_id in members if ages.get(task_id) is None)
+    new_count = sum(1 for task_id in members if cohort[task_id] == "new")
+    return {
+        "seat": seat,
+        "commit": commit,
+        "at": at.isoformat(),
+        "activation": activation.isoformat(),
+        "rows": rows,
+        "bus": bus,
+        "members": {key: sorted(value) for key, value in members.items()},
+        "cohort": cohort,
+        "totals": {
+            "rows": len(members),
+            "S1": sum("S1" in value for value in members.values()),
+            "S2": sum("S2" in value for value in members.values()),
+            "S3": sum("S3" in value for value in members.values()),
+            "S5": sum("S5" in value for value in members.values()),
+            "S4": len(bus_members),
+            "ack_true": sum(item[1] == "ack:true" for item in bus_members),
+            "S6": 0,
+            "new": new_count,
+            "backlog": len(members) - new_count,
+            "unknown_age": unknown_age,
+        },
+        "rows_evaluated": len(rels),
+        "s6": "stub",
+    }
+
+
+def _age_cell(age: float | None) -> str:
+    if age is None:
+        return "      ?"
+    return f"{age:7.1f}h"
+
+
+def _row_line(row: dict) -> str:
+    classes = ",".join(row["classes"])
+    return f"{classes}\t{row['cohort']}\t{_age_cell(row['age_h'])}\t{row['task_id']}"
+
+
+def owed_block(result: dict) -> str:
+    count = result["totals"]["rows"] + result["totals"]["S4"]
+    lines = [f"OWED BY THE SEAT ({count})"]
+    for row in result["rows"]:
+        lines.append(_row_line(row))
+    for item in result["bus"]:
+        lines.append(f"S4\tbus\t{item['age_h']:7.1f}h\t{item['name']}\t{item['flag']}")
+    lines.append("S6\tstub\t0")
+    lines.append(REPLY_RESIDUAL)
+    return "\n".join(lines)
+
+
+def summary_block(result: dict) -> str:
+    new_rows = [row for row in result["rows"] if row["cohort"] == "new"]
+    backlog = [row for row in result["rows"] if row["cohort"] != "new"]
+
+    def oldest_key(row: dict) -> tuple:
+        age = row["age_h"]
+        return (age is not None, -(age or 0), row["task_id"])
+
+    oldest = sorted(backlog, key=oldest_key)[:BACKLOG_OLDEST]
+    counts = {name: 0 for name in ("S1", "S2", "S3", "S5")}
+    for row in backlog:
+        for name in row["classes"]:
+            if name in counts:
+                counts[name] += 1
+    lines = [
+        (
+            f"OWED BY THE SEAT (new {len(new_rows)}, "
+            f"bus {len(result['bus'])}, backlog {len(backlog)})"
+        ),
+        "NEW",
+    ]
+    lines.extend(_row_line(row) for row in new_rows)
+    lines.append("BUS")
+    for item in result["bus"]:
+        lines.append(f"S4\tbus\t{item['age_h']:7.1f}h\t{item['name']}\t{item['flag']}")
+    lines.append(
+        f"BACKLOG counts S1={counts['S1']} S2={counts['S2']} S3={counts['S3']} S5={counts['S5']}"
+    )
+    lines.append(f"OLDEST backlog ({len(oldest)} of {len(backlog)})")
+    lines.extend(_row_line(row) for row in oldest)
+    lines.append("S6\tstub\t0")
+    lines.append(REPLY_RESIDUAL)
+    if result.get("full_list_path"):
+        lines.append(f"full list: {result['full_list_path']}")
+    return "\n".join(lines)
+
+
+def _display_path(path: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(Path.home().resolve())
+    except ValueError:
+        return path.as_posix()
+    return "~/" + relative.as_posix()
+
+
+def cache_dir(vault: Path) -> Path:
+    if vault.resolve() == DEFAULT_VAULT.resolve():
+        return Path.home() / ".cache" / "hapax"
+    return vault / ".cache"
+
+
+def write_full_list(vault: Path, result: dict, *, generated_at: datetime | None = None) -> str:
+    directory = cache_dir(vault)
+    directory.mkdir(parents=True, exist_ok=True)
+    full = directory / "seat-owed-set.txt"
+    summary = directory / "seat-owed-set-summary.txt"
+    shown = _display_path(full)
+    result["full_list_path"] = shown
+    full.write_text(owed_block(result) + "\n", encoding="utf-8")
+    stamp = (generated_at or datetime.now(UTC)).isoformat()
+    summary.write_text(f"generated_at: {stamp}\n{summary_block(result)}\n", encoding="utf-8")
+    return shown
+
+
+def render_text(result: dict, targets: list[str]) -> str:
+    totals = result["totals"]
+    lines = [
+        owed_block(result),
+        (
+            f"TOTAL rows={totals['rows']} S1={totals['S1']} S2={totals['S2']} "
+            f"S3={totals['S3']} S5={totals['S5']} S4={totals['S4']} "
+            f"(ack:true={totals['ack_true']}) S6=stub"
+        ),
+        (
+            f"cohort: new={totals['new']} backlog={totals['backlog']} "
+            f"(activation {result['activation']}); "
+            f"unknown_age={totals['unknown_age']}; rows_evaluated={result['rows_evaluated']}"
+        ),
+    ]
+    for target in targets:
+        if target in result["members"]:
+            classes = ",".join(result["members"][target])
+            lines.append(f"target {target}: IN {classes} {result['cohort'][target]}")
+        else:
+            lines.append(f"target {target}: ABSENT")
+    return "\n".join(lines) + "\n"
+
+
+def incumbent_identity(vault: Path) -> tuple[str, str]:
+    """Process role and bus inbox, both read from the §0 incumbent row."""
+    try:
+        text = (vault / SEAT_FILE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    line = _incumbent_line(text)
+    named = re.search(r"process role is `([^`]+)`", line)
+    process = named.group(1).strip() if named else ""
+    inbox_match = re.search(r"^\| incumbent \| [a-z]*/([a-z0-9-]*)", line)
+    inbox = inbox_match.group(1) if inbox_match else ""
+    if not process:
+        process = inbox
+    return process, inbox
+
+
+def _unavailable_line(vault: Path) -> str:
+    shown = _display_path(cache_dir(vault) / "seat-owed-set.txt")
+    return (
+        "OWED BY THE SEAT (unavailable: no precomputed set; "
+        f"next: hapax-seat-owed-set --text-block; full list: {shown})"
+    )
+
+
+def _hook_json(text: str) -> str:
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": text,
+            }
+        },
+        ensure_ascii=True,
+    )
+
+
+def _m103_in_force(vault: Path) -> bool:
+    """True only when the declared decision file says so. Section 5 is not read."""
+    try:
+        text = (vault / DECISIONS_REL).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("m103_in_force:"):
+            return stripped.split(":", 1)[1].strip().lower() == "true"
+    return False
+
+
+def _session_source(raw: str) -> str:
+    raw = raw.strip()
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    return str(data.get("source") or "")
+
+
+def _directive_applies(source: str, role: str, seat_role: str, in_force: bool) -> bool:
+    if not in_force or not role:
+        return False
+    if source in ("", "startup", "resume"):
+        return True
+    return source == "clear" and role == seat_role
+
+
+def _owed_context(vault: Path, process: str) -> str:
+    summary = cache_dir(vault) / "seat-owed-set-summary.txt"
+    try:
+        raw = summary.read_text(encoding="utf-8")
+    except OSError:
+        return _unavailable_line(vault)
+    if not raw.startswith("generated_at:"):
+        return _unavailable_line(vault)
+    header, _, body = raw.partition("\n")
+    generated = parse_ts(header.split(":", 1)[1].strip())
+    age = ""
+    if generated is not None:
+        seconds = max(0, int((datetime.now(UTC) - generated).total_seconds()))
+        age = f" Precomputed {seconds}s ago."
+    intro = (
+        "Take the coordinator seat: read ~/Documents/Personal/30-areas/hapax/frame/"
+        "COORDINATOR-SEAT.md. "
+        f"This is a same-role routine restart (startup, resume, or clear) of the seat (role {process}). "
+        "Do not mint a row or run the stale-lease runbook. "
+        "The owed set is the control point; §5 is narrative. "
+        "New items are owed a disposition within 30 minutes. "
+        "Backlog items are owed one disposition within 24 hours of this activation. "
+        "Update the section 0 heartbeat row with your new transcript path." + age
+    )
+    return intro + "\n\n" + body.strip()
+
+
+def session_start_payload(vault: Path, source: str = "") -> str:
+    """Read the precomputed summary and the stop-decision file. Do not scan.
+
+    A live project() opened 1908 files and took 13.60s on 2026-09-25T03:04Z,
+    which is past the 10s SessionStart budget. The 15-minute staleness sweep
+    refreshes the owed-set file.
+    """
+    process, _inbox = incumbent_identity(vault)
+    role = os.environ.get("HAPAX_AGENT_ROLE", "")
+    parts: list[str] = []
+    if role and process and role == process:
+        parts.append(_owed_context(vault, process))
+    if _directive_applies(source, role, process, _m103_in_force(vault)):
+        parts.append(CONDUCTOR_DIRECTIVE.format(role=role))
+    if not parts:
+        return ""
+    return _hook_json("\n\n".join(parts))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--commit", default="")
+    parser.add_argument("--seat", default="dev1")
+    parser.add_argument("--bus-until", default="")
+    parser.add_argument("--at", default="")
+    parser.add_argument("--activation", default="")
+    parser.add_argument("--disable", default="")
+    parser.add_argument("--targets", default="")
+    parser.add_argument("--vault", default="")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--text-block", action="store_true")
+    parser.add_argument("--session-start", action="store_true")
+    parser.add_argument("--refresh-cache", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args(argv)
+    vault = Path(args.vault) if args.vault else DEFAULT_VAULT
+
+    if args.session_start:
+        raw_stdin = ""
+        if not sys.stdin.isatty():
+            # A closed hook pipe must not skip the owed-set injection below.
+            with contextlib.suppress(OSError):
+                raw_stdin = sys.stdin.read()
+        try:
+            payload = session_start_payload(vault, _session_source(raw_stdin))
+        except Exception as exc:  # a hook failure must still print one line
+            payload = _hook_json(
+                "OWED BY THE SEAT (unavailable: "
+                f"{exc.__class__.__name__}; next: hapax-seat-owed-set --text-block; full list: "
+                f"{_display_path(cache_dir(vault) / 'seat-owed-set.txt')})"
+            )
+        sys.stdout.write(payload)
+        if payload and not sys.stdout.isatty():
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+        return 0
+
+    if args.refresh_cache:
+        process, inbox = incumbent_identity(vault)
+        now = datetime.now(UTC)
+        result = project(
+            vault,
+            "WORKTREE",
+            seat=inbox or args.seat,
+            at=now,
+            bus_until="",
+            activation=now - timedelta(hours=48),
+            off=set(),
+            process_role=process or args.seat,
+        )
+        shown = write_full_list(vault, result, generated_at=now)
+        sys.stdout.write(f"refreshed {shown}\n")
+        sys.stdout.flush()
+        return 0
+
+    if not args.commit:
+        parser.error("--commit is required unless --session-start")
+    at = parse_ts(args.at) or datetime.now(UTC)
+    activation = parse_ts(args.activation) or (at - timedelta(hours=48))
+    result = project(
+        vault,
+        args.commit,
+        seat=args.seat,
+        at=at,
+        bus_until=args.bus_until,
+        activation=activation,
+        off=normalize_off(args.disable),
+    )
+    targets = [item for item in args.targets.split(",") if item]
+    if args.json:
+        payload = {key: value for key, value in result.items() if key not in {"members", "cohort"}}
+        payload["targets"] = {
+            target: (
+                f"IN {','.join(result['members'][target])} {result['cohort'][target]}"
+                if target in result["members"]
+                else "ABSENT"
+            )
+            for target in targets
+        }
+        sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        return 0
+    if args.text_block:
+        write_full_list(vault, result)
+        sys.stdout.write(summary_block(result) + "\n")
+        return 0
+    if args.quiet:
+        totals = result["totals"]
+        sys.stdout.write(
+            f"TOTAL rows={totals['rows']} S1={totals['S1']} S2={totals['S2']} "
+            f"S3={totals['S3']} S5={totals['S5']} S4={totals['S4']} "
+            f"(ack:true={totals['ack_true']}) S6=stub\n"
+        )
+        return 0
+    sys.stdout.write(render_text(result, targets))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
