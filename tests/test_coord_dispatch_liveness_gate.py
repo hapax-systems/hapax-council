@@ -18,14 +18,56 @@ import pytest
 from shared.coord_dispatch import (
     CoordDispatchError,
     DispatchLaunchRequest,
+    _append_dispatch_event,
     replay_terminal_result,
     run_atomic_dispatch_launch,
 )
+from shared.coord_event_log import CoordEventLog
 
 MOD = "shared.coord_dispatch"
 
 
+def test_dispatch_event_uses_forwarding_spool_even_when_local_ledger_is_writable(
+    tmp_path: Path,
+) -> None:
+    """A successful local append must not strand an event in the mirror target."""
+    log = CoordEventLog(
+        db_path=tmp_path / "coord" / "ledger.db",
+        jsonl_path=tmp_path / "coord" / "ledger.jsonl",
+        spool_dir=tmp_path / "coord" / "spool",
+    )
+    request = DispatchLaunchRequest(
+        task_id="T1",
+        lane="cx-live",
+        platform="codex",
+        mode="headless",
+        profile="p",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        parent_spec="spec",
+        message_id="M1",
+        mq_db_path=tmp_path / "messages.db",
+        event_log=log,
+    )
+
+    event_id = _append_dispatch_event(
+        request,
+        idempotency_key=request.effective_idempotency_key,
+        outcome="succeeded",
+        returncode=0,
+    )
+
+    assert not log.db_path.exists()
+    assert not log.jsonl_path.exists()
+    intents = list(log.spool_dir.glob("*.jsonl"))
+    assert len(intents) == 1
+    assert log._read_spool_event(intents[0]).event_id == event_id
+    replayed = replay_terminal_result(request, idempotency_key=request.effective_idempotency_key)
+    assert replayed is not None and replayed.replayed and replayed.launched
+
+
 def _request(lane: str = "cx-retired", *, reactivate: bool = False) -> DispatchLaunchRequest:
+    event_log = mock.Mock()
+    event_log.spooled_events.return_value = ()
     return DispatchLaunchRequest(
         task_id="T1",
         lane=lane,
@@ -36,7 +78,7 @@ def _request(lane: str = "cx-retired", *, reactivate: bool = False) -> DispatchL
         parent_spec="spec",
         message_id="M1",
         mq_db_path=Path("/dev/null"),
-        event_log=mock.Mock(),
+        event_log=event_log,
         reactivate_retired=reactivate,
     )
 

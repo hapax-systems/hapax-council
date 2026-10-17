@@ -3911,8 +3911,11 @@ printf '%s\\n' "$@" > {launcher_args}
         )
     with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
         assert conn.execute("SELECT state FROM recipients").fetchall() == [("processed",)]
+    # Dispatch writes a local forwarding intent; the canonical host ingests it.
+    assert not (tmp_path / "coord" / "ledger.db").exists()
     events = [
-        json.loads(line) for line in (tmp_path / "coord" / "ledger.jsonl").read_text().splitlines()
+        json.loads(path.read_text(encoding="utf-8").splitlines()[0])["event"]
+        for path in (tmp_path / "coord" / "spool").glob("*.jsonl")
     ]
     terminal = [
         event for event in events if event["event_type"] == "coord_dispatch.launch_succeeded"
@@ -4008,7 +4011,9 @@ def test_result_reference_failure_preserves_mq_terminal_launch(
         assert replay.launch_returncode == returncode
     terminal = [
         event
-        for event in event_log.replay().events
+        for event in (
+            event_log._read_spool_event(path) for path in event_log.spool_dir.glob("*.jsonl")
+        )
         if event.event_type
         in {
             "coord_dispatch.launch_succeeded",
@@ -4067,8 +4072,13 @@ def test_failed_launch_cleans_up_mq_state_and_records_failure(tmp_path: Path) ->
     assert receipt["launched"] is False
     assert receipt["launch_returncode"] == 42
     assert receipt["coord_dispatch_cleanup_state"] == "deferred"
-    mirror = (tmp_path / "coord" / "ledger.jsonl").read_text(encoding="utf-8")
-    assert "coord_dispatch.launch_failed" in mirror
+    assert not (tmp_path / "coord" / "ledger.jsonl").exists()
+    intents = list((tmp_path / "coord" / "spool").glob("*.jsonl"))
+    assert any(
+        json.loads(path.read_text(encoding="utf-8").splitlines()[0])["event"]["event_type"]
+        == "coord_dispatch.launch_failed"
+        for path in intents
+    )
 
 
 def test_launch_recomposes_from_subscription_receipt_without_account_live(

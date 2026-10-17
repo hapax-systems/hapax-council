@@ -7,6 +7,8 @@ in a process image.
 
 from __future__ import annotations
 
+import fcntl
+import os
 from pathlib import Path
 
 from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter
@@ -71,6 +73,62 @@ def test_ingest_spool_leaves_malformed_file(tmp_path: Path) -> None:
     assert result.failed == 1
     assert result.ingested == 0
     assert bad.exists()  # left in place so the intent is not lost
+
+
+def test_ingest_spool_preserves_the_lock_inode_while_another_holder_exists(
+    tmp_path: Path,
+) -> None:
+    """Unlinking a held sidecar lets a second writer lock a different inode."""
+    log = _log(tmp_path)
+    receipt = log.spool_fail_open(
+        _event(), writer=CoordWriter.shim(lane="zeta"), reason="daemon_down"
+    )
+    assert receipt.spool_path is not None
+    lock_sidecar = receipt.spool_path.with_name(receipt.spool_path.name + ".lock")
+    assert lock_sidecar.exists()
+    original_inode = lock_sidecar.stat().st_ino
+    held_fd = os.open(lock_sidecar, os.O_WRONLY)
+    try:
+        fcntl.flock(held_fd, fcntl.LOCK_EX)
+        result = log.ingest_spool()
+        assert result.ingested == 1
+        assert not receipt.spool_path.exists()
+        assert lock_sidecar.exists()
+        assert lock_sidecar.stat().st_ino == original_inode
+        other_fd = os.open(lock_sidecar, os.O_WRONLY)
+        try:
+            try:
+                fcntl.flock(other_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                raise AssertionError("a second holder acquired a split lock")
+        finally:
+            os.close(other_fd)
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+
+
+def test_ingest_spool_redelivered_intent_is_ingested_exactly_once(tmp_path: Path) -> None:
+    """A forwarded spool can deliver the same intent twice; the ledger lands it once.
+
+    The coord-ledger mirror row routes appendix-side writers to a forwarding
+    spool the canonical writer ingests; forwarding can redeliver (rsync re-run
+    before the source cleanup). `event_id UNIQUE` makes the second delivery an
+    idempotent duplicate: consumed, counted, never a second canonical row.
+    """
+    log = _log(tmp_path)
+    log.spool_fail_open(_event(), writer=CoordWriter.shim(lane="zeta"), reason="daemon_down")
+    first = log.ingest_spool()
+    assert (first.ingested, first.duplicates, first.failed) == (1, 0, 0)
+
+    # Redelivery: the same intent arrives again as a fresh spool file.
+    log.spool_fail_open(_event(), writer=CoordWriter.shim(lane="zeta"), reason="forwarded")
+    second = log.ingest_spool()
+
+    assert (second.ingested, second.duplicates, second.failed) == (0, 1, 0)
+    assert sum(1 for e in log.replay().events if e.event_id == "evt-1") == 1
 
 
 def test_ingest_spool_noop_when_no_spool_dir(tmp_path: Path) -> None:
