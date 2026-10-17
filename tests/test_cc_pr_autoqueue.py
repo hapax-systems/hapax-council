@@ -9,6 +9,8 @@ import json
 import re
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
@@ -17,7 +19,12 @@ from typing import Any
 import pytest
 import yaml
 
-from shared.merge_queue_lineage import MergeQueueLineageRecord, write_jsonl_records
+import shared.merge_queue_lineage as lineage
+from shared.merge_queue_lineage import (
+    MergeQueueLineageRecord,
+    build_lineage_record,
+    write_jsonl_records,
+)
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS) not in sys.path:
@@ -539,6 +546,8 @@ class _FakeRunner:
         # head_sha -> existing commit statuses (most-recent-first), for the G3
         # read-before-write idempotency check in set_autoqueue_admission_status.
         self.head_statuses: dict[str, list[dict[str, Any]]] = {}
+        self.merge_group_runs: list[dict[str, Any]] = []
+        self.queue_history: dict[int, dict[str, Any]] = {}
 
     @staticmethod
     def _fields(cmd: list[str]) -> dict[str, str]:
@@ -610,6 +619,18 @@ class _FakeRunner:
             return None
         path = cmd[6]
         fields = self._fields(cmd)
+        if path == "repos/owner/repo/actions/runs":
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {
+                        "total_count": len(self.merge_group_runs),
+                        "workflow_runs": self.merge_group_runs,
+                    }
+                ),
+                "",
+            )
         if path == "repos/owner/repo/pulls":
             rows = [self._rest_pr(pr) for pr in self.open_prs]
             head = fields.get("head")
@@ -736,6 +757,24 @@ class _FakeRunner:
         **_: Any,
     ) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
+        if cmd[:3] == ["gh", "api", "graphql"] and any(
+            "AutoqueueFailedGroups" in part for part in cmd
+        ):
+            repository = {
+                f"pr_{pr['number']}": self.queue_history.get(
+                    pr["number"],
+                    {
+                        "headRefOid": pr.get("headRefOid"),
+                        "baseRefName": pr.get("baseRefName"),
+                        "mergeQueueEntry": None,
+                        "timelineItems": {"nodes": [], "pageInfo": {"hasPreviousPage": False}},
+                    },
+                )
+                for pr in self.open_prs
+            }
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"data": {"repository": repository}}), ""
+            )
         rest = self._rest_response(cmd)
         if rest is not None:
             return rest
@@ -1245,6 +1284,14 @@ def test_run_reconciler_base_sources(
     runner.queued_prs = {42}
     item = _pr(42, base=adapter_base, auto_merge=True, auto_merge_method="MERGE")
     item["baseRepoDefaultBranch"] = "main" if adapter_base else None
+    # The independent timeline snapshot agrees with the adapter for this fixture;
+    # REST's missing/conflicting base is the governance condition under test.
+    runner.queue_history[42] = {
+        "headRefOid": item["headRefOid"],
+        "baseRefName": adapter_base or rest_base,
+        "mergeQueueEntry": None,
+        "timelineItems": {"nodes": [], "pageInfo": {"hasPreviousPage": False}},
+    }
     monkeypatch.setattr(
         autoqueue,
         "list_open_pr_statuses",
@@ -2391,7 +2438,18 @@ def test_queue_green_governed_pr(tmp_path: Path) -> None:
         and "state=success" in call
         for call in runner.calls
     )
-    assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "42",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-42",
+    ] in runner.calls
 
 
 def test_reconciler_falls_back_to_graphql_when_rest_rollup_indeterminate(
@@ -2425,6 +2483,8 @@ def test_reconciler_falls_back_to_graphql_when_rest_rollup_indeterminate(
         "owner/repo",
         "--auto",
         "--squash",
+        "--match-head-commit",
+        "sha-4455",
     ] in runner.calls
     assert any(
         call[:3] == ["gh", "api", "graphql"] and any("statusCheckRollup" in part for part in call)
@@ -2482,7 +2542,18 @@ def test_enable_auto_merge_for_pending_governed_pr(tmp_path: Path) -> None:
     )
 
     assert report["counts"]["enable_auto_merge"] == 1
-    assert ["gh", "pr", "merge", "43", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "43",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-43",
+    ] in runner.calls
 
 
 def test_enable_auto_merge_for_unknown_pending_governed_pr(tmp_path: Path) -> None:
@@ -2512,7 +2583,18 @@ def test_enable_auto_merge_for_unknown_pending_governed_pr(tmp_path: Path) -> No
     )
 
     assert report["counts"]["enable_auto_merge"] == 1
-    assert ["gh", "pr", "merge", "44", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "44",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-44",
+    ] in runner.calls
 
 
 def test_blocks_unknown_merge_state_without_pending_checks(tmp_path: Path) -> None:
@@ -3072,6 +3154,8 @@ def test_queue_owned_method_survives_arm_readback(tmp_path: Path, queued: bool) 
         "owner/repo",
         "--auto",
         "--squash",
+        "--match-head-commit",
+        "sha-4584",
     ] in runner.calls
 
     # API readback after the arm: GitHub reports MERGE even though the enforced
@@ -4187,6 +4271,8 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
         "owner/repo",
         "--auto",
         "--squash",
+        "--match-head-commit",
+        "sha-4584",
     ] in runner.calls
 
 
@@ -4474,7 +4560,18 @@ def test_queue_arms_with_verified_ruleset_merge_method(tmp_path: Path) -> None:
 
     assert report["merge_queue_merge_method"]["method"] == "REBASE"
     assert report["counts"]["queue"] == 1
-    assert ["gh", "pr", "merge", "79", "--repo", "owner/repo", "--auto", "--rebase"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "79",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--rebase",
+        "--match-head-commit",
+        "sha-79",
+    ] in runner.calls
     assert [
         "gh",
         "pr",
@@ -4484,6 +4581,8 @@ def test_queue_arms_with_verified_ruleset_merge_method(tmp_path: Path) -> None:
         "owner/repo",
         "--auto",
         "--squash",
+        "--match-head-commit",
+        "sha-79",
     ] not in runner.calls
 
 
@@ -4888,7 +4987,18 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
     )
 
     assert second_report["counts"]["queue"] == 1
-    assert ["gh", "pr", "merge", "83", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "83",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-83",
+    ] in runner.calls
 
 
 def test_merge_pr_rejects_missing_expected_merge_method(tmp_path: Path) -> None:
@@ -6072,7 +6182,18 @@ def test_queues_pr_with_multiple_ready_task_links(tmp_path: Path) -> None:
 
     assert report["counts"]["queue"] == 1
     assert report["decisions"][0]["task_ids"] == ["followup", "primary"]
-    assert ["gh", "pr", "merge", "74", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "74",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-74",
+    ] in runner.calls
 
 
 def test_dequeues_multiple_task_links_when_any_task_missing_metadata(tmp_path: Path) -> None:
@@ -6373,7 +6494,18 @@ def test_stabilization_holds_downstream_prs_while_ci_repair_is_active(
     assert decisions[90]["action"] == "queue"
     assert decisions[91]["action"] == "blocked"
     assert "admission_stabilization_hold:active_ci_repair:ci-repair" in decisions[91]["reasons"]
-    assert ["gh", "pr", "merge", "90", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "90",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-90",
+    ] in runner.calls
     assert not any(call[:4] == ["gh", "pr", "merge", "91"] for call in runner.calls)
 
 
@@ -6576,6 +6708,8 @@ def test_storm_allows_ci_repair_and_independent_admissions(tmp_path: Path) -> No
         "owner/repo",
         "--auto",
         "--squash",
+        "--match-head-commit",
+        "sha-121",
     ] in runner.calls
     assert [
         "gh",
@@ -6586,8 +6720,759 @@ def test_storm_allows_ci_repair_and_independent_admissions(tmp_path: Path) -> No
         "owner/repo",
         "--auto",
         "--squash",
+        "--match-head-commit",
+        "sha-122",
     ] in runner.calls
     assert not any(call[:4] == ["gh", "pr", "merge", "120"] for call in runner.calls)
+
+
+def _failed_group_report(tmp_path: Path, *, current_head: str = "source-head"):
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="failed-group", pr=130)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(130)]
+    runner.open_prs[0]["headRefOid"] = current_head
+    runner.merge_group_runs = [
+        {
+            "id": 9001,
+            "event": "merge_group",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_branch": "gh-readonly-queue/main/pr-130-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "head_sha": "group-head",
+            "created_at": "2026-10-12T12:46:04Z",
+            "updated_at": "2026-10-12T13:05:20Z",
+            "pull_requests": [
+                {
+                    "number": 130,
+                    "head": {"sha": "source-head"},
+                    "base": {"ref": "main", "sha": "base-head"},
+                }
+            ],
+        }
+    ]
+    runner.queue_history[130] = {
+        "headRefOid": current_head,
+        "baseRefName": "main",
+        "mergeQueueEntry": None,
+        "timelineItems": {
+            "pageInfo": {"hasPreviousPage": False},
+            "nodes": [
+                {
+                    "createdAt": "2026-10-12T13:05:38Z",
+                    "beforeCommit": {"oid": "group-head"},
+                    "actor": {"login": "github-merge-queue"},
+                    "reason": "failed_checks",
+                }
+            ],
+        },
+    }
+    ledger = tmp_path / "merge-queue-lineage.jsonl"
+    # Previously observed while this exact synthetic group was live in the queue.
+    write_jsonl_records(
+        ledger,
+        [
+            MergeQueueLineageRecord(
+                observed_at=datetime(2026, 10, 12, 12, 47, tzinfo=UTC),
+                pr_number=130,
+                pr_head_sha="source-head",
+                synthetic_queue_sha="group-head",
+                synthetic_queue_branch=runner.merge_group_runs[0]["head_branch"],
+                merge_group_run_id=9001,
+                run_outcome="in_progress",
+                lifecycle_reasons=["autoqueue_source_head:owner/repo:130:source-head"],
+            )
+        ],
+    )
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        lineage_ledger_path=ledger,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    return report, runner, ledger
+
+
+def test_failed_group_at_same_source_head_refuses_requeue(tmp_path: Path) -> None:
+    report, runner, _ = _failed_group_report(tmp_path)
+    [decision] = report["decisions"]
+    assert "queue_refused:merge_group_failed_at_head:9001" in decision["reasons"]
+    assert decision["action"] == "blocked"
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+    statuses = [
+        runner._fields(call)
+        for call in runner.calls
+        if any("/statuses/source-head" in arg for arg in call)
+    ]
+    assert any(
+        item.get("description") == "cc-pr-autoqueue held: merge_group_failed_at_head:9001"
+        for item in statuses
+    )
+
+
+def test_failed_group_changed_source_head_allows_queue(tmp_path: Path) -> None:
+    report, runner, _ = _failed_group_report(tmp_path, current_head="new-source-head")
+    assert report["decisions"][0]["action"] == "queue"
+    assert any(call[:4] == ["gh", "pr", "merge", "130"] for call in runner.calls)
+    [enqueue] = [call for call in runner.calls if call[:4] == ["gh", "pr", "merge", "130"]]
+    assert enqueue[-2:] == ["--match-head-commit", "new-source-head"]
+
+
+def test_failed_group_removal_writes_lineage_and_report_count(tmp_path: Path) -> None:
+    report, _, ledger = _failed_group_report(tmp_path)
+    [record] = autoqueue.read_jsonl_records(ledger)
+    assert record.merge_group_run_id == 9001
+    assert record.pr_head_sha == "source-head"
+    assert record.synthetic_queue_sha == "group-head"
+    assert record.run_conclusion == "failure"
+    assert "2026-10-12T13:05:38Z" in record.cancellation_requeue_reason
+    assert report["storm_mode"]["failed_recent_merge_group_run_count"] == 1
+    assert report["merge_group_observation"]["complete"] is True
+
+
+@pytest.mark.parametrize("current_head", ["a" * 40, "group-head"])
+def test_failed_group_other_identity_is_not_source_head(tmp_path: Path, current_head: str) -> None:
+    report, _, _ = _failed_group_report(tmp_path, current_head=current_head)
+    assert report["decisions"][0]["action"] == "queue"
+    assert "queue_refused:merge_group_failed_at_head:9001" not in report["decisions"][0].get(
+        "reasons", []
+    )
+
+
+def _observe_again(tmp_path: Path, runner: _FakeRunner, records=None):
+    return autoqueue._observe_merge_groups(
+        [autoqueue._parse_pr(runner.open_prs[0])],
+        repo="owner/repo",
+        repo_root=tmp_path,
+        records=records or [],
+        runner=runner,
+        now=datetime.now(UTC),
+    )
+
+
+def test_failed_group_unbound_history_is_unknown_not_current_head(tmp_path: Path) -> None:
+    _, runner, _ = _failed_group_report(tmp_path)
+    records, blockers, evidence = _observe_again(tmp_path, runner)
+    assert records[0].pr_head_sha is None
+    assert blockers[130] == ("merge_group_evidence_unknown:source_head_unbound:9001",)
+    assert evidence["complete"] is False
+    # Neither the run's current pull_requests member nor branch's base suffix
+    # supplies historical source authority.
+    assert all("merge_group_failed_at_head" not in item for item in blockers[130])
+
+
+def test_failed_group_live_entry_binds_source_then_removal_retains_it(tmp_path: Path) -> None:
+    _, runner, _ = _failed_group_report(tmp_path)
+    events = runner.queue_history[130]["timelineItems"]["nodes"]
+    runner.queue_history[130]["timelineItems"]["nodes"] = []
+    runner.queue_history[130]["mergeQueueEntry"] = {"headCommit": {"oid": "group-head"}}
+    runner.merge_group_runs[0].update(status="in_progress", conclusion=None)
+    records, blockers, evidence = _observe_again(tmp_path, runner)
+    assert not blockers
+    assert evidence["complete"]
+    assert records[0].pr_head_sha == "source-head"
+    runner.queue_history[130]["mergeQueueEntry"] = None
+    runner.queue_history[130]["timelineItems"]["nodes"] = events
+    runner.merge_group_runs[0].update(status="completed", conclusion="failure")
+    failed, blockers, _ = _observe_again(tmp_path, runner, records)
+    assert blockers[130] == ("queue_refused:merge_group_failed_at_head:9001",)
+    runner.merge_group_runs[0].update(conclusion="success", run_attempt=2)
+    rerun, blockers, _ = _observe_again(tmp_path, runner, failed)
+    assert blockers[130] == ("queue_refused:merge_group_failed_at_head:9001",)
+    assert rerun[0].run_conclusion == "failure"
+
+
+def test_failed_group_missing_run_is_unknown_not_zero(tmp_path: Path) -> None:
+    _, runner, _ = _failed_group_report(tmp_path)
+    runner.merge_group_runs = []
+    records, blockers, evidence = _observe_again(tmp_path, runner)
+    assert not records
+    assert blockers[130] == ("merge_group_evidence_unknown:removed_group_run_missing",)
+    assert evidence["complete"] is False
+
+
+@pytest.mark.parametrize("boundary", ["runs", "removals"])
+def test_failed_group_truncated_history_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    _, runner, _ = _failed_group_report(tmp_path)
+    # The failed run and its binding have fallen out of both bounded stores.
+    runner.merge_group_runs = []
+    runner.queue_history[130]["timelineItems"]["nodes"] = []
+    if boundary == "runs":
+        monkeypatch.setattr(
+            autoqueue, "_rest_get_json", lambda *a, **k: {"total_count": 101, "workflow_runs": []}
+        )
+    else:
+        runner.queue_history[130]["timelineItems"]["pageInfo"]["hasPreviousPage"] = True
+    _, blockers, evidence = _observe_again(tmp_path, runner)
+    assert f"merge_group_evidence_unknown:{boundary}_truncated" in blockers[130]
+    assert evidence["complete"] is False
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion"),
+    [
+        ("completed", None),
+        ("completed", ""),
+        ("completed", "invented"),
+        ("completed", []),
+        (None, "failure"),
+        ("in_progress", "success"),
+        ("invented", None),
+    ],
+)
+def test_failed_group_malformed_outcome_holds(tmp_path: Path, status: Any, conclusion: Any) -> None:
+    _, runner, _ = _failed_group_report(tmp_path)
+    runner.queue_history[130]["timelineItems"]["nodes"] = []
+    runner.merge_group_runs[0].update(status=status, conclusion=conclusion)
+    _, blockers, evidence = _observe_again(tmp_path, runner)
+    assert "merge_group_evidence_unknown:run_outcome_malformed:9001" in blockers[130]
+    assert evidence["complete"] is False
+
+
+@pytest.mark.parametrize("bad_run", [None, {"event": "push"}, {"event": "merge_group"}])
+def test_failed_group_bad_entry_preserves_later_failure(tmp_path: Path, bad_run: Any) -> None:
+    _, runner, ledger = _failed_group_report(tmp_path)
+    runner.merge_group_runs.insert(0, bad_run)
+    records, blockers, evidence = _observe_again(
+        tmp_path, runner, autoqueue.read_jsonl_records(ledger)
+    )
+    assert evidence["complete"] is False
+    assert "queue_refused:merge_group_failed_at_head:9001" in blockers[130]
+    assert records[0].run_conclusion == "failure"
+    assert records[0].observed_at > datetime(2026, 10, 12, 12, 47, tzinfo=UTC)
+    # A fresh observation without retained rows must also retain later failures.
+    fresh, _, _ = _observe_again(tmp_path, runner)
+    assert [record.merge_group_run_id for record in fresh] == [9001]
+
+
+def test_failed_group_pr_window_overflow_is_explicit(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(number) for number in range(1, 102)]
+    _, blockers, evidence = autoqueue._observe_merge_groups(
+        [autoqueue._parse_pr(pr) for pr in runner.open_prs],
+        repo="owner/repo",
+        repo_root=tmp_path,
+        records=[],
+        runner=runner,
+        now=datetime.now(UTC),
+    )
+    assert blockers[101] == ("merge_group_evidence_unknown:pr_query_limit",)
+    assert evidence["complete"] is False
+    assert evidence["unqueried_prs"] == [101]
+    assert not any("pullRequest(number:101)" in arg for call in runner.calls for arg in call)
+
+
+def test_failed_group_collector_preserves_binding_failure_and_removal(tmp_path: Path) -> None:
+    _, runner, ledger = _failed_group_report(tmp_path)
+    events = runner.queue_history[130]["timelineItems"]["nodes"]
+    runner.queue_history[130]["timelineItems"]["nodes"] = []
+    runner.queue_history[130]["mergeQueueEntry"] = {"headCommit": {"oid": "group-head"}}
+    runner.merge_group_runs[0].update(status="in_progress", conclusion=None, run_attempt=1)
+    captured, _, _ = _observe_again(tmp_path, runner)
+    composition = tmp_path / "composition.jsonl"
+    write_jsonl_records(composition, captured)
+    # The existing collector sees today's PR head, not the historical source.
+    collected = build_lineage_record(
+        runner.merge_group_runs[0],
+        pr_by_number={
+            130: {"headRefOid": "new-source-head", "state": "OPEN"},
+        },
+    )
+    write_jsonl_records(composition, [collected])
+    [retained] = autoqueue.read_jsonl_records(composition)
+    assert retained.pr_head_sha == "source-head"
+    assert "autoqueue_source_head:owner/repo:130:source-head" in retained.lifecycle_reasons
+    runner.queue_history[130]["mergeQueueEntry"] = None
+    runner.queue_history[130]["timelineItems"]["nodes"] = events
+    runner.merge_group_runs[0].update(status="completed", conclusion="failure")
+    removed, blockers, _ = _observe_again(tmp_path, runner, [retained])
+    assert blockers[130] == ("queue_refused:merge_group_failed_at_head:9001",)
+    write_jsonl_records(composition, removed)
+    runner.merge_group_runs[0].update(conclusion="success", run_attempt=2)
+    collected = build_lineage_record(
+        runner.merge_group_runs[0],
+        pr_by_number={
+            130: {"headRefOid": "new-source-head", "state": "OPEN"},
+        },
+    )
+    write_jsonl_records(composition, [collected])
+    [retained] = autoqueue.read_jsonl_records(composition)
+    assert retained.run_conclusion == "failure"
+    assert retained.run_attempt == 1
+    assert retained.cancellation_requeue_reason == "queue_bot_removed:2026-10-12T13:05:38Z"
+    runner.open_prs[0]["headRefOid"] = "new-source-head"
+    runner.queue_history[130]["headRefOid"] = "new-source-head"
+    _, blockers, evidence = _observe_again(tmp_path, runner, [retained])
+    assert not blockers
+    assert evidence["complete"] is True
+
+
+def test_failed_group_successful_rerun_keeps_failed_attempt_details(tmp_path: Path) -> None:
+    _, _, ledger = _failed_group_report(tmp_path)
+    [prior] = lineage.read_jsonl_records(ledger)
+    prior = prior.model_copy(
+        update={
+            "run_attempt": 1,
+            "test_duration_seconds": 120,
+            "run_started_at": datetime(2026, 10, 12, 12, 46, tzinfo=UTC),
+            "pr_remained_open_after_success": None,
+        }
+    )
+    path = tmp_path / "attempts.jsonl"
+    write_jsonl_records(path, [prior])
+    incoming = prior.model_copy(
+        update={
+            "run_attempt": 2,
+            "run_conclusion": "success",
+            "run_outcome": "success",
+            "test_duration_seconds": 1,
+            "run_started_at": datetime.now(UTC),
+            "pr_remained_open_after_success": True,
+        }
+    )
+    write_jsonl_records(path, [incoming])
+    [retained] = lineage.read_jsonl_records(path)
+    assert retained.run_conclusion == "failure"
+    assert retained.run_attempt == 1
+    assert retained.test_duration_seconds == 120
+    assert retained.run_started_at == prior.run_started_at
+    assert retained.pr_remained_open_after_success is None
+
+
+def test_failed_group_writer_serializes_concurrent_collector(tmp_path: Path, monkeypatch) -> None:
+    ledger = tmp_path / "composition.jsonl"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    first_read, second_read, release_first = (threading.Event() for _ in range(3))
+    read = lineage.read_jsonl_records
+    first_thread = []
+
+    def paused_read(path):
+        result = read(path)
+        if threading.get_ident() == first_thread[0]:
+            first_read.set()
+            assert release_first.wait(5)
+        else:
+            second_read.set()
+        return result
+
+    def write_first():
+        first_thread.append(threading.get_ident())
+        write_jsonl_records(
+            ledger,
+            [
+                MergeQueueLineageRecord(
+                    observed_at=datetime.now(UTC),
+                    merge_group_run_id=1,
+                    run_outcome="failure",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(lineage, "read_jsonl_records", paused_read)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        one = executor.submit(write_first)
+        assert first_read.wait(5)
+        two = executor.submit(
+            write_jsonl_records,
+            ledger,
+            [
+                MergeQueueLineageRecord(
+                    observed_at=datetime.now(UTC),
+                    merge_group_run_id=2,
+                    run_outcome="success",
+                )
+            ],
+        )
+        try:
+            assert not second_read.wait(0.2), "second writer read stale state outside the lock"
+        finally:
+            release_first.set()
+        one.result(timeout=5)
+        two.result(timeout=5)
+    assert {record.merge_group_run_id for record in read(ledger)} == {1, 2}
+
+
+@pytest.mark.parametrize("conflict", ["synthetic_queue_sha", "source_binding"])
+def test_failed_group_writer_identity_conflict_preserves_bytes(
+    tmp_path: Path, conflict: str
+) -> None:
+    _, _, ledger = _failed_group_report(tmp_path)
+    before = ledger.read_bytes()
+    [record] = lineage.read_jsonl_records(ledger)
+    changed = record.model_copy(
+        update={"synthetic_queue_sha": "different-group"}
+        if conflict == "synthetic_queue_sha"
+        else {
+            "pr_head_sha": "new-source-head",
+            "lifecycle_reasons": ["autoqueue_source_head:owner/repo:130:new-source-head"],
+        }
+    )
+    with pytest.raises(ValueError, match="merge_group_lineage_.*conflict"):
+        write_jsonl_records(ledger, [changed])
+    assert ledger.read_bytes() == before
+
+
+def test_failed_group_truncation_reports_unknown_not_zero(tmp_path: Path, monkeypatch) -> None:
+    _, runner, ledger = _failed_group_report(tmp_path, current_head="new-source-head")
+    rest = autoqueue._rest_get_json
+
+    def truncated(endpoint, **kwargs):
+        response = rest(endpoint, **kwargs)
+        if endpoint.endswith("/actions/runs"):
+            response["total_count"] = 101
+        return response
+
+    monkeypatch.setattr(autoqueue, "_rest_get_json", truncated)
+    runner.calls.clear()
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=_make_vault(tmp_path),
+        apply=True,
+        lineage_ledger_path=ledger,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    assert report["decisions"][0]["action"] == "blocked"
+    assert report["storm_mode"]["failed_recent_merge_group_run_count"] is None
+    assert report["storm_mode"]["observed_failed_recent_merge_group_run_count"] == 1
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+    statuses = [
+        runner._fields(call)
+        for call in runner.calls
+        if any("/statuses/new-source-head" in arg for arg in call)
+    ]
+    assert any(
+        item.get("state") == "pending" and "held" in item.get("description", "")
+        for item in statuses
+    )
+
+
+def _lifetime_coverage_fixture(tmp_path, monkeypatch, *, current_head="new-source-head"):
+    _, runner, ledger = _failed_group_report(tmp_path, current_head=current_head)
+    runner.queue_history[130]["createdAt"] = "2026-10-12T00:00:00Z"
+    failed = dict(runner.merge_group_runs[0], repository={"full_name": "owner/repo"}, run_attempt=1)
+    successes = [
+        dict(
+            failed,
+            id=10000 + i,
+            conclusion="success",
+            head_sha=f"other-group-{i}",
+            head_branch=f"gh-readonly-queue/main/pr-{1000 + i}-" + "a" * 40,
+        )
+        for i in range(120)
+    ]
+    # More than 100 runs relevant to this PR's lifetime, and 10,001 globally.
+    pages = [successes[:100], [*successes[100:], failed]]
+    calls = []
+    original = autoqueue._rest_get_json
+
+    def response(endpoint, **kwargs):
+        if not endpoint.endswith("/actions/runs"):
+            return original(endpoint, **kwargs)
+        fields = kwargs.get("fields", {})
+        calls.append(dict(fields))
+        if "created" not in fields:
+            return {"total_count": 10001, "workflow_runs": successes[:100]}
+        return {"total_count": 121, "workflow_runs": pages[int(fields["page"]) - 1]}
+
+    monkeypatch.setattr(autoqueue, "_rest_get_json", response)
+    return runner, ledger, pages, calls, response
+
+
+@pytest.mark.parametrize("current_head", ["source-head", "new-source-head"])
+def test_failed_group_over_100_complete_lifetime_coverage(tmp_path, monkeypatch, current_head):
+    runner, ledger, _, calls, _ = _lifetime_coverage_fixture(
+        tmp_path,
+        monkeypatch,
+        current_head=current_head,
+    )
+    runner.calls.clear()
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=_make_vault(tmp_path),
+        apply=True,
+        lineage_ledger_path=ledger,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decision = report["decisions"][0]
+    assert decision["action"] == ("blocked" if current_head == "source-head" else "queue")
+    assert not any("evidence_unknown" in reason for reason in decision.get("reasons", []))
+    observation = report["merge_group_observation"]
+    proof = observation["run_coverage"]["130"]
+    assert proof["complete"] is True
+    assert proof["total_count"] == 121
+    assert proof["observed_run_count"] == 121
+    assert proof["head_sha"] == current_head
+    assert proof["created_at"] == "2026-10-12T00:00:00Z"
+    assert observation["admission_evidence_complete"] is True
+    assert observation["complete"] is False  # Repository history is still truncated.
+    assert report["storm_mode"]["failed_recent_merge_group_run_count"] is None
+    assert [call["page"] for call in calls if "created" in call] == ["1", "2"]
+    assert all(
+        call["created"].startswith("2026-10-12T00:00:00Z..") for call in calls if "created" in call
+    )
+    [retained] = [r for r in lineage.read_jsonl_records(ledger) if r.merge_group_run_id == 9001]
+    assert retained.run_conclusion == "failure"
+    assert retained.pr_head_sha == "source-head"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_page",
+        "duplicate",
+        "changed_total",
+        "outside_window",
+        "foreign_repo",
+        "missing_attempt",
+        "omitted_known",
+        "omitted_recent",
+        "missing_birth",
+        "future_birth",
+        "unbound",
+        "removal_gap",
+        "search_ceiling",
+        "budget",
+    ],
+)
+def test_failed_group_lifetime_coverage_gaps_hold(tmp_path, monkeypatch, fault):
+    runner, ledger, pages, calls, response = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    if fault == "duplicate":
+        pages[1][0] = pages[0][0]
+    if fault == "outside_window":
+        pages[1][0]["created_at"] = "2026-10-11T23:59:59Z"
+    if fault == "foreign_repo":
+        pages[1][0]["repository"] = {"full_name": "other/repo"}
+    if fault == "missing_attempt":
+        pages[1][0].pop("run_attempt")
+    if fault == "omitted_known":
+        pages[1].pop()
+    if fault == "omitted_recent":
+        pages[0][0] = dict(pages[0][0], id=99999)
+    if fault == "missing_birth":
+        runner.queue_history[130].pop("createdAt")
+    if fault == "future_birth":
+        runner.queue_history[130]["createdAt"] = "2099-01-01T00:00:00Z"
+    if fault == "removal_gap":
+        runner.queue_history[130]["timelineItems"]["pageInfo"]["hasPreviousPage"] = True
+
+    def broken(endpoint, **kwargs):
+        result = response(endpoint, **kwargs)
+        fields = kwargs.get("fields", {})
+        if "created" in fields:
+            if fault == "omitted_known":
+                result["total_count"] = 120
+            if fault == "budget":
+                raise autoqueue.RestIndeterminateError("test_budget_hold")
+            if fault == "search_ceiling":
+                result["total_count"] = 1000
+            if fields["page"] == "2":
+                if fault == "missing_page":
+                    result["workflow_runs"] = []
+                if fault == "changed_total":
+                    result["total_count"] = 120
+        return result
+
+    monkeypatch.setattr(autoqueue, "_rest_get_json", broken)
+    _, blockers, evidence = _observe_again(
+        tmp_path,
+        runner,
+        [] if fault == "unbound" else lineage.read_jsonl_records(ledger),
+    )
+    assert any(reason.startswith("merge_group_evidence_unknown:") for reason in blockers[130])
+    assert evidence["admission_evidence_complete"] is False
+    assert len([call for call in calls if "created" in call]) <= 2
+    expected = {
+        "missing_page": "coverage_page_gap",
+        "duplicate": "coverage_run_identity_or_boundary",
+        "changed_total": "coverage_count_changed",
+        "outside_window": "coverage_run_identity_or_boundary",
+        "foreign_repo": "coverage_run_identity_or_boundary",
+        "missing_attempt": "coverage_run_identity_or_boundary",
+        "omitted_known": "coverage_known_run_missing",
+        "omitted_recent": "coverage_known_run_missing",
+        "missing_birth": "pr_creation_missing_or_future",
+        "future_birth": "pr_creation_missing_or_future",
+        "search_ceiling": "coverage_search_ceiling",
+        "budget": "test_budget_hold",
+    }
+    if fault in expected:
+        assert evidence["run_coverage"]["130"]["reason"] == expected[fault]
+
+
+def test_failed_group_lifetime_request_budget_is_bounded(tmp_path, monkeypatch):
+    runner, ledger, _, calls, response = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(autoqueue, "MERGE_GROUP_COVERAGE_REQUEST_LIMIT", 1, raising=False)
+    _, blockers, evidence = _observe_again(tmp_path, runner, lineage.read_jsonl_records(ledger))
+    assert "merge_group_evidence_unknown:runs_truncated" in blockers[130]
+    assert len([call for call in calls if "created" in call]) == 1
+    assert evidence["run_coverage"]["130"]["reason"] == "coverage_request_limit"
+
+
+def test_failed_group_lifetime_coverage_admits_unaffected_pr(tmp_path, monkeypatch):
+    runner, ledger, _, _, _ = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    runner.open_prs = [_pr(131)]
+    runner.queue_history[131] = {
+        "headRefOid": "sha-131",
+        "baseRefName": "main",
+        "createdAt": "2026-10-12T00:00:00Z",
+        "mergeQueueEntry": None,
+        "timelineItems": {"pageInfo": {"hasPreviousPage": False}, "nodes": []},
+    }
+    _, blockers, evidence = _observe_again(tmp_path, runner, lineage.read_jsonl_records(ledger))
+    assert not blockers
+    assert evidence["run_coverage"]["131"]["complete"]
+    assert evidence["admission_evidence_complete"]
+
+
+def test_failed_group_lifetime_rerun_cannot_erase_uncaptured_failure(tmp_path, monkeypatch):
+    runner, _, pages, _, _ = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    runner.queue_history[130]["timelineItems"]["nodes"] = []
+    pages[1][-1].update(conclusion="success", run_attempt=2)
+    # The first attempt was never captured (or was evicted). Latest success is
+    # not evidence that this synthetic group has never failed.
+    _, blockers, evidence = _observe_again(tmp_path, runner)
+    assert "merge_group_evidence_unknown:run_attempt_history_missing:9001" in blockers[130]
+    assert not evidence["admission_evidence_complete"]
+
+
+def test_failed_group_lifetime_stops_when_pool_loses_headroom(tmp_path, monkeypatch):
+    runner, ledger, _, calls, _ = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    checks = []
+
+    def pool(_snapshot):
+        checks.append(1)
+        return "below_floor" if len(checks) >= 3 else None
+
+    monkeypatch.setattr(autoqueue, "rest_pool_blocked", pool)
+    _, blockers, evidence = _observe_again(tmp_path, runner, lineage.read_jsonl_records(ledger))
+    assert "merge_group_evidence_unknown:runs_truncated" in blockers[130]
+    assert len([call for call in calls if "created" in call]) == 1
+    assert evidence["run_coverage"]["130"]["reason"] == "below_floor"
+
+
+def test_failed_group_lifetime_budget_is_shared_without_holding_covered_peer(tmp_path, monkeypatch):
+    runner, ledger, _, calls, _ = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    runner.open_prs.append(_pr(131))
+    runner.queue_history[131] = dict(
+        runner.queue_history[130],
+        headRefOid="sha-131",
+        timelineItems={"pageInfo": {"hasPreviousPage": False}, "nodes": []},
+    )
+    monkeypatch.setattr(autoqueue, "MERGE_GROUP_COVERAGE_REQUEST_LIMIT", 2)
+    _, blockers, evidence = autoqueue._observe_merge_groups(
+        [autoqueue._parse_pr(pr) for pr in runner.open_prs],
+        repo="owner/repo",
+        repo_root=tmp_path,
+        records=lineage.read_jsonl_records(ledger),
+        runner=runner,
+        now=datetime.now(UTC),
+    )
+    assert 130 not in blockers
+    assert "merge_group_evidence_unknown:runs_truncated" in blockers[131]
+    assert evidence["run_coverage"]["130"]["complete"] is True
+    assert evidence["run_coverage"]["131"]["reason"] == "coverage_request_limit"
+    assert len([call for call in calls if "created" in call]) == 2
+
+
+def test_failed_group_lifetime_overlap_preserves_newly_observed_failure(tmp_path, monkeypatch):
+    runner, _, pages, _, response = _lifetime_coverage_fixture(
+        tmp_path,
+        monkeypatch,
+        current_head="source-head",
+    )
+    failed = dict(pages[1][-1])
+    pages[1][-1].update(conclusion="success", run_attempt=2)
+    runner.queue_history[130]["mergeQueueEntry"] = {"headCommit": {"oid": "group-head"}}
+    runner.queue_history[130]["timelineItems"]["nodes"] = []
+
+    def overlapping(endpoint, **kwargs):
+        result = response(endpoint, **kwargs)
+        if endpoint.endswith("/actions/runs") and "created" not in kwargs.get("fields", {}):
+            result["workflow_runs"] = [failed, *result["workflow_runs"][:99]]
+        return result
+
+    monkeypatch.setattr(autoqueue, "_rest_get_json", overlapping)
+    records, blockers, _ = _observe_again(tmp_path, runner)
+    assert "queue_refused:merge_group_failed_at_head:9001" in blockers[130]
+    [record] = [r for r in records if r.merge_group_run_id == 9001]
+    assert record.run_conclusion == "failure"
+    assert record.pr_head_sha == "source-head"
+
+
+def test_failed_group_base_retarget_does_not_waive_same_source_failure(tmp_path: Path) -> None:
+    _, runner, ledger = _failed_group_report(tmp_path)
+    runner.open_prs[0]["baseRefName"] = "release"
+    runner.queue_history[130]["baseRefName"] = "release"
+    _, blockers, _ = _observe_again(tmp_path, runner, autoqueue.read_jsonl_records(ledger))
+    assert blockers[130] == ("queue_refused:merge_group_failed_at_head:9001",)
+
+
+@pytest.mark.parametrize("fault", ["malformed", "transport", "budget"])
+def test_failed_group_observation_failure_holds_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+) -> None:
+    _, runner, _ = _failed_group_report(tmp_path)
+    rest = runner._rest_response
+
+    def response(cmd):
+        if "repos/owner/repo/actions/runs" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 1 if fault == "transport" else 0, "{}", "unavailable"
+            )
+        return rest(cmd)
+
+    monkeypatch.setattr(runner, "_rest_response", response)
+    if fault == "budget":
+        monkeypatch.setattr(autoqueue, "rest_pool_blocked", lambda _snapshot: "below_floor")
+    runner.calls.clear()
+    _, blockers, evidence = _observe_again(tmp_path, runner)
+    assert blockers[130][0].startswith("merge_group_evidence_unknown:")
+    assert evidence["complete"] is False
+    assert sum("repos/owner/repo/actions/runs" in call for call in runner.calls) == (
+        0 if fault == "budget" else 1
+    )
+    assert sum(any("AutoqueueFailedGroups" in arg for arg in call) for call in runner.calls) == 1
+
+
+def test_failed_queue_removal_counts_even_when_current_pr_is_ready(tmp_path: Path) -> None:
+    ledger = tmp_path / "merge-queue-lineage.jsonl"
+    write_jsonl_records(
+        ledger,
+        [
+            MergeQueueLineageRecord(
+                observed_at=_recent_observed_at(0),
+                pr_number=130,
+                pr_head_sha="source-head",
+                synthetic_queue_sha="group-head",
+                merge_group_run_id=9001,
+                run_conclusion="failure",
+                run_outcome="failure",
+                cancellation_requeue_reason="queue_bot_removed:2026-10-12T13:05:38Z",
+            )
+        ],
+    )
+    pr = autoqueue._parse_pr(_pr(130))
+    assert pr is not None
+    failed = autoqueue._recent_failed_non_ready_merge_group_runs(
+        lineage_ledger_path=ledger,
+        decisions=[autoqueue.Decision(pr=pr, action="queue")],
+        recent_limit=20,
+    )
+    assert [record["run_id"] for record in failed] == [9001]
 
 
 def test_failed_recent_non_ready_merge_group_run_activates_storm_mode(
@@ -8685,14 +9570,12 @@ def test_governance_auto_arm_missing_head_sha_blocks_before_note_write(
     assert "stage: S7_RELEASE" not in current
     assert not ledger.exists()
     assert not any(call[:4] == ["gh", "pr", "merge", "745"] for call in runner.calls)
-    assert any(
-        item["pr"] == 745
-        and item["action"] == "release_auto_arm"
-        and item["ok"] is False
-        and item["message"]
-        == "release auto-arm failed: current_pr_head_unverifiable:missing_expected_head_sha"
-        for item in report["mutations"]
+    assert report["decisions"][0]["action"] == "blocked"
+    assert (
+        "merge_group_evidence_unknown:pr_identity_changed_or_missing"
+        in report["decisions"][0]["reasons"]
     )
+    assert not any(item["action"] == "release_auto_arm" for item in report["mutations"])
 
 
 def test_enable_auto_merge_status_write_failure_blocks_queue_after_arm(
@@ -10583,6 +11466,8 @@ def test_shared_file_epic_lowest_pr_proceeds_across_lanes(tmp_path: Path) -> Non
         "owner/repo",
         "--auto",
         "--squash",
+        "--match-head-commit",
+        "sha-330",
     ] in runner.calls
     assert not any(call[:4] == ["gh", "pr", "merge", "331"] for call in runner.calls)
 
@@ -12325,7 +13210,9 @@ def test_routed_base_evidence_reaches_queue_governance(
         repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=False, runner=fake
     )
     decision = report["decisions"][0]
-    expected = "queue" if evidence == "present" else "blocked"
+    # Queue governance remains readable on GraphQL, but the new merge-group
+    # run observation cannot spend into this fixture's exhausted REST pool.
+    expected = "queue" if evidence == "present" and transport == "rest" else "blocked"
     assert decision["action"] == expected, decision
     governance = decision["merge_queue_governance"]
     if evidence == "present":
