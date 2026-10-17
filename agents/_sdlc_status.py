@@ -50,8 +50,8 @@ def _derive_stage(labels: list[str]) -> str:
         return "axiom-blocked"
     if "sdlc:ready-for-human" in label_names:
         return "ready-for-human"
-    if "needs-human" in label_names:
-        return "needs-human"
+    if "needs-repair" in label_names:
+        return "needs-repair"
     for lb in label_names:
         if lb.startswith("review-round:"):
             return "in-review"

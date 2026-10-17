@@ -60,7 +60,7 @@ jobs:
           This issue has been flagged for human attention."
 
           gh issue edit ${{ github.event.issue.number }} \
-            --add-label "needs-human" \
+            --add-label "needs-repair" \
             --remove-label "agent-eligible"
 
       - name: Handle acceptance
@@ -103,7 +103,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh issue edit ${{ github.event.issue.number }} \
-            --add-label "needs-human" \
+            --add-label "needs-repair" \
             --remove-label "agent-eligible"
           gh issue comment ${{ github.event.issue.number }} --body "## ⚠️ Triage Failed
 

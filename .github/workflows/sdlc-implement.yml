@@ -133,7 +133,7 @@ jobs:
           if git diff --quiet && git diff --cached --quiet; then
             echo "No changes — implementation produced no output."
             ISSUE="$ISSUE_NUMBER"
-            gh issue edit "$ISSUE" --add-label "needs-human" --remove-label "sdlc:implementing"
+            gh issue edit "$ISSUE" --add-label "needs-repair" --remove-label "sdlc:implementing"
             gh issue comment "$ISSUE" --body "## ⚠️ Implementation Failed
 
             The implementation agent produced no changes. Human attention needed."
@@ -197,7 +197,7 @@ jobs:
             ""|*[!0-9]*) echo "::error::Invalid issue number"; exit 1 ;;
           esac
           ISSUE="$ISSUE_NUMBER"
-          gh issue edit "$ISSUE" --add-label "needs-human" --remove-label "sdlc:implementing" --remove-label "sdlc:planning"
+          gh issue edit "$ISSUE" --add-label "needs-repair" --remove-label "sdlc:implementing" --remove-label "sdlc:planning"
           gh issue comment "$ISSUE" --body "## ⚠️ Implementation Failed
 
           See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
@@ -230,7 +230,7 @@ jobs:
             printf 'safe=true\n' >> "$GITHUB_OUTPUT"
           else
             printf 'safe=false\n' >> "$GITHUB_OUTPUT"
-            gh pr edit "$PR_NUMBER" --add-label "needs-human"
+            gh pr edit "$PR_NUMBER" --add-label "needs-repair"
             gh pr comment "$PR_NUMBER" --body "Automated fix round skipped: PR head is not a same-repository agent branch."
           fi
 
@@ -281,7 +281,7 @@ jobs:
             ""|*[!0-9]*) echo "::error::Invalid PR number"; exit 1 ;;
           esac
           PR="$PR_NUMBER"
-          gh pr edit "$PR" --add-label "needs-human"
+          gh pr edit "$PR" --add-label "needs-repair"
           gh pr comment "$PR" --body "## ⚠️ Fix Round Limit Exceeded
 
           This PR has gone through 2+ review rounds without resolution.
