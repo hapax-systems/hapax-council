@@ -20,6 +20,12 @@ The account-live probe's own reply does carry the subscription's five-hour and s
 utilization. When the scrubbed probe passes those windows, the receipt keeps them as
 ``<window>_used_percent`` and ``<window>_resets_at`` beside the admission bit. The numbers never
 change admission; they are the quantity the quota ledger reads.
+
+A route the registry binds to one subscription pool (``subscription_pool_binding``; today
+claude.review.opus -> max-2) mints only from that pool's own chain: the config dir the reading ran
+under (CLAUDE_CONFIG_DIR), the receipt dir, the pace traces, marker and durable sink must all be the
+pool's. Its receipt then carries ``pool:`` and ``-pool-<pool>-`` in its name, so the ledger's
+evidence reference names the pool. Anything else exits 2 and writes nothing.
 """
 
 from __future__ import annotations
@@ -30,8 +36,13 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_RECEIPT_DIR = Path(
     os.environ.get(
@@ -138,6 +149,87 @@ def _pace_gate(
     if state.get("decision") == "allow":
         return "armed_allow", str(state.get("reason"))
     return "armed_refuse", str(state.get("reason"))
+
+
+#: The durable sink root the pacing governor's ledger reads (shared/durable_jsonl_sink.py).
+DURABLE_SINK_ROOT_ENV = "HAPAX_DURABLE_SINK_ROOT"
+POOL_BINDING_RECOVERY_HINT = (
+    "next action: mint this route only from its declared pool's own chain — the registry's "
+    "subscription_pool_binding names the config dir (CLAUDE_CONFIG_DIR), receipt dir, headless "
+    "traces, pace marker and durable sink. A reading from any other pool never admits the route, "
+    "and there is deliberately no bypass flag."
+)
+
+
+class PoolBindingRefused(ValueError):
+    """The reading is not from the route's declared pool, or the binding is unreadable."""
+
+
+def _declared_pool_binding(route_id: str) -> object | None:
+    """The route's declared subscription pool, or None when the route is unbound.
+
+    An unreadable registry refuses every route: without it, a bound route cannot be told apart
+    from an unbound one, and guessing "unbound" would let another pool's reading admit it.
+    """
+    try:
+        from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+        return resolve_subscription_pool_binding(route_id)
+    except Exception as exc:  # noqa: BLE001 — an unreadable binding refuses, never permits
+        raise PoolBindingRefused(
+            f"the route pool binding could not be read ({type(exc).__name__})"
+        ) from exc
+
+
+def _same_path(left: Path | str, right: Path | str) -> bool:
+    return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
+
+
+def _same_headless_glob(value: str, headless_dir: Path) -> bool:
+    path = Path(value).expanduser()
+    return path.parts[-2:] == ("*", "output.jsonl") and _same_path(path.parent.parent, headless_dir)
+
+
+def _pool_binding_mismatches(
+    args: argparse.Namespace, binding: object, env: Mapping[str, str]
+) -> list[str]:
+    """Each surface of this reading that is not the declared pool's own."""
+    from shared.platform_capability_registry import claude_config_dir_for_env
+
+    sink_root = (env.get(DURABLE_SINK_ROOT_ENV) or "").strip()
+    checks = {
+        "config_dir": _same_path(claude_config_dir_for_env(env), binding.config_dir),
+        "receipt_dir": _same_path(args.receipt_dir, binding.receipt_dir),
+        "pace_receipt_dir": _same_path(args.pace_receipt_dir, binding.receipt_dir),
+        "pace_headless_glob": _same_headless_glob(args.pace_headless_glob, binding.headless_dir),
+        "pace_activation": _same_path(args.pace_activation, binding.pace_activation),
+        "durable_sink_root": bool(sink_root) and _same_path(sink_root, binding.durable_sink_root),
+    }
+    return [name for name, matches in checks.items() if not matches]
+
+
+def _shared_dir_reading_off_the_default_pool(
+    args: argparse.Namespace, env: Mapping[str, str]
+) -> bool:
+    """An unbound route's reading, bound for the shared relay dir, taken on a non-default config.
+
+    Readers take an unbound receipt in the shared dir as the default pool's. A pool's own dir is
+    left alone: every reader already refuses an unbound receipt found there.
+    """
+    from shared.platform_capability_registry import (
+        CLAUDE_DEFAULT_CONFIG_HOME,
+        SHARED_RELAY_RECEIPT_HOME,
+        claude_config_dir_for_env,
+    )
+
+    home = Path.home()
+    shared = any(
+        _same_path(args.receipt_dir, candidate)
+        for candidate in (home / SHARED_RELAY_RECEIPT_HOME, DEFAULT_RECEIPT_DIR)
+    )
+    return shared and not _same_path(
+        claude_config_dir_for_env(env), home / CLAUDE_DEFAULT_CONFIG_HOME
+    )
 
 
 VALIDATION_RECOVERY_HINT = (
@@ -250,10 +342,17 @@ def _route_slug(route_id: str) -> str:
     return route_id.replace(".", "-")
 
 
-def _receipt_name(args: argparse.Namespace, *, route_id: str, observed_at: datetime) -> str:
+def _receipt_name(
+    args: argparse.Namespace, *, route_id: str, observed_at: datetime, pool: str | None = None
+) -> str:
     stamp = observed_at.strftime("%Y%m%dT%H%M%SZ").lower()
-    default = f"claude-subscription-quota-admission-{_route_slug(route_id)}-{stamp}.yaml"
+    # A bound route's receipt name carries its pool, so the ledger's evidence reference (which
+    # embeds the receipt name) names the pool too.
+    pool_part = f"-pool-{pool}" if pool else ""
+    default = f"claude-subscription-quota-admission-{_route_slug(route_id)}{pool_part}-{stamp}.yaml"
     name = args.receipt_name or default
+    if pool and f"-pool-{pool}-" not in name:
+        raise PoolBindingRefused(f"a receipt for a pool-bound route must name it (-pool-{pool}-)")
     if SAFE_RECEIPT_NAME_RE.fullmatch(name) is None or SECRETISH_RE.search(name) is not None:
         raise ValueError("unsafe receipt name")
     name_stem = name.removesuffix(".yaml")
@@ -403,7 +502,22 @@ def main(argv: list[str] | None = None) -> int:
         observation = _observation(args.observation)
         route_id = _route_id(args.route_id)
         evidence_ref = _safe_reference(args.evidence_ref, label="evidence-ref")
-        receipt_name = _receipt_name(args, route_id=route_id, observed_at=observed_at)
+        binding = _declared_pool_binding(route_id)
+        pool = None if binding is None else binding.pool
+        if binding is not None:
+            mismatches = _pool_binding_mismatches(args, binding, os.environ)
+            if mismatches:
+                raise PoolBindingRefused(
+                    f"{route_id} is bound to subscription pool {pool}; this reading's "
+                    f"{', '.join(mismatches)} is not that pool's"
+                )
+        elif _shared_dir_reading_off_the_default_pool(args, os.environ):
+            raise PoolBindingRefused(
+                f"{route_id} declares no subscription pool, so its readings come from the CLI "
+                "default config dir; this reading's config dir is another, and in the shared "
+                "relay dir it would pass as the default pool's evidence"
+            )
+        receipt_name = _receipt_name(args, route_id=route_id, observed_at=observed_at, pool=pool)
         windows = _probe_windows(args, observation=observation, observed_at=observed_at)
         path = args.receipt_dir / receipt_name
         fields: list[tuple[str, object]] = [
@@ -412,6 +526,7 @@ def main(argv: list[str] | None = None) -> int:
             ("provider", PROVIDER),
             ("route_id", route_id),
             ("capacity_pool", CAPACITY_POOL),
+            *([("pool", pool)] if pool else []),
             ("auth_surface", AUTH_SURFACE),
             ("observation", observation),
             *(
@@ -450,6 +565,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 3
+    except PoolBindingRefused as exc:
+        print(
+            f"hapax-claude-subscription-quota-admission: {exc}; {POOL_BINDING_RECOVERY_HINT}",
+            file=sys.stderr,
+        )
+        return 2
     except ValueError as exc:
         print(
             f"hapax-claude-subscription-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}",
@@ -482,6 +603,8 @@ def main(argv: list[str] | None = None) -> int:
         "account_live_quota_observed": True,
         "lane_presence_used_as_quota_evidence": False,
     }
+    if pool:
+        summary["pool"] = pool
     if args.probe_environment_scrubbed:
         summary["probe_environment_scrubbed"] = list(PROBE_ENV_SCRUBBED)
     if args.json:

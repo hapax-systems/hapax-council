@@ -7411,7 +7411,10 @@ def test_unreadable_measurements_still_write_the_admission_ledger(
     assert json.loads(out.read_text(encoding="utf-8"))["quota_snapshots"]
 
 
-def test_claude_admission_writer_can_target_review_route(tmp_path: Path) -> None:
+def test_claude_admission_writer_refuses_the_review_route_off_its_pool(tmp_path: Path) -> None:
+    """claude.review.opus is bound to max-2: a reading on the default pool mints nothing, so the
+    telemetry writer has nothing to admit. (The end-to-end run on the declared pool lands with
+    the pool-aware telemetry writer.)"""
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     admission_result = subprocess.run(
@@ -7432,17 +7435,15 @@ def test_claude_admission_writer_can_target_review_route(tmp_path: Path) -> None
         text=True,
         cwd=REPO_ROOT,
     )
-    assert admission_result.returncode == 0, admission_result.stderr
-    assert json.loads(admission_result.stdout)["route_id"] == "claude.review.opus"
+    assert admission_result.returncode == 2
+    assert "bound to subscription pool max-2" in admission_result.stderr
+    assert list(relay.iterdir()) == []
 
     result, out = _run_writer(tmp_path)
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert _claude_snapshot(payload, "claude.review.opus")["subscription_quota_state"] == "fresh"
-    assert (
-        _claude_snapshot(payload, "claude.headless.full")["subscription_quota_state"] == "unknown"
-    )
+    assert _claude_snapshot(payload, "claude.review.opus")["subscription_quota_state"] != "fresh"
 
 
 def test_fresh_claude_admission_ref_passes_ledger_validator(tmp_path: Path) -> None:
