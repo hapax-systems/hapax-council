@@ -14,6 +14,41 @@ from pathlib import Path
 
 import pytest
 
+from tests import tmp_path_budget
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "tmp_path_budget(bytes): raise this test's tmp_path budget above the default "
+        f"{tmp_path_budget.DEFAULT_TMP_PATH_BUDGET_BYTES} bytes (M117)",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _enforce_tmp_path_budget(request, tmp_path):
+    """Fail a test whose tmp_path owns more than its budget, then free that tree (M117).
+
+    On appendix the default basetemp is an 8 GB RAM tmpfs shared by every lane, so one oversized
+    tree stalls them all. The tree is removed after the failure so pytest's retention cannot keep
+    holding it.
+    """
+    yield
+    marker = request.node.get_closest_marker("tmp_path_budget")
+    budget_bytes = (
+        int(marker.args[0])
+        if marker and marker.args
+        else tmp_path_budget.DEFAULT_TMP_PATH_BUDGET_BYTES
+    )
+    message = tmp_path_budget.budget_violation(
+        tmp_path, budget_bytes=budget_bytes, nodeid=request.node.nodeid
+    )
+    if message is not None:
+        import shutil
+
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        pytest.fail(message, pytrace=False)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_publication_witness_log(tmp_path, monkeypatch):
