@@ -196,6 +196,17 @@ garbage-collected.
 
 ## 5a. Automated hygiene & the orphaned-spawn-tree class
 
+**Source scheduler (2026-10-02):** six-hourly, activated tree,
+`--releases-only --no-fetch --release-keep 5`. Age AND outside-newest-N;
+no broader sweep/global prune. Partial fixtures remain report-only, never ranked.
+Home/XFS roots and colon-separated `HAPAX_WORKTREE_GC_RELEASE_ROOTS` are inventoried.
+Ignored leaves, **including `.venv`**, hold pending regenerability evidence.
+
+**Runtime handoff remains owed (runtime/release=false):** installed/source hashes,
+paths/argv, LoadState/enabled, next/last firing, exit/journal, retained-reason union,
+counts and `df -B1 /` before/after; both fixtures, live/unit refusal and ntfy state.
+Source tests are not live effect or acceptance. No force/rm fallback.
+
 Two timers keep the count bounded without manual cleanup:
 
 - **`hapax-worktree-gc.timer`** (every 6h) → `scripts/hapax-worktree-gc.sh`. The

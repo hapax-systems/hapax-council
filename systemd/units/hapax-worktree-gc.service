@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax stale worktree garbage collection
+Description=Hapax source-activation release garbage collection
 # Doc path resolves through the activated deploy tree, NOT the mutable primary
 # worktree this unit deliberately stopped running from (see ExecStart rationale).
 # Reinstall + `systemctl --user daemon-reload` after editing this unit, or the
@@ -12,7 +12,7 @@ Type=oneshot
 # lane pinned on unmerged WIP, so its on-disk script froze at an old version and reported
 # removable=0 forever (N-tier deploy-skew). The deploy tree is a registered worktree of the same
 # .git (shares object store + sees every worktree/branch) and is always redeployed from main.
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-worktree-gc.sh --repo %h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-worktree-gc.sh --repo %h/.cache/hapax/source-activation/worktree --releases-only --no-fetch --release-keep 5
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

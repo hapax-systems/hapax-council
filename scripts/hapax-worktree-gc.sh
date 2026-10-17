@@ -262,8 +262,8 @@ if ((! releases_only)) && [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$r
     fi
 fi
 
-if ((dry_run)); then
-    printf 'hapax-worktree-gc: dry-run skips git worktree prune\n'
+if ((dry_run || releases_only)); then
+    printf 'hapax-worktree-gc: dry-run or releases-only skips global git worktree prune\n'
 else
     git -C "$repo" worktree prune
 fi
@@ -306,7 +306,7 @@ fi
 # is a symlink outside the release) and may have cwd elsewhere, so only its
 # mapped .so files name the release (2026-09-25 appendix reap: release d689ba7c
 # was live by maps alone). Same-user processes only (other users' proc entries
-# fail silently), which covers the systemd --user estate that binds these dirs.
+# are outside this same-user systemd estate). Unknown same-user visibility holds.
 #
 # Prints space-separated "pid(kind)" descriptors for live processes whose
 # cwd/exe resolve to (or under) the given real path. Empty output = no refs.
@@ -329,12 +329,24 @@ except OSError:
     sys.exit(3)  # unreadable proc root = detection failure, fail CLOSED
 refs = []
 for pid in pids:
+    try:
+        if os.stat(os.path.join(root, pid)).st_uid != os.geteuid():
+            continue
+    except FileNotFoundError:
+        continue  # Process exited after enumeration.
+    except OSError as exc:
+        refs.append(f"DETECTION-FAILED:{pid}(stat):{exc.errno}")
+        continue
     for kind in ("cwd", "exe"):
         try:
             target = os.readlink(os.path.join(root, pid, kind))
-        except OSError:
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            refs.append(f"DETECTION-FAILED:{pid}({kind}):{exc.errno}")
             continue
         target = target.removesuffix(" (deleted)")
+        target = os.path.realpath(target)
         if target == want or target.startswith(want + "/"):
             refs.append(f"{pid}({kind})")
     try:
@@ -343,12 +355,31 @@ for pid in pids:
                 fields = line.rstrip("\n").split(None, 5)
                 if len(fields) < 6:
                     continue
-                mapped = fields[5].removesuffix(" (deleted)")
+                mapped = os.path.realpath(fields[5].removesuffix(" (deleted)"))
                 if mapped.startswith(want + "/"):
                     refs.append(f"{pid}(maps)")
                     break
-    except OSError:
-        pass
+    except FileNotFoundError:
+        if os.path.exists(os.path.join(root, pid)):
+            refs.append(f"DETECTION-FAILED:{pid}(maps):missing")
+    except OSError as exc:
+        refs.append(f"DETECTION-FAILED:{pid}(maps):{exc.errno}")
+    try:
+        fds = os.listdir(os.path.join(root, pid, "fd"))
+        for fd in fds:
+            try:
+                target = os.readlink(os.path.join(root, pid, "fd", fd))
+            except FileNotFoundError:
+                continue  # FD closed between enumeration and readlink.
+            target = os.path.realpath(target.removesuffix(" (deleted)"))
+            if target == want or target.startswith(want + "/"):
+                refs.append(f"{pid}(fd)")
+                break
+    except FileNotFoundError:
+        if os.path.exists(os.path.join(root, pid)):
+            refs.append(f"DETECTION-FAILED:{pid}(fd):missing")
+    except OSError as exc:
+        refs.append(f"DETECTION-FAILED:{pid}(fd):{exc.errno}")
 print(" ".join(refs), end="")
 PY
 )"
@@ -366,26 +397,34 @@ PY
 # ones), so the releases dir grows unbounded (observed: 142). Reap stale release
 # snapshots here, keeping the active + candidate release (from current.json).
 release_retain_shas=""
+release_reference_unknown=""
+current_seen=0
 for sacur in \
-    "${HAPAX_SOURCE_ACTIVATION_CURRENT:-}" \
-    "$HOME/.cache/hapax/source-activation/current.json" \
+    "${HAPAX_SOURCE_ACTIVATION_CURRENT:-$HOME/.cache/hapax/source-activation/current.json}" \
     /data/cache/hapax/source-activation/current.json; do
-    [[ -n "$sacur" && -r "$sacur" ]] || continue
-    while IFS= read -r _sha; do
-        [[ -n "$_sha" ]] && release_retain_shas+=" $_sha"
-    done < <(python3 -c '
+    [[ -e "$sacur" || -L "$sacur" ]] || continue
+    current_seen=1
+    if current_shas="$(python3 - "$sacur" <<'PY_CURRENT'
 import json, os, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-for k in ("active_source_path", "active_source_head", "candidate_source_path"):
+with open(sys.argv[1]) as fh:
+    d = json.load(fh)
+assert isinstance(d, dict) and d, "empty current record"
+assert any(d.get(k) for k in ("active_source_path", "active_source_head", "candidate_source_path", "candidate_source_head")), "current identity absent"
+for k in ("active_source_path", "active_source_head", "candidate_source_path", "candidate_source_head"):
     v = d.get(k)
-    if isinstance(v, str) and v:
-        print(os.path.basename(v))
-' "$sacur" 2>/dev/null)
-    break
+    if v is not None:
+        assert isinstance(v, str) and v, "invalid current reference"
+        print(os.path.basename(v.rstrip("/")))
+PY_CURRENT
+)"; then
+        release_retain_shas+=" ${current_shas//$'\n'/ }"
+    else
+        release_reference_unknown="current-readback-unavailable:$sacur"
+    fi
 done
+if ((! current_seen)); then
+    release_reference_unknown="current-readback-missing"
+fi
 
 # Unit-reference guard for releases: a unit, drop-in or timer that names a release
 # path (ExecStart=, WorkingDirectory=, Environment=...) would break on its next start
@@ -393,19 +432,136 @@ done
 # referencing files space-separated; empty output = no references. Unreadable or
 # absent dirs are skipped (grep -s).
 unit_refs_for_path() {
-    local want="$1" dirs d out=""
-    dirs="${HAPAX_WORKTREE_GC_UNIT_DIRS-$HOME/.config/systemd/user:/etc/systemd}"
-    local IFS=':'
-    for d in $dirs; do
-        [[ -n "$d" && -d "$d" ]] || continue
-        out+="$(grep -rlsF -- "$want" "$d" 2>/dev/null | tr '\n' ' ')"
-    done
-    printf '%s' "${out% }"
+    python3 - "$1" <<'PY_UNITS'
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+want = os.path.realpath(sys.argv[1])
+home = str(Path.home())
+runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.geteuid()}")
+dirs = os.environ.get("HAPAX_WORKTREE_GC_UNIT_DIRS", ":".join((
+    home + "/.config/systemd/user", "/etc/systemd", "/usr/lib/systemd/user",
+    runtime + "/systemd/user", runtime + "/systemd/transient",
+    runtime + "/systemd/generator", runtime + "/systemd/generator.early",
+    runtime + "/systemd/generator.late",
+)))
+
+
+def references(text):
+    text = text.replace("%h", home).replace("%t", runtime)
+    for raw in re.findall(r"/[^\s\"';{}]+", text):
+        path = os.path.realpath(raw)
+        if path == want or path.startswith(want + "/"):
+            return True
+    return False
+
+
+try:
+    visited = set()
+    for directory in filter(None, dirs.split(":")):
+        if not os.path.lexists(directory):
+            continue
+        def failed(exc):
+            raise exc
+        for root, children, files in os.walk(directory, followlinks=True, onerror=failed):
+            real = os.path.realpath(root)
+            if real in visited:
+                children[:] = []
+                continue
+            visited.add(real)
+            for name in files:
+                fp = Path(root) / name
+                if fp.resolve() == Path("/dev/null"):
+                    continue  # masked unit
+                if references(fp.read_text()):
+                    print(fp)
+    # Manager readback includes transient units and effective drop-in properties.
+    units = subprocess.run(["systemctl", "--user", "list-units", "--all", "--plain",
+                            "--no-legend", "--no-pager"], check=True, capture_output=True,
+                           text=True, timeout=15).stdout
+    names = [line.split()[0] for line in units.splitlines() if line.strip()]
+    if names:
+        effective = subprocess.run(["systemctl", "--user", "show", "--no-pager",
+            "--property=Id,ExecStart,ExecStartPre,ExecStartPost,ExecStop,ExecStopPost,WorkingDirectory,Environment,EnvironmentFiles,RootDirectory,BindPaths,BindReadOnlyPaths", *names],
+            check=True, capture_output=True, text=True, timeout=30).stdout
+        for block in effective.split("\n\n"):
+            if references(block):
+                unit = next((line[3:] for line in block.splitlines() if line.startswith("Id=")), "unknown-unit")
+                print("effective:" + unit)
+except Exception as exc:
+    print(f"UNIT-DETECTION-FAILED:{type(exc).__name__}:{exc}")
+PY_UNITS
+}
+
+# Read retained Gate-0B roots and existing projections without retiring custody.
+custody_refs_for_path() {
+    python3 - "$1" <<'PY_CUSTODY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+want = os.path.realpath(sys.argv[1])
+sha = Path(want).name
+home = Path.home()
+cache = home / ".cache/hapax"
+registry = Path(os.environ.get("HAPAX_WORKTREE_REGISTRY_DIR", cache / "worktree-registry"))
+roots = [registry, cache / "claim-publications", cache / "claim-publication-receipts",
+         cache / "execution-admission", home / ".local/share/hapax/claim-publications",
+         home / ".local/share/hapax/execution-invocations"]
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for part in value.values():
+            yield from strings(part)
+    elif isinstance(value, list):
+        for part in value:
+            yield from strings(part)
+
+
+def references(value):
+    for text in strings(value):
+        if sha in text or want in text:
+            return True  # conservative SHA/path reference, including embedded payloads
+        for raw in re.findall(r"/[^\s\"';{}]+", text):
+            path = os.path.realpath(raw)
+            if path == want or path.startswith(want + "/"):
+                return True
+    return False
+
+
+try:
+    files = [p for p in cache.iterdir() if p.name.startswith("cc-claim-dispatch-") and p.suffix == ".json"] if cache.exists() else []
+    for directory in roots:
+        if not os.path.lexists(directory):
+            continue
+        def failed(exc):
+            raise exc
+        for root, children, names in os.walk(directory, onerror=failed):
+            if any((Path(root) / name).is_symlink() for name in children):
+                raise ValueError(f"unknown custody symlink: {root}")
+            files.extend(Path(root) / name for name in names if name.endswith(".json"))
+    for fp in files:
+        record = json.loads(fp.read_text())
+        if not isinstance(record, dict):
+            raise ValueError(f"unknown custody record shape: {fp}")
+        if references(record):
+            print("custody:" + str(fp))
+except Exception as exc:
+    print(f"CUSTODY-UNKNOWN:{type(exc).__name__}:{exc}")
+PY_CUSTODY
 }
 
 # release_tree_state <release-path>
 # Classifies a release worktree before removal. Line 1 is the verdict:
-#   clean      nothing modified or untracked (ignored files such as .venv are fine)
+#   clean      nothing modified, untracked or unclassified ignored
 #   mode-only  only tracked files whose MODE changed, with identical content: the stray
 #              `chmod +x` class (2026-09-25: 6 of 33 reaped releases carried exactly
 #              `mode change 100644 => 100755 scripts/hapax-determine`); the paths follow,
@@ -429,6 +585,12 @@ def git(*args: str) -> bytes:
 
 try:
     status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    # Ignoring a leaf does not establish regenerability, even for a .venv.
+    ignored = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    if ignored:
+        print("dirty")
+        print("unclassified-ignored-payload " + ignored.split(b"\0")[0].decode(errors="replace"))
+        sys.exit(0)
     if not status:
         print("clean")
         sys.exit(0)
@@ -568,13 +730,22 @@ process_worktree() {
 
     if [[ -z "$branch" ]]; then
         # Reap stale source-activation release worktrees (detached snapshots of
-        # main) once older than the clean threshold OR ranked beyond the release
-        # count cap, except the active/candidate release. Root-cause fix for
-        # unbounded release accumulation.
+        # main) only when ranked beyond the rollback retention floor, except the
+        # active/candidate release. Age never overrides the promised newest-N
+        # minimum; over-cap candidates still pass every removal guard.
         if [[ "$real_path" == */source-activation/releases/* && -n "$head" ]]; then
             local rel_sha="${real_path##*/}"
             local over_cap="${release_over_cap[$real_path]:-}"
-            if { ((age >= clean_age_seconds)) || [[ -n "$over_cap" ]]; } \
+            [[ -z "${release_holds[$real_path]:-}" ]] || return 0
+            if [[ -n "$release_reference_unknown" ]]; then
+                printf 'hapax-worktree-gc: hold release %s (%s)\n' "$path" "$release_reference_unknown"
+                return 0
+            fi
+            if ((age < clean_age_seconds)); then
+                printf 'hapax-worktree-gc: retain release %s (age below threshold)\n' "$path"
+                return 0
+            fi
+            if ((age >= clean_age_seconds)) && [[ -n "$over_cap" ]] \
                 && [[ " $release_retain_shas " != *" $rel_sha "* ]]; then
                 old_merged_clean=$((old_merged_clean + 1))
                 printf 'hapax-worktree-gc: removable release %s age=%s%s\n' \
@@ -582,6 +753,17 @@ process_worktree() {
                 if [[ -n "$locked" ]]; then
                     printf 'hapax-worktree-gc: skip locked release: %s (%s)\n' "$path" "$locked"
                     skipped=$((skipped + 1))
+                    return 0
+                fi
+                if ! git -C "$repo" merge-base --is-ancestor "$head" "$base_ref"; then
+                    printf 'hapax-worktree-gc: hold release %s (unmerged source)\n' "$path"
+                    return 0
+                fi
+                local custody_refs
+                custody_refs="$(custody_refs_for_path "$real_path")" || custody_refs="CUSTODY-UNKNOWN:reader-failed"
+                if [[ -n "$custody_refs" ]]; then
+                    release_refused=$((release_refused + 1))
+                    printf 'hapax-worktree-gc: hold release %s (%s)\n' "$path" "$custody_refs"
                     return 0
                 fi
                 local live_refs
@@ -598,7 +780,7 @@ process_worktree() {
                     return 0
                 fi
                 local unit_refs
-                unit_refs="$(unit_refs_for_path "$real_path")"
+                unit_refs="$(unit_refs_for_path "$real_path")" || unit_refs="UNIT-DETECTION-FAILED:reader-failed"
                 if [[ -n "$unit_refs" ]]; then
                     release_refused=$((release_refused + 1))
                     printf 'hapax-worktree-gc: refuse unit-referenced release %s (units: %s)\n' \
@@ -788,26 +970,72 @@ process_worktree() {
     fi
 }
 
-# Release count cap (2026-09-25): the 48 h age rule alone lets a merge-heavy day hold
-# every release it made (16 on 2026-09-17, ~6.5 GiB physical each on appendix). Rank the
-# non-retained release worktrees newest-first by the same mtime the age rule uses; any
-# ranked beyond $release_keep is reapable regardless of age. Being over the cap only makes
-# a release a CANDIDATE: the lock, live-process, unit-reference and dirty-tree guards in
-# process_worktree still decide, so a locked or live release over the cap is never removed.
-declare -A release_over_cap=()
+# Partial roots never rank as rollback slots; inventory failure stops GC.
+declare -A release_over_cap=() release_holds=()
 release_rank_input=""
-while IFS= read -r line; do
-    case "$line" in
-        worktree\ */source-activation/releases/*)
-            _rel_path="${line#worktree }"
-            [[ -d "$_rel_path" ]] || continue
-            _rel_real="$(cd "$_rel_path" && pwd -P)"
-            [[ " $release_retain_shas " == *" ${_rel_real##*/} "* ]] && continue
-            _rel_mtime="$(stat -c %Y "$_rel_path" 2>/dev/null)" || continue
-            release_rank_input+="${_rel_mtime} ${_rel_real}"$'\n'
-            ;;
-    esac
-done <"$tmp_worktree_list"
+if ! release_inventory="$(python3 - "$tmp_worktree_list" <<'PY_INVENTORY'
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+records = {}
+for block in Path(sys.argv[1]).read_text().strip().split("\n\n"):
+    fields = dict(line.split(" ", 1) if " " in line else (line, "") for line in block.splitlines())
+    path = fields.get("worktree", "")
+    if "/source-activation/releases/" in path:
+        records[os.path.realpath(path)] = fields
+roots = {str(Path(p).parent) for p in records}
+roots.update(filter(None, os.environ.get("HAPAX_WORKTREE_GC_RELEASE_ROOTS", ":".join((
+    str(Path.home() / ".cache/hapax/source-activation/releases"),
+    os.environ.get("HAPAX_SOURCE_ACTIVATE_RELEASES_DIR", "/store-fast/hapax/source-activation/releases"),
+    "/data/cache/hapax/source-activation/releases",
+))).split(":")))
+paths = set(records)
+for root in roots:
+    try:
+        with os.scandir(root) as entries:
+            paths.update(os.path.abspath(p.path) for p in entries if p.is_dir() or p.is_symlink())
+    except FileNotFoundError:
+        continue
+protected = {"3a2664d48fefce563e595e3eac0354988dfc0979", "8c0aaa53d436c2a973d745b1f767a27db2cb0b62"}  # pragma: allowlist secret
+for path in sorted(paths):
+    if any(c in path for c in "\n\t"):
+        raise ValueError("unrepresentable release path")
+    fields = records.get(path)
+    reason = ""
+    if not fields:
+        reason = "unregistered-report-only"
+    elif not Path(path, ".git").is_file() or Path(path).is_symlink():
+        reason = "partial-report-only"
+    else:
+        result = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel", "HEAD"],
+                                capture_output=True, text=True)
+        if result.returncode or result.stdout.splitlines() != [path, fields.get("HEAD")]:
+            reason = "partial-identity-unknown"
+        elif "branch" in fields:
+            reason = "branch-custody"
+    if Path(path).name in protected:
+        reason = (reason + ":protected-fixture") if reason else "protected-fixture-report-only"
+    if reason:
+        print("hold", path, reason, sep="\t")
+    else:
+        print("rank", path, int(os.stat(path).st_mtime), sep="\t")
+PY_INVENTORY
+)"; then
+    die "release inventory unavailable; inspect release roots before retrying (no removals)"
+fi
+while IFS=$'\t' read -r disposition rel_path detail; do
+    [[ -n "$rel_path" ]] || continue
+    if [[ "$disposition" == hold ]]; then
+        release_holds["$rel_path"]="$detail"
+        printf 'hapax-worktree-gc: hold release %s (%s)\n' "$rel_path" "$detail"
+    elif [[ " $release_retain_shas " == *" ${rel_path##*/} "* ]]; then
+        printf 'hapax-worktree-gc: retain release %s (active/candidate)\n' "$rel_path"
+    else
+        release_rank_input+="${detail} ${rel_path}"$'\n'
+    fi
+done <<<"$release_inventory"
 if [[ -n "$release_rank_input" ]]; then
     _rank=0
     while IFS= read -r _ranked; do
@@ -815,6 +1043,8 @@ if [[ -n "$release_rank_input" ]]; then
         _rank=$((_rank + 1))
         if ((_rank > release_keep)); then
             release_over_cap["${_ranked#* }"]=1
+        else
+            printf 'hapax-worktree-gc: retain release %s (newest-%s rollback)\n' "${_ranked#* }" "$release_keep"
         fi
     done < <(printf '%s' "$release_rank_input" | sort -rn -k1,1)
 fi
