@@ -1174,9 +1174,96 @@ DELIVERY_CLASS = "delivery-and-transcript-carriers"
 DELIVERY_WINDOW = timedelta(hours=24)
 DELIVERY_SOURCE_MAX_BYTES = 262144
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_DELIVERY_TASK_ID = r"[a-z0-9]+(?:-[a-z0-9]+)*-20\d{6}"
 _DELIVERY_COMMAND = re.compile(
-    r"\bcc-(?:claim|close)\s+(?:--return-claim\s+)?[a-z0-9]+(?:-[a-z0-9]+)*-20\d{6}(?![\w-])"
+    r"\bcc-(?:claim\s+(?:--(?:return-claim|release-claim-residue)\s+)?|close\s+(?:--return-claim\s+)?)"
+    rf"{_DELIVERY_TASK_ID}(?![\w-])"
 )
+_DELIVERY_LANE = r"(?:claude/|codex/)?(cx-[\w-]+|kimi-[\w-]+|dev\d+)"
+# The commission unit: one GO clause naming its recipient (Quack's design read, 10-17).
+# A RESULT ("TURN 52 RESULT: …") cannot match: the turn must be followed by ": <recipient>, GO".
+_DELIVERY_GO_CLAUSE = re.compile(
+    r"(\*\*)?\b(?:CLAIM|CLOSE)\s+TURN\s*\d+(?:\s*\([^()\n]*\))?:\s*"
+    rf"{_DELIVERY_LANE}(?:\s*\([^()\n]*\))?,\s*GO\b"
+)
+# Anything that looks like a GO but is not the strict clause is unclassified, never scored.
+_DELIVERY_GO_LOOSE = re.compile(r"\b(?:CLAIM|CLOSE)\s+TURN\s*\d+[^\n]*\bGO\b")
+_DELIVERY_LIST_ITEM = re.compile(r"\s{0,3}(\d+)[.)]\s+(.*)")
+_DELIVERY_COMMISSION_VERBS = {
+    "claim": "cc-claim {}",
+    "close": "cc-close {}",
+    "release-claim-residue": "cc-claim --release-claim-residue {}",
+}
+
+
+def _delivery_commission_acts(raw: Any, recipient: str) -> list[str] | None:
+    """The typed frontmatter commission, all or nothing; None when any entry is malformed.
+
+    An empty list is the desk's typed declaration that the turn commissions no act.
+    """
+    if not isinstance(raw, list):
+        return None
+    acts: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, Mapping) or set(entry) != {"recipient", "verb", "task_id"}:
+            return None
+        who, verb, task = entry["recipient"], entry["verb"], entry["task_id"]
+        lane = re.fullmatch(_DELIVERY_LANE, who) if isinstance(who, str) else None
+        if (
+            lane is None
+            or lane.group(1) != recipient
+            or not isinstance(verb, str)  # An unhashable verb must fail locally, not raise.
+            or verb not in _DELIVERY_COMMISSION_VERBS
+            or not isinstance(task, str)
+            or not re.fullmatch(_DELIVERY_TASK_ID, task)
+        ):
+            return None
+        act = _DELIVERY_COMMISSION_VERBS[verb].format(task)
+        if act in acts:
+            return None  # A repeated act is ambiguous; never collapse it silently.
+        acts.append(act)
+    return acts
+
+
+def _delivery_clause_acts(body: str, recipient: str) -> tuple[list[str], str | None]:
+    """Legacy strict clause reader: the clause's inline command, or the list right after it."""
+    clauses = list(_DELIVERY_GO_CLAUSE.finditer(body))
+    if not clauses:
+        return [], "go_clause_not_strict" if _DELIVERY_GO_LOOSE.search(body) else None
+    if len(clauses) > 1:
+        return [], "multiple_go_clauses"
+    clause = clauses[0]
+    if clause.group(2) != recipient:
+        return [], "recipient_mismatch"
+    line_end = body.find("\n", clause.end())
+    line_end = len(body) if line_end < 0 else line_end
+    extent = line_end
+    if clause.group(1):  # A bold clause ends at its closing marker.
+        close = body.find("**", clause.end(), line_end)
+        extent = line_end if close < 0 else close
+    inline = list(dict.fromkeys(_DELIVERY_COMMAND.findall(body[clause.end() : extent])))
+    if len(inline) > 1:
+        return [], "multiple_inline_commands"
+    if inline:
+        return inline, None
+    acts: list[str] = []
+    expected, item = 1, None
+    for line in body[line_end + 1 :].split("\n"):
+        numbered = _DELIVERY_LIST_ITEM.fullmatch(line)
+        if numbered and int(numbered.group(1)) == expected:
+            if item is not None and (found := _DELIVERY_COMMAND.search(item)):
+                acts.append(found.group(0))
+            expected, item = expected + 1, numbered.group(2)
+        elif not line.strip():
+            continue  # Blank lines may precede or separate list items.
+        elif item is not None and line[:1].isspace():
+            item += "\n" + line  # An indented continuation of the current item.
+        else:
+            break  # The list (or its absence) ends at the first other line.
+    if item is not None and (found := _DELIVERY_COMMAND.search(item)):
+        acts.append(found.group(0))
+    acts = list(dict.fromkeys(acts))
+    return (acts, None) if acts else ([], "go_clause_without_commands")
 
 
 def _delivery_time(value: Any) -> datetime | None:
@@ -1200,31 +1287,56 @@ def parse_delivery_source(
     bounds: Mapping[str, Any],
     unclassified: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Extract only the declared desk GO template, never infer action from a RESULT.
+    """Extract only the commissioned acts, never infer action from a RESULT or prose.
+
+    The commission unit is the frontmatter ``commission:`` list when present (all or
+    nothing; prose is then never read for acts). A legacy source falls back to one
+    strict GO clause naming the frontmatter recipient: its single inline command, or
+    the ordered list immediately after it. Anything not fully parsed is recorded as
+    unclassified coverage and never scored. A ``--release-claim-residue`` act is
+    explicit: held and excluded as ``prerequisite_repair``.
 
     Authority expiry is separate from frozen role/handoff bounds. Only a source's
     explicit predicate declares success; missing/unsupported stays UNKNOWN.
-    Unrecognized/oversize sources stay in the caller's coverage inventory.
     """
-    data = text.encode()
-    if len(data) > DELIVERY_SOURCE_MAX_BYTES:
+
+    def skip(reason: str, **extra: Any) -> list[dict[str, Any]]:
         if unclassified is not None:
             unclassified.append(
                 {
                     "source_ref": source_ref,
                     "classification": "unclassified",
-                    "reason": "source_byte_limit",
-                    "bytes": len(data),
+                    "reason": reason,
+                    **extra,
                 }
             )
         return []
+
+    data = text.encode()
+    if len(data) > DELIVERY_SOURCE_MAX_BYTES:
+        return skip("source_byte_limit", bytes=len(data))
     front, body = split_frontmatter(text)
-    if not re.search(r"\b(?:CLAIM|CLOSE)\s+TURN\s*\d+[^\n]*\bGO\b", body):
-        return []
     target = re.fullmatch(
-        r"(?:claude/|codex/)?(cx-[\w-]+|dev\d+)(?:\s+\([^()\n]*\))?\s*",
+        rf"{_DELIVERY_LANE}(?:\s+\([^()\n]*\))?\s*",
         str(front.get("to", "")),
     )
+    if "commission" in front:
+        commission = _delivery_commission_acts(
+            front["commission"], target.group(1) if target else ""
+        )
+        if commission is None:
+            return skip("commission_invalid")
+        if not commission:
+            return []  # Typed: this turn commissions no act.
+        acts = commission
+    else:
+        acts, reason = _delivery_clause_acts(body, target.group(1) if target else "")
+        if reason == "recipient_mismatch" and target is None:
+            reason = "recipient_unbound" if front else "frontmatter_unparsed"
+        if reason:
+            return skip(reason)
+        if not acts:
+            return []  # Not a commission source at all (no GO clause or commission).
     clock_text = str(front.get("created_at", ""))
     clock_match = re.match(
         r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))", clock_text
@@ -1240,7 +1352,8 @@ def parse_delivery_source(
             else None
         )
     except (ValueError, OverflowError):
-        return []  # One malformed source remains unclassified; keep folding others.
+        # One malformed source remains unclassified; keep folding others.
+        return skip("invalid_filename_clock")
     clocks = re.findall(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})", clock_text)
     exact_clock = (
         len(set(clocks)) <= 1
@@ -1250,8 +1363,10 @@ def parse_delivery_source(
     if assigned is None:
         assigned = filename_time
         exact_clock = False
-    if target is None or assigned is None:
-        return []
+    if target is None:
+        return skip("recipient_unbound")
+    if assigned is None:
+        return skip("assignment_time_unbound")
     recipient = target.group(1)
     bound = bounds.get(recipient, {})
     bound = bound if isinstance(bound, Mapping) else {}
@@ -1268,7 +1383,13 @@ def parse_delivery_source(
             expiry = (assigned + timedelta(minutes=duration)).isoformat()
     except (ValueError, OverflowError):
         pass  # Missing, conflicting or unparseable authority bounds stay UNKNOWN.
-    commands = dict.fromkeys(_DELIVERY_COMMAND.findall(body))
+    # A residue release repairs a prerequisite; it is commissioned explicitly but never
+    # scored as the turn's act (held before assignment, so the fold EXCLUDES it).
+    residue_hold = {
+        "eligibility": "hold",
+        "hold_reason": "prerequisite_repair",
+        "hold_recorded_at": assigned.isoformat(),
+    }
     return [
         {
             "source_ref": source_ref,
@@ -1287,8 +1408,9 @@ def parse_delivery_source(
             "bounds_source_sha256": bound.get("source_sha256"),
             "clock_start": bound.get("clock_start"),
             "eligibility": "eligible",
+            **(residue_hold if "--release-claim-residue" in command else {}),
         }
-        for command in commands
+        for command in acts
     ]
 
 

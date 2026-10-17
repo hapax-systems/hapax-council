@@ -861,3 +861,214 @@ def test_round6_enum_failure_is_local(field, bad, reverse):
         "a" * 64: "UNOBSERVED",
         "d" * 64: "TIMELY",
     }
+
+
+# Round 7: the commission unit is the frontmatter `commission:` list, else one strict
+# GO clause; nothing else in the body is ever scored. Synthetic corpus-shape fixtures.
+_R7_FRONT = "---\nfrom: dev47\nto: cx-test (mailbox)\ncreated_at: 2026-10-16T11:00:00Z\n"
+
+
+def _r7(body, front_extra=""):
+    unclassified: list = []
+    records = ema.parse_delivery_source(
+        _R7_FRONT + front_extra + "---\n" + body,
+        source_ref="20261016T110000Z-desk-GO.md",
+        bounds={},
+        unclassified=unclassified,
+    )
+    return [r["required_act"] for r in records], unclassified, records
+
+
+def _reasons(unclassified):
+    return [u["reason"] for u in unclassified]
+
+
+def test_round7_inline_clause_ignores_hold_bullets_and_prohibited_commands():
+    acts, unclassified, _ = _r7(
+        "**CLAIM TURN 82: cx-test, GO: `cc-claim example-20261016`**\n"
+        "- HOLD: do not run `cc-claim --release-claim-residue other-20261016`.\n"
+        "- Do NOT run `cc-claim forbidden-20261016`; quoted history: `cc-close old-20261015`.\n"
+    )
+    assert acts == ["cc-claim example-20261016"]
+    assert unclassified == []
+
+
+def test_round7_list_clause_scores_only_its_items():
+    acts, unclassified, _ = _r7(
+        "**CLAIM TURN 41: cx-test, GO.**\n"
+        "1. `cc-close done-20261016`\n"
+        "   (a continuation line)\n"
+        "2. then `cc-claim example-20261016`\n"
+        "\n"
+        "Afterwards, do NOT run `cc-claim forbidden-20261016`.\n"
+    )
+    assert acts == ["cc-close done-20261016", "cc-claim example-20261016"]
+    assert unclassified == []
+
+
+def test_round7_result_echo_is_zero_obligations_and_recorded():
+    acts, unclassified, _ = _r7(
+        "CLAIM TURN 52 RESULT: ADMITTED inside the GO's 5-min start window.\n"
+        "Real cc-claim example-20261016 exit 0.\n"
+    )
+    assert acts == []
+    assert [u["source_ref"] for u in unclassified] == ["20261016T110000Z-desk-GO.md"]
+    assert unclassified[0]["classification"] == "unclassified"
+
+
+def test_round7_prose_first_in_the_same_paragraph_keeps_the_inline_command():
+    acts, unclassified, _ = _r7(
+        "**#5190 MERGED; see `cc-close merged-20261015`.** "
+        "**CLAIM TURN 88: cx-test, GO: `cc-claim example-20261016`**\n"
+    )
+    assert acts == ["cc-claim example-20261016"]
+    assert unclassified == []
+
+
+@pytest.mark.parametrize(
+    "clause",
+    [
+        "**CLAIM TURN 9 (AMENDED): cx-test, GO: `cc-claim example-20261016`**",
+        "**CLAIM TURN 9 (turn A): cx-test, GO: `cc-claim example-20261016`**",
+        "**CLAIM TURN 9: cx-test (Yard Fox), GO: `cc-claim example-20261016`**",
+        "**CLAIM TURN 9: codex/cx-test, GO: `cc-claim example-20261016`**",
+    ],
+)
+def test_round7_label_variants_keep_their_command(clause):
+    acts, unclassified, _ = _r7(clause + "\n")
+    assert acts == ["cc-claim example-20261016"]
+    assert unclassified == []
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        (  # Shape e: prose between the clause and its list.
+            "**CLOSE TURN 25: cx-test, GO.**\nRead the row first.\n1. `cc-close done-20261016`\n",
+            "go_clause_without_commands",
+        ),
+        (
+            "**CLAIM TURN 26: cx-test, GO.**\n1. read the row\n2. post a RESULT\n",
+            "go_clause_without_commands",
+        ),
+        ("**CLAIM TURN 27: cx-other, GO: `cc-claim example-20261016`**\n", "recipient_mismatch"),
+        (
+            "**CLAIM TURN 28: cx-test, GO: `cc-claim example-20261016`**\n"
+            "**CLAIM TURN 29: cx-test, GO: `cc-claim second-20261016`**\n",
+            "multiple_go_clauses",
+        ),
+        ("CLAIM TURN 30 for cx-test is GO: `cc-claim example-20261016`\n", "go_clause_not_strict"),
+        (
+            "**CLAIM TURN 31: cx-test, GO: `cc-claim example-20261016` or `cc-claim b-20261016`**\n",
+            "multiple_inline_commands",
+        ),
+    ],
+)
+def test_round7_unparseable_or_ambiguous_clause_is_unclassified_never_scored(body, reason):
+    acts, unclassified, _ = _r7(body)
+    assert acts == []
+    assert _reasons(unclassified) == [reason]
+
+
+def test_round7_residue_release_item_is_explicitly_excluded_as_prerequisite_repair():
+    acts, unclassified, records = _r7(
+        "**CLAIM TURN 72: cx-test, GO.**\n"
+        "1. `cc-claim --release-claim-residue stale-20261015`\n"
+        "2. then `cc-claim example-20261016`\n"
+    )
+    assert acts == ["cc-claim --release-claim-residue stale-20261015", "cc-claim example-20261016"]
+    assert unclassified == []
+    residue, claim = records
+    assert (residue["eligibility"], residue["hold_reason"]) == ("hold", "prerequisite_repair")
+    assert residue["hold_recorded_at"] == residue["assigned_at"]
+    assert claim["eligibility"] == "eligible"
+    report = _score(*records)
+    assert {o["required_act"]: (o["status"], o["cause"]) for o in report["outcomes"]}[
+        "cc-claim --release-claim-residue stale-20261015"
+    ] == ("EXCLUDED", "prerequisite_repair")
+
+
+def test_round7_frontmatter_commission_is_preferred_over_any_prose():
+    acts, unclassified, records = _r7(
+        "**CLAIM TURN 1: cx-test, GO: `cc-claim prose-20261016`**\n"
+        "Do NOT run `cc-close x-20261016`.\n",
+        "commission:\n"
+        "  - {recipient: cx-test, verb: close, task_id: done-20261016}\n"
+        "  - {recipient: cx-test, verb: release-claim-residue, task_id: stale-20261015}\n"
+        "  - {recipient: cx-test, verb: claim, task_id: example-20261016}\n",
+    )
+    assert acts == [
+        "cc-close done-20261016",
+        "cc-claim --release-claim-residue stale-20261015",
+        "cc-claim example-20261016",
+    ]
+    assert unclassified == []
+    assert [r["eligibility"] for r in records] == ["eligible", "hold", "eligible"]
+
+
+def test_round7_commission_without_any_prose_clause_is_scored():
+    acts, unclassified, _ = _r7(
+        "TURN 103: cx-test, GO, claim the row.\n",
+        "commission:\n  - {recipient: cx-test, verb: claim, task_id: example-20261016}\n",
+    )
+    assert acts == ["cc-claim example-20261016"]
+    assert unclassified == []
+
+
+def test_round7_empty_commission_declares_no_act_and_never_reads_prose():
+    # The desk's typed "nothing commissioned" (check/relay turns): zero acts, not unknown.
+    acts, unclassified, _ = _r7(
+        "**CLAIM TURN 1: cx-test, GO: `cc-claim prose-20261016`**\n", "commission: []\n"
+    )
+    assert acts == [] and unclassified == []
+
+
+def test_round7_kimi_lane_commission_binds_its_recipient():
+    unclassified: list = []
+    records = ema.parse_delivery_source(
+        "---\nto: kimi-closes (Kimi lane; tmux hapax-kimi-kimi-closes)\n"
+        "created_at: 2026-10-16T11:00:00Z\n"
+        "commission:\n  - {recipient: kimi-closes, verb: claim, task_id: example-20261016}\n"
+        "---\nTURN 96: kimi-closes, GO.\n",
+        source_ref="20261016T110000Z-desk-GO.md",
+        bounds={},
+        unclassified=unclassified,
+    )
+    assert [(r["recipient"], r["required_act"]) for r in records] == [
+        ("kimi-closes", "cc-claim example-20261016")
+    ]
+    assert unclassified == []
+
+
+def test_round7_unparsed_frontmatter_is_recorded_not_silently_dropped():
+    unclassified: list = []
+    text = '---\nto: cx-test\nturn: 24 of the queue ("a: b\n---\n**CLAIM TURN 24: cx-test, GO: `cc-claim example-20261016`**\n'
+    assert (
+        ema.parse_delivery_source(text, source_ref="GO.md", bounds={}, unclassified=unclassified)
+        == []
+    )
+    assert _reasons(unclassified) == ["frontmatter_unparsed"]
+
+
+@pytest.mark.parametrize(
+    "commission",
+    [
+        "commission: {}\n",
+        "commission: claim example-20261016\n",
+        "commission:\n  - {recipient: cx-test, verb: start, task_id: example-20261016}\n",
+        "commission:\n  - {recipient: cx-test, verb: [claim], task_id: example-20261016}\n",
+        "commission:\n  - {recipient: cx-test, verb: {x: 1}, task_id: example-20261016}\n",
+        "commission:\n  - {recipient: cx-test, verb: claim}\n",
+        "commission:\n  - {recipient: cx-test, verb: claim, task_id: example-20261016-r2}\n",
+        "commission:\n  - {recipient: cx-other, verb: claim, task_id: example-20261016}\n",
+        "commission:\n  - {recipient: cx-test, verb: claim, task_id: example-20261016, note: x}\n",
+        "commission:\n  - {recipient: cx-test, verb: claim, task_id: a-20261016}\n"
+        "  - {recipient: cx-test, verb: claim, task_id: a-20261016}\n",
+    ],
+)
+def test_round7_malformed_commission_is_unclassified_whole_source_never_prose(commission):
+    acts, unclassified, _ = _r7(
+        "**CLAIM TURN 1: cx-test, GO: `cc-claim prose-20261016`**\n", commission
+    )
+    assert acts == []  # All-or-nothing: never a partial score, never a fallback to prose.
+    assert _reasons(unclassified) == ["commission_invalid"]
