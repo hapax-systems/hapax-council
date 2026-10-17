@@ -391,14 +391,36 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
     # an enumerated allowlist of variables cannot do.
     home = sandbox / "home"
     (home / ".config" / "hapax").mkdir(parents=True)
+    # Trap dependency sync before it can download anything. The activation witness needs
+    # launcher publication and release-tree modes, not a new dependency environment.
+    probe_bin = sandbox / "probe-bin"
+    probe_bin.mkdir()
+    uv_sync_marker = sandbox / "uv-sync-attempted"
+    uv_probe = probe_bin / "uv"
+    uv_probe.write_text(
+        "#!/bin/sh\n"
+        'if [ "${1-}" = sync ]; then\n'
+        '    printf "%s\\n" "$*" > "$HAPAX_TEST_UV_SYNC_MARKER"\n'
+        "fi\n"
+        "exit 97\n"
+    )
+    uv_probe.chmod(0o755)
     env = {
         **os.environ,
         "HOME": str(home),
+        "PATH": f"{probe_bin}{os.pathsep}{os.environ['PATH']}",
+        "HAPAX_TEST_UV_SYNC_MARKER": str(uv_sync_marker),
         "HAPAX_SOURCE_ACTIVATE_CANONICAL": str(canonical),
         "HAPAX_SOURCE_ACTIVATE_STATE_DIR": str(state),
         "HAPAX_SOURCE_ACTIVATE_RELEASES_DIR": str(state / "releases"),
         "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(state / "worktree"),
         "HAPAX_SOURCE_ACTIVATE_LOCAL_BIN": str(local_bin),
+        "HAPAX_SOURCE_ACTIVATE_SYSTEMD_PROBES": "0",
+        "HAPAX_SOURCE_ACTIVATE_HTTP_PROBES": "",
+        "HAPAX_SOURCE_ACTIVATE_FRAME_PROBES": "",
+        "HAPAX_SOURCE_ACTIVATE_LIVE_FLAG": str(sandbox / "live-window-flag"),
+        "HAPAX_SOURCE_ACTIVATE_STREAM_INTENT_FILE": str(sandbox / "stream-mode-intent.json"),
+        "HAPAX_SOURCE_ACTIVATE_SYNC_DEPS": "0",
     }
     proc = subprocess.run(
         [str(REPO_ROOT / "scripts" / "hapax-source-activate"), "--skip-deploy"],
@@ -407,6 +429,10 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
         env=env,
         timeout=600,
         check=False,
+    )
+    assert not uv_sync_marker.exists(), (
+        "the activation fixture attempted uv sync; mode and launcher coverage must stay "
+        "independent of a dependency download"
     )
 
     # Activation must have COMPLETED, and must have reached the stage that mutates modes.
