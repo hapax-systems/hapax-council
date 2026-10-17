@@ -51,6 +51,7 @@ def _ev(
     event_type: str = "shift",
     salience: float | None = 0.9,
     extra: dict | None = None,
+    public_scope: str = "public",
 ) -> ChronicleEvent:
     payload: dict = {}
     if salience is not None:
@@ -65,6 +66,7 @@ def _ev(
         source=source,
         event_type=event_type,
         payload=payload,
+        public_scope=public_scope,
     )
 
 
@@ -413,3 +415,50 @@ class TestResilience:
         _env_and_paths.write_text(json.dumps(raw) + "\n", encoding="utf-8")
         rows = _collect_rows(now)
         assert rows == []
+
+
+@pytest.mark.parametrize("scope", ["private", "diagnostic", None])
+def test_public_scope_filters_before_query_limit_and_ranking(_env_and_paths, scope):
+    """Non-public floods cannot evict an eligible row from the query's 200-row limit."""
+    now = 1_800_000_000.0
+    public = _ev(ts=now - 300, event_type="synthetic_admitted_software", salience=0.8)
+    rows = [public.to_json()]
+    for i in range(250):
+        event = json.loads(_ev(ts=now - 250 + i, event_type="withheld", salience=1.0).to_json())
+        if scope is None:
+            event.pop("public_scope")
+        else:
+            event["public_scope"] = scope
+        rows.append(json.dumps(event))
+    _env_and_paths.write_text("\n".join(rows) + "\n")
+    assert _collect_rows(now) == [_fmt_row(public)]
+
+
+@pytest.mark.parametrize("failure", ["missing", "stale", "unreadable", "malformed"])
+def test_input_failure_clears_previously_drawn_rows(_env_and_paths, monkeypatch, failure):
+    now = 1_800_000_000.0
+    monkeypatch.setattr(ct.time, "time", lambda: now)
+    _write_events(_env_and_paths, [_ev(ts=now - 1, event_type="synthetic_admitted_software")])
+    src = ChronicleTickerCairoSource()
+    _, first = _render_to_surface(src)
+    assert "stimmung.synthetic_admitted_software" in first.rendered_texts
+    if failure == "missing":
+        _env_and_paths.unlink()
+    elif failure == "stale":
+        now += ct._WINDOW_SECONDS
+    elif failure == "malformed":
+        _env_and_paths.write_text("not-json\n")
+    else:
+        real_read = Path.read_text
+
+        def deny_input(path, *args, **kwargs):
+            if path == _env_and_paths:
+                raise PermissionError("synthetic unreadable input")
+            return real_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", deny_input)
+    now += 2
+    _, second = _render_to_surface(src)
+    assert "stimmung.synthetic_admitted_software" not in second.rendered_texts
+    assert "  (quiet)" in second.rendered_texts
+    assert src._cached_rows == []

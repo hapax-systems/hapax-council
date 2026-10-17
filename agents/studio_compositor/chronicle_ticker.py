@@ -2,7 +2,7 @@
 
 ytb-LORE-MVP sub-task A (delta, 2026-04-24). Surfaces Hapax's chronicle
 — the unified observability event store — as a viewer-legible ward.
-Reads the last N high-salience events in a bounded time window and
+Reads public-scope high-salience events in a bounded time window and
 renders them in BitchX grammar as a three-line ticker:
 
     »»» [chronicle]
@@ -27,7 +27,8 @@ of the flag.
 Read source: ``shared.chronicle.query()`` over
 ``/dev/shm/hapax-chronicle/events.jsonl``. 10-minute window by default,
 salience threshold 0.7, up to 3 rows. All reads are wrapped; a missing
-file or malformed content renders the empty state (transparent surface).
+file or malformed content renders the quiet state. Public scope is a query
+selector, not permission to stream: producer and surface admission are separate.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from agents.studio_compositor.homage import get_active_package
@@ -180,7 +181,8 @@ def _event_rank_key(event: ChronicleEvent) -> tuple[float, float]:
 def _collect_rows(now: float) -> list[str]:
     """Read the chronicle and return up to ``_MAX_ROWS`` formatted lines.
 
-    Lore-worthy events are ranked by ``(salience desc, ts desc)`` before
+    Public scope is selected by the existing query before its result limit.
+    Lore-worthy events are then ranked by ``(salience desc, ts desc)`` before
     truncation — so a critical stance transition that landed 30s ago
     outranks a 5s-old routine event of the same source. Events without
     salience get a 0.7 floor for ranking; they only displace newer
@@ -190,6 +192,7 @@ def _collect_rows(now: float) -> list[str]:
         events = query(
             since=now - _WINDOW_SECONDS,
             until=now,
+            public_scope="public",
             limit=200,
             path=CHRONICLE_FILE,
         )
@@ -200,6 +203,96 @@ def _collect_rows(now: float) -> list[str]:
     kept = [event for event in events if _is_lore_worthy(event)]
     kept.sort(key=_event_rank_key)
     return [_fmt_row(event) for event in kept[:_MAX_ROWS]]
+
+
+def _collect_public_work(now: float) -> list[ChronicleEvent]:
+    from agents.studio_compositor.public_work_projection import APERTURE, SOURCE, read_public_work
+
+    try:
+        events = query(
+            since=now - _WINDOW_SECONDS,
+            until=now,
+            path=CHRONICLE_FILE,
+            limit=200,
+            public_scope="public",
+            aperture_ref=APERTURE,
+            source=SOURCE,
+            evidence_class="public_event",
+        )
+        kept = [item for event in events if (item := read_public_work(event, now=now)) is not None]
+        kept = [event for event in kept if _is_lore_worthy(event)]
+        kept.sort(key=lambda event: (-event.payload["salience"], -event.effective_valid_time))
+        return kept[:_MAX_ROWS]
+    except Exception:
+        log.debug("public work projection unavailable", exc_info=True)
+        return []
+
+
+def _render_public_work(
+    cr: cairo.Context, width: int, height: int, events: list[ChronicleEvent]
+) -> None:
+    from agents.studio_compositor.text_render import (
+        MAX_PANGO_TEXT_CHARS,
+        TextStyle,
+        measure_text,
+        render_text,
+    )
+
+    pkg = get_active_package() or _fallback_package()
+    font = _bitchx_font_description(pkg, 12)
+    content = _resolve(pkg, pkg.grammar.content_colour_role)
+    muted = _resolve(pkg, "muted")
+    lines = [("[public work · evidence]", muted)]
+    if events:
+        event = events[0]
+        public = event.payload["public_event"]
+        grounding = event.payload["grounding_gate_result"]
+        claim = grounding["claim"]
+        permitted_scope = grounding["permitted_claim_shape"]["scope_limit"]
+        when = datetime.fromtimestamp(event.effective_valid_time, tz=UTC).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+        lines += [
+            (f"Occurred {when}", muted),
+            (claim["claim_text"], content),
+            (f"Scope: {claim['scope_limit']}", content),
+        ]
+        if permitted_scope != claim["scope_limit"]:
+            lines.append((f"Permitted scope: {permitted_scope}", content))
+        lines += [
+            (f"Uncertainty: {claim['uncertainty']}", muted),
+            (f"Evidence: {public['public_url']}", content),
+            (f"Correction: {claim['refusal_correction_path']['correction_event_ref']}", content),
+        ]
+    else:
+        lines.append(("(quiet)", muted))
+    styles = [
+        TextStyle(
+            text=text, font_description=font, color_rgba=colour, max_width_px=max(1, width - 16)
+        )
+        for text, colour in lines
+    ]
+    text_supported = all(
+        style.text.isprintable() and len(style.text) <= MAX_PANGO_TEXT_CHARS for style in styles
+    )
+    # Pango's NUL-terminated text API can silently discard a scope suffix.
+    # Check complete strings before measurement as well as before drawing.
+    sizes = [measure_text(cr, style) for style in styles] if text_supported else []
+    if not text_supported or sum(h + 4 for _, h in sizes) > height - 16:
+        # Suppress the claim if any qualification is unsupported, clipped or text-capped.
+        styles = [
+            TextStyle(
+                text="[public work · evidence] (content does not fit; shorten text or remove controls)",
+                font_description=font,
+                color_rgba=muted,
+                max_width_px=max(1, width - 16),
+            )
+        ]
+        sizes = [measure_text(cr, styles[0])]
+    y = 8.0
+    for style, (_, h) in zip(styles, sizes, strict=True):
+        render_text(cr, style, x=8.0, y=y)
+        y += h + 4
 
 
 def _fallback_package() -> HomagePackage:
@@ -241,8 +334,9 @@ class ChronicleTickerCairoSource(HomageTransitionalSource):
 
     source_id: str = "chronicle_ticker"
 
-    def __init__(self) -> None:
+    def __init__(self, *, public_work_only: bool = False) -> None:
         super().__init__(source_id=self.source_id)
+        self._public_work_only = public_work_only
         self._cached_rows: list[str] = []
         self._last_refresh_ts: float = 0.0
 
@@ -263,6 +357,10 @@ class ChronicleTickerCairoSource(HomageTransitionalSource):
             return
 
         now = time.time()
+        if self._public_work_only:
+            # Revalidate each rendered frame: cached pixels/text do not extend admission.
+            _render_public_work(cr, canvas_w, canvas_h, _collect_public_work(now))
+            return
         self._maybe_refresh(now)
 
         # Late-imported to keep the module importable in CI harnesses

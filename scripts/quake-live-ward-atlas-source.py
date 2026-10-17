@@ -176,6 +176,23 @@ PALETTE = {
     "dim": (0.12, 0.17, 0.23),
 }
 
+# Explicit software-only selection currently admits this consumer implementation.
+# This does not admit its live input or authorize public output. Omitted selection
+# preserves the existing atlas catalog; canonical cell positions never change.
+SOFTWARE_SOURCE_CLASSES = {"chronicle_ticker": "ChronicleTickerCairoSource"}
+
+
+def _selected_ward_ids(software_sources: tuple[str, ...] | None) -> tuple[str, ...]:
+    if software_sources is None:
+        return tuple(WARD_IDS)
+    unknown = set(software_sources) - SOFTWARE_SOURCE_CLASSES.keys()
+    if unknown:
+        raise ValueError(
+            f"unpermitted software source selection: {sorted(unknown)}; "
+            f"select only from: {', '.join(sorted(SOFTWARE_SOURCE_CLASSES))}"
+        )
+    return tuple(ward_id for ward_id in WARD_IDS if ward_id in software_sources)
+
 
 def _load_layout(path: Path) -> dict[str, dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -183,24 +200,51 @@ def _load_layout(path: Path) -> dict[str, dict[str, Any]]:
     return {str(source["id"]): source for source in sources if isinstance(source, dict)}
 
 
-def _construct_backends(layout_path: Path) -> tuple[dict[str, Any], dict[str, str]]:
+def _construct_backends(
+    layout_path: Path, *, software_sources: tuple[str, ...] | None = None
+) -> tuple[dict[str, Any], dict[str, str]]:
     from agents.studio_compositor.source_registry import SourceRegistry
     from shared.compositor_model import SourceSchema
 
+    ward_ids = _selected_ward_ids(software_sources)
     sources = _load_layout(layout_path)
     registry = SourceRegistry()
     errors: dict[str, str] = {}
-    for ward_id in WARD_IDS:
+    for ward_id in ward_ids:
         source_data = sources.get(ward_id)
         if source_data is None:
-            errors[ward_id] = "missing layout source"
+            repair = "add the source entry"
+            if software_sources is not None:
+                repair += f" and configure backend=cairo with class_name={SOFTWARE_SOURCE_CLASSES[ward_id]}"
+            errors[ward_id] = f"missing layout source {ward_id!r} in {layout_path}; {repair}"
             continue
         try:
             schema = SourceSchema.model_validate(source_data)
+            if software_sources is not None and (
+                schema.backend != "cairo"
+                or schema.params.get("class_name") != SOFTWARE_SOURCE_CLASSES[ward_id]
+            ):
+                raise ValueError(
+                    f"layout backend does not match permitted software source {ward_id!r} "
+                    f"in {layout_path}; configure backend=cairo "
+                    f"with class_name={SOFTWARE_SOURCE_CLASSES[ward_id]}"
+                )
+            if software_sources is not None and ward_id == "chronicle_ticker":
+                # Explicit selection consumes qualified public work, never raw tokens.
+                schema = schema.model_copy(
+                    update={
+                        "params": {
+                            **schema.params,
+                            "public_work_only": True,
+                            "natural_w": 512,
+                            "natural_h": 256,
+                        }
+                    }
+                )
             registry.register(ward_id, registry.construct_backend(schema))
         except Exception as exc:  # noqa: BLE001 - visible fallback per cell
             errors[ward_id] = f"{type(exc).__name__}: {exc}"
-    return {ward_id: registry for ward_id in WARD_IDS if ward_id not in errors}, errors
+    return {ward_id: registry for ward_id in ward_ids if ward_id not in errors}, errors
 
 
 def _surface_bgra_bytes(surface: cairo.ImageSurface, width: int, height: int) -> bytes:
@@ -885,7 +929,9 @@ def _atlas_idle_surface_from_backend(
     return None
 
 
-def _audit_readback(observed: dict[str, Any]) -> dict[str, Any]:
+def _audit_readback(
+    observed: dict[str, Any], ward_ids: tuple[str, ...] | None = None
+) -> dict[str, Any]:
     """DarkPlaces-mode ward readback the visibility audit can consume directly,
     from the producer's own per-ward visibility classification instead of cropping
     an OBS frame against the (wrong-coordinate-space) 2D compositor layout. Reports
@@ -894,7 +940,8 @@ def _audit_readback(observed: dict[str, Any]) -> dict[str, Any]:
     visible = 0
     considered = 0
     suspects: list[str] = []
-    for ward_id in WARD_IDS:
+    ward_ids = tuple(WARD_IDS) if ward_ids is None else ward_ids
+    for ward_id in ward_ids:
         ward = observed.get(ward_id)
         if not isinstance(ward, dict):
             continue
@@ -924,7 +971,7 @@ def _audit_readback(observed: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "mode": "darkplaces",
-        "ward_ids": list(WARD_IDS),
+        "ward_ids": list(ward_ids),
         "considered": considered,
         "visible": visible,
         "suspect_wards": suspects,
@@ -949,9 +996,13 @@ def render_atlas(
     drift_renderer: MediaDriftRenderer | None = None,
     drift_receiver: str = "ward-atlas",
     gpu_drift_raw_output: Path | None = None,
+    software_sources: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    ward_ids = _selected_ward_ids(software_sources)
     if backends is None or errors is None:
-        backends, errors = _construct_backends(layout_path)
+        backends, errors = _construct_backends(layout_path, software_sources=software_sources)
+    if software_sources is not None:
+        errors = {ward_id: error for ward_id, error in errors.items() if ward_id in ward_ids}
 
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
     cr = cairo.Context(surface)
@@ -962,6 +1013,8 @@ def render_atlas(
     observed: dict[str, Any] = {}
 
     for index, ward_id in enumerate(WARD_IDS, start=1):
+        if ward_id not in ward_ids:
+            continue
         col = (index - 1) % columns
         row = (index - 1) // columns
         x = col * cell_width
@@ -1111,11 +1164,11 @@ def render_atlas(
             "cell_width": cell_width,
             "cell_height": cell_height,
             "columns": columns,
-            "ward_count": len(WARD_IDS),
+            "ward_count": len(ward_ids),
             "wards": observed,
             "visibility_thresholds": _visibility_thresholds(),
             "visibility_summary": visibility_summary,
-            "audit_readback": _audit_readback(observed),
+            "audit_readback": _audit_readback(observed, ward_ids),
             "gpu_drift": True,
             "gpu_drift_raw_output": str(gpu_drift_raw_output),
             "gpu_drift_final_output": str(output),
@@ -1158,11 +1211,11 @@ def render_atlas(
         "cell_width": cell_width,
         "cell_height": cell_height,
         "columns": columns,
-        "ward_count": len(WARD_IDS),
+        "ward_count": len(ward_ids),
         "wards": observed,
         "visibility_thresholds": _visibility_thresholds(),
         "visibility_summary": visibility_summary,
-        "audit_readback": _audit_readback(observed),
+        "audit_readback": _audit_readback(observed, ward_ids),
         "drift_renderer": "quake-media-drift-v1",
         "drift_enabled": bool(getattr(drift_renderer, "enabled", False))
         if drift_renderer is not None
@@ -1192,6 +1245,13 @@ def main() -> int:
     parser.add_argument("--cell-height", type=int, default=DEFAULT_CELL_HEIGHT)
     parser.add_argument("--fps", type=float, default=DEFAULT_FPS)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument(
+        "--software-source",
+        action="append",
+        choices=sorted(SOFTWARE_SOURCE_CLASSES),
+        help="Construct and poll only the selected software consumer; repeat to select more. "
+        "Omitting this option preserves the full atlas. This is not stream admission.",
+    )
     parser.add_argument(
         "--drift",
         choices=("on", "off", "enabled", "disabled"),
@@ -1243,7 +1303,8 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    backends, errors = _construct_backends(args.layout)
+    software_sources = tuple(args.software_source) if args.software_source is not None else None
+    backends, errors = _construct_backends(args.layout, software_sources=software_sources)
     drift_renderer = MediaDriftRenderer(
         game_data=args.drift_game_data,
         enabled=_truthy(args.drift),
@@ -1270,6 +1331,7 @@ def main() -> int:
             drift_renderer=drift_renderer,
             drift_receiver=args.drift_receiver,
             gpu_drift_raw_output=raw_output,
+            software_sources=software_sources,
         )
         if args.once:
             break
