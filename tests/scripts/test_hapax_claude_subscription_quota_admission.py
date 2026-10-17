@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
+import shared.durable_jsonl_sink as sink_mod
+from shared.platform_capability_registry import ResolvedSubscriptionPool
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
+PACE_SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-pool-pace"
 
 
 def _load_module() -> ModuleType:
@@ -128,14 +135,14 @@ def test_default_receipt_names_are_route_distinct_for_same_second(tmp_path: Path
     ]
 
     headless_rc = _run([*base_args, "--route-id", "claude.headless.full"])
-    review_rc = _run([*base_args, "--route-id", "claude.review.opus"])
+    interactive_rc = _run([*base_args, "--route-id", "claude.interactive.full"])
 
     assert headless_rc == 0
-    assert review_rc == 0
+    assert interactive_rc == 0
     names = {path.name for path in receipt_dir.glob("*.yaml")}
     assert names == {
         "claude-subscription-quota-admission-claude-headless-full-20260708t140000z.yaml",
-        "claude-subscription-quota-admission-claude-review-opus-20260708t140000z.yaml",
+        "claude-subscription-quota-admission-claude-interactive-full-20260708t140000z.yaml",
     }
 
 
@@ -393,3 +400,436 @@ def test_write_oserror_returns_one(tmp_path: Path, monkeypatch, capsys) -> None:
     )
     assert rc == 1
     assert "failed to write receipt" in capsys.readouterr().err
+
+
+# --- A route bound to one declared subscription pool (claude.review.opus -> max-2) ---------------
+#
+# The reading's pool is the config dir the probe ran under (CLAUDE_CONFIG_DIR, or the CLI default
+# ~/.claude), plus the receipt dir, headless traces, pace marker and durable sink its pace reading
+# came from. Every one of them must be the route's declared pool, or nothing is written.
+
+POOL_NOW = datetime(2026, 9, 25, 23, 0, 0, tzinfo=UTC)
+POOL_WEEKLY_RESET = POOL_NOW - timedelta(hours=24) + timedelta(hours=168)  # line at now: 16.4 %
+REVIEW_ROUTE = "claude.review.opus"
+
+
+def _pace_module() -> ModuleType:
+    loader = SourceFileLoader("hapax_claude_pool_pace_for_pool_binding", str(PACE_SCRIPT))
+    spec = spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _stamp(at: datetime) -> str:
+    return at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _window_receipt(receipt_dir: Path, *, weekly_used: float, observed_at: datetime) -> None:
+    """The probe-backed reading the pace governor reads, in the pool's own receipt dir."""
+    stamp = observed_at.strftime("%Y%m%dt%H%M%Sz")
+    (
+        receipt_dir / f"claude-subscription-quota-admission-claude-headless-full-{stamp}.yaml"
+    ).write_text(
+        "\n".join(
+            [
+                "schema: hapax.claude_quota_admission.v1",
+                "status: quota_available",
+                "provider: anthropic-claude-subscription",
+                "route_id: claude.headless.full",
+                "capacity_pool: subscription_quota",
+                "auth_surface: subscription",
+                "observation: subscription_quota_headroom_observed",
+                f"observed_at: {_stamp(observed_at)}",
+                "stale_after_seconds: 1800",
+                f"evidence_ref: claude-subscription-headroom-observed-{stamp}",
+                "secret_source: claude:operator-session-subscription",
+                "secret_value_persisted: false",
+                "prompt_or_output_persisted: false",
+                "billing_mode: operator_session_subscription",
+                "account_live_quota_observed: true",
+                "lane_presence_used_as_quota_evidence: false",
+                "positive_admission: true",
+                "probe_environment_scrubbed: true",
+                "subscription_served: true",
+                f"seven_day_used_percent: {weekly_used}",
+                f"seven_day_resets_at: {_stamp(POOL_WEEKLY_RESET)}",
+                "five_hour_used_percent: 1.0",
+                f"five_hour_resets_at: {_stamp(observed_at + timedelta(hours=3))}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _headless_glob(binding: ResolvedSubscriptionPool) -> str:
+    return str(binding.headless_dir / "*" / "output.jsonl")
+
+
+def _bound_pool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    *,
+    weekly_used: float = 5.0,
+    reading_at: datetime = POOL_NOW,
+) -> ResolvedSubscriptionPool:
+    """A declared pool on disk, its pace reading ledgered, and the process running inside it."""
+    root = tmp_path / "pool-max-2"
+    binding = ResolvedSubscriptionPool(
+        route_id=REVIEW_ROUTE,
+        pool="max-2",
+        config_dir=root / "config",
+        receipt_dir=root / "receipts",
+        headless_dir=root / "headless",
+        pace_activation=root / "pace" / "activation.json",
+        durable_sink_root=root / "durable",
+    )
+    for directory in (
+        binding.config_dir,
+        binding.receipt_dir,
+        binding.headless_dir,
+        binding.pace_activation.parent,
+        binding.durable_sink_root,
+    ):
+        directory.mkdir(parents=True)
+    binding.pace_activation.write_text(
+        json.dumps({"activated_at": _stamp(POOL_NOW), "by": "seat", "reason": "test"}) + "\n",
+        encoding="utf-8",
+    )
+    _window_receipt(binding.receipt_dir, weekly_used=weekly_used, observed_at=reading_at)
+    monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(binding.durable_sink_root))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(binding.config_dir))
+    pace = _pace_module()
+    state = pace.read_state(binding.receipt_dir, _headless_glob(binding), now=POOL_NOW)
+    if state.get("weekly_used_percent") is not None:
+        pace.append_reading(pace.reading_payload(state), now=POOL_NOW)
+    monkeypatch.setattr(
+        module,
+        "_declared_pool_binding",
+        lambda route_id: binding if route_id == REVIEW_ROUTE else None,
+    )
+    return binding
+
+
+def _bound_args(binding: ResolvedSubscriptionPool, **override: str) -> list[str]:
+    values = {
+        "--receipt-dir": str(binding.receipt_dir),
+        "--pace-receipt-dir": str(binding.receipt_dir),
+        "--pace-headless-glob": _headless_glob(binding),
+        "--pace-activation": str(binding.pace_activation),
+    }
+    values.update({f"--{key.replace('_', '-')}": value for key, value in override.items()})
+    argv = [
+        "--route-id",
+        REVIEW_ROUTE,
+        "--now",
+        _stamp(POOL_NOW),
+        "--pace-now",
+        _stamp(POOL_NOW),
+        "--evidence-ref",
+        "claude-subscription-headroom-observed-20260925t2300z",
+        "--stale-after-seconds",
+        "900",
+        "--json",
+    ]
+    for flag, value in values.items():
+        argv += [flag, value]
+    return argv
+
+
+def _review_receipts(directory: Path) -> list[Path]:
+    return sorted(directory.glob("*claude-review-opus*.yaml")) if directory.is_dir() else []
+
+
+def test_bound_route_mints_from_its_declared_pool_and_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    module = _load_module()
+    binding = _bound_pool(tmp_path, monkeypatch, module)
+
+    rc = module.main(_bound_args(binding))
+
+    assert rc == 0, capsys.readouterr().err
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["pool"] == "max-2"
+    [receipt] = _review_receipts(binding.receipt_dir)
+    assert receipt.name == (
+        "claude-subscription-quota-admission-claude-review-opus-pool-max-2-20260925t230000z.yaml"
+    )
+    body = receipt.read_text(encoding="utf-8")
+    assert "route_id: claude.review.opus\n" in body
+    assert "pool: max-2\n" in body
+
+
+def test_bound_route_refuses_a_reading_from_the_default_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """The unsafe case: the account-1 observer (no CLAUDE_CONFIG_DIR, so ~/.claude) never mints
+    the max-2-bound route, however healthy its own reading."""
+    module = _load_module()
+    binding = _bound_pool(tmp_path, monkeypatch, module)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+
+    rc = module.main(_bound_args(binding))
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "bound to subscription pool max-2" in err
+    assert "config_dir" in err
+    assert _review_receipts(binding.receipt_dir) == []
+
+
+def test_bound_route_refuses_a_reading_from_a_conflicting_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    module = _load_module()
+    binding = _bound_pool(tmp_path, monkeypatch, module)
+    other = tmp_path / "another-pool-config"
+    other.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(other))
+
+    rc = module.main(_bound_args(binding))
+
+    assert rc == 2
+    assert "config_dir" in capsys.readouterr().err
+    assert _review_receipts(binding.receipt_dir) == []
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "receipt_dir",
+        "pace_receipt_dir",
+        "pace_headless_glob",
+        "pace_activation",
+        "durable_sink_root",
+    ],
+)
+def test_bound_route_refuses_any_surface_from_another_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, surface: str
+) -> None:  # noqa: ANN001
+    """A reading is the pool's only if its receipts, traces, pace marker and ledger are the pool's."""
+    module = _load_module()
+    binding = _bound_pool(tmp_path, monkeypatch, module)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    override: dict[str, str] = {}
+    if surface == "durable_sink_root":
+        monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(elsewhere))
+    elif surface == "pace_headless_glob":
+        override[surface] = str(elsewhere / "*" / "output.jsonl")
+    elif surface == "pace_activation":
+        override[surface] = str(elsewhere / "activation.json")
+    else:
+        override[surface] = str(elsewhere)
+
+    rc = module.main(_bound_args(binding, **override))
+
+    assert rc == 2
+    assert surface in capsys.readouterr().err
+    assert _review_receipts(binding.receipt_dir) == []
+    assert _review_receipts(elsewhere) == []
+
+
+def test_bound_route_refuses_without_a_durable_sink_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    module = _load_module()
+    binding = _bound_pool(tmp_path, monkeypatch, module)
+    monkeypatch.delenv(sink_mod.DEFAULT_ROOT_ENV)
+
+    rc = module.main(_bound_args(binding))
+
+    assert rc == 2
+    assert "durable_sink_root" in capsys.readouterr().err
+    assert _review_receipts(binding.receipt_dir) == []
+
+
+def test_bound_route_over_its_line_stays_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """The pool matches, but its own reading is over its line: the pace gate refuses (exit 3)."""
+    module = _load_module()
+    binding = _bound_pool(tmp_path, monkeypatch, module, weekly_used=40.0)
+
+    rc = module.main(_bound_args(binding))
+
+    assert rc == 3
+    assert "pace_line_exceeded" in capsys.readouterr().err
+    assert _review_receipts(binding.receipt_dir) == []
+
+
+def test_bound_route_with_a_stale_pool_reading_stays_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    module = _load_module()
+    binding = _bound_pool(tmp_path, monkeypatch, module, reading_at=POOL_NOW - timedelta(hours=2))
+
+    rc = module.main(_bound_args(binding))
+
+    assert rc == 3
+    assert _review_receipts(binding.receipt_dir) == []
+
+
+def test_bound_route_refuses_a_custom_receipt_name_that_drops_the_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    module = _load_module()
+    binding = _bound_pool(tmp_path, monkeypatch, module)
+
+    rc = module.main(
+        [
+            *_bound_args(binding),
+            "--receipt-name",
+            "claude-subscription-quota-admission-claude-review-opus-custom.yaml",
+        ]
+    )
+
+    assert rc == 2
+    assert "pool-max-2" in capsys.readouterr().err
+    assert _review_receipts(binding.receipt_dir) == []
+
+
+@pytest.mark.parametrize("route_id", ["claude.review.opus", "claude.headless.full"])
+@pytest.mark.parametrize("registry_failure", ["missing", "malformed"])
+def test_an_unreadable_pool_binding_mints_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, route_id: str, registry_failure: str
+) -> None:  # noqa: ANN001
+    """Exercise registry loading and error conversion through the real writer entry point."""
+    module = _load_module()
+    registry = tmp_path / "unreadable-registry.json"
+    if registry_failure == "malformed":
+        registry.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+
+    rc = module.main(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--route-id",
+            route_id,
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+        ]
+    )
+
+    assert rc == 2
+    error = capsys.readouterr().err
+    assert "could not be read" in error and "next action:" in error
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_unbound_route_receipt_carries_no_pool(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--route-id",
+            "claude.headless.full",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert "pool" not in summary
+    body = Path(summary["path"]).read_text(encoding="utf-8")
+    assert "\npool:" not in body
+    assert "-pool-" not in Path(summary["path"]).name
+
+
+def _unbound_reading(receipt_dir: Path) -> list[str]:
+    return [
+        "--receipt-dir",
+        str(receipt_dir),
+        "--route-id",
+        "claude.headless.full",
+        "--evidence-ref",
+        "claude-subscription-headroom-observed-20260708t1400z",
+        "--json",
+    ]
+
+
+@pytest.mark.parametrize("config_home", [".claude-max-2", "some-other-config"])
+def test_unbound_route_refuses_a_shared_dir_receipt_from_another_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, config_home: str
+) -> None:  # noqa: ANN001
+    """An unbound route runs on the CLI default. A reading taken on any other config dir would,
+    in the shared relay dir, pass as the default pool's (account 1's) evidence: refused."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HAPAX_RELAY_RECEIPT_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / config_home))
+    shared = home / ".cache/hapax/relay/receipts"
+
+    rc = _run(_unbound_reading(shared))
+
+    assert rc == 2
+    assert "CLI default config dir" in capsys.readouterr().err
+    assert not shared.exists() or list(shared.iterdir()) == []
+
+
+def test_unbound_route_refuses_the_relocated_shared_dir_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """HAPAX_RELAY_RECEIPT_DIR relocates the writer's shared dir; the refusal follows it."""
+    home = tmp_path / "home"
+    relocated = tmp_path / "relocated-relay-receipts"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(relocated))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / ".claude-max-2"))
+
+    rc = _run(_unbound_reading(relocated))
+
+    assert rc == 2
+    assert "CLI default config dir" in capsys.readouterr().err
+    assert not relocated.exists() or list(relocated.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("config_home", "receipt_home"),
+    [
+        (None, ".cache/hapax/relay/receipts"),
+        (".claude", ".cache/hapax/relay/receipts"),
+        (".claude-max-2", ".cache/hapax/relay/receipts-max-2"),
+    ],
+)
+def test_unbound_route_mints_on_the_default_config_dir_or_outside_the_shared_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    config_home: str | None,
+    receipt_home: str,
+) -> None:  # noqa: ANN001
+    """The default pool's own runs mint as before, and the max-2 observer's unbound receipts in
+    its own pool dir (which every reader already refuses for an unbound route) are untouched."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HAPAX_RELAY_RECEIPT_DIR", raising=False)
+    if config_home is None:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / config_home))
+
+    rc = _run(_unbound_reading(home / receipt_home))
+
+    assert rc == 0, capsys.readouterr().err
+    assert "-pool-" not in Path(json.loads(capsys.readouterr().out)["path"]).name
+
+
+def test_the_registry_binds_the_review_route_and_only_it() -> None:
+    """The writer reads the real declaration: claude.review.opus bills max-2; the account-1
+    routes stay unbound (the CLI default config dir)."""
+    module = _load_module()
+    binding = module._declared_pool_binding(REVIEW_ROUTE)
+    assert binding is not None
+    assert binding.pool == "max-2"
+    assert binding.config_dir == Path.home() / ".claude-max-2"
+    assert module._declared_pool_binding("claude.headless.full") is None
+    assert module._declared_pool_binding("claude.interactive.full") is None

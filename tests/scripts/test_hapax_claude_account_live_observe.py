@@ -944,11 +944,11 @@ def test_the_account_1_observer_pace_hold_stays_green_with_the_review_route_skip
     assert minted(tmp_path) == []
 
 
-def test_the_max_2_observer_mints_the_review_route_into_its_receipt_directory(
+def test_the_max_2_observer_mints_the_review_route_naming_its_pool(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
     """Run inside max-2's own chain (as max2-pool.sh does), the observer mints the review route
-    into max-2's receipt dir."""
+    into max-2's receipt dir, and the receipt names max-2."""
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     receipts = cache / "relay" / "receipts-max-2"
@@ -991,6 +991,8 @@ def test_the_max_2_observer_mints_the_review_route_into_its_receipt_directory(
     [review] = payload["receipts"]
     assert review["returncode"] == 0, review
     assert len(list(receipts.glob("*.yaml"))) == 1
+    [receipt] = sorted(receipts.glob("*claude-review-opus-pool-max-2-*.yaml"))
+    assert "pool: max-2\n" in receipt.read_text(encoding="utf-8")
 
 
 # Passive source identity is checked before any serve/wall is considered.
@@ -1134,6 +1136,7 @@ def test_foreign_evidence_never_admits_or_walls_the_bound_pool(
     else:
         assert (rc, payload["verdict"]) == (0, "served")
         assert len(receipts) == 1 and len(calls) == 1
+        assert "pool: max-2\n" in receipts[0].read_text()
 
 
 @pytest.mark.parametrize("surface", ["transcript", "headless"])
