@@ -1,0 +1,40 @@
+[Unit]
+Description=Keep the GLM review seat admitted within the script's bounded no-lapse envelope
+# The receipt chain: reviewer round-trip (exit 0) -> witness yaml (no prompt/output/secret persisted)
+# -> hapax-glmcp-quota-admission observe-success -> hapax-quota-telemetry-writer -> live ledger the
+# review dispatcher and the autoqueue read. Measured 2026-09-02: with no refresher the seat had been
+# expired since 4 August and every review dossier was refused as "blocked route family seated".
+# The script runs from the governed source-activation worktree (main), never a mutable checkout.
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-glmcp-seat-refresh
+# Coordinator measurement, 2026-09-05T18:2xZ (read-only user-manager inspection):
+# installed hapax-cc-task-offer-ready.service, hapax-claude-account-live-observe.service,
+# and hapax-determine.service each contain Environment=HOME=%h verbatim. For all three,
+# `systemctl --user show -p Environment` reports the home path and zero remaining %h;
+# the latter two also expand PYTHONPATH. Last runs: Result=success, ExecMainStatus=0.
+# Round-4 `systemd-run -p Environment=X=%h` measured a transient D-Bus property, which
+# retains the literal specifier; it did not exercise expansion from an installed unit file.
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=GNUPGHOME=%h/.gnupg
+Environment=PASSWORD_STORE_DIR=%h/.password-store
+# The script accounts for every stage, kill-after grace, bounded filtering, launches, file I/O,
+# scheduler slack and an explicit margin, then refuses with exit 7 unless that chain fits this exact
+# whole-service bound. This cap covers wall time from ExecStart launch through normal process exit.
+TimeoutStartSec=600
+# Bound the final TERM-to-KILL transition too: OnUnitInactiveSec does not start until shutdown ends,
+# so post-check shutdown is part of the freshness predicate rather than unbounded cleanup time.
+TimeoutStopSec=5
+KillMode=control-group
+SendSIGKILL=yes
+# The receipt chain runs the activation worktree, the Coding Plan endpoint and the Coding Plan
+# credential, and nothing else. Environment= expands specifiers such as %h (systemd.exec(5));
+# shell variable expansion does not occur. HOME and ExecStart share %h as their source of truth,
+# so inherited HOME cannot select a different activation root. The pins live in the script defaults;
+# this line removes the inherited user-manager values that could
+# override them (UnsetEnvironment= applies after every Environment= source).
+UnsetEnvironment=BASH_ENV ENV HAPAX_COUNCIL HAPAX_GLMCP_REVIEW_BASE_URL HAPAX_GLMCP_REVIEW_SECRET_ENTRY HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE HAPAX_GLMCP_SEAT_ROOT_OVERRIDE HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR HAPAX_QUOTA_SPEND_LEDGER_LIVE HAPAX_RELAY_RECEIPT_DIR HAPAX_GLMCP_SEAT_RETRY_SLEEP
+MemoryMax=512M
+SyslogIdentifier=hapax-glmcp-seat-refresh
