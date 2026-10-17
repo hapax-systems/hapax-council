@@ -24,7 +24,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 run_smoke() (
   local smoke_mode="$1"
-  local sb task second_task active claim_log second_claim_log old_home old_home_was_set
+  local sb task second_task active claim_log second_claim_log release_log old_home old_home_was_set
   old_home="${HOME-}"
   old_home_was_set=0
   [[ -v HOME ]] && old_home_was_set=1
@@ -159,6 +159,17 @@ EOF
   require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$task.md"
 
   if [[ "$smoke_mode" == "default" ]]; then
+    step "release closed claim residue"
+    release_log="$sb/release-${smoke_mode}.log"
+    if ! timeout 30 uv run --no-sync bash scripts/cc-claim --release-claim-residue "$task" >"$release_log" 2>&1; then
+      cat "$release_log"
+      exit 1
+    fi
+    cat "$release_log"
+    require_grep "released" "$release_log"
+    require_find_match "$sb/Documents/Personal/20-projects/hapax-cc-tasks/_lineage/$task" \
+      -type f -name 'cc-claim-epoch-alpha'
+
     second_task="${task}-after-close"
     cat > "$active/$second_task.md" <<EOF
 ---
@@ -185,7 +196,7 @@ EOF
       exit 1
     fi
     cat "$second_claim_log"
-    require_grep "archived terminal dispatch-only claim residue" "$second_claim_log"
+    reject_grep "archived terminal dispatch-only claim residue" "$second_claim_log"
     require_grep "admitted publication applied" "$second_claim_log"
     require_grep "$second_task" "$sb/.cache/hapax/cc-active-task-alpha"
     require_grep "status: claimed" "$active/$second_task.md"

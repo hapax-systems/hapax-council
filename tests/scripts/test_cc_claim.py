@@ -732,9 +732,11 @@ def test_default_claim_is_idempotent_for_existing_applied_publication(
     assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
-def test_default_claim_after_normal_close_archives_dispatch_only_residue(
+def test_default_claim_archives_legacy_dispatch_only_residue(
     tmp_path: Path,
 ) -> None:
+    # Historical cc-close removed both markers and epochs. Keep that old shape supported;
+    # current close/release composition is exercised in test_cc_close_claim_residue.py.
     home = tmp_path / "home"
     first_note = _write_task(home, "active", "closed-before-next")
     first = _claim(home, "closed-before-next")

@@ -7,7 +7,8 @@ cc-close historically removed only the legacy file, leaking the session-keyed
 lease until its 6h TTL — and the gate reads the session-keyed file FIRST, so it
 kept seeing the just-closed task. Regression coverage for reform finding
 #12/#13: cc-close must clear BOTH lease forms (the current session's only, and
-only when the file still names the task being closed).
+only when the file still names the task being closed). Epoch evidence stays for
+the journal-bound governed residue release; it is not an activation marker.
 """
 
 from __future__ import annotations
@@ -116,11 +117,11 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert not legacy.exists(), f"legacy lease not cleared\nstdout={result.stdout}"
-    assert not legacy_sidecar.exists(), f"legacy epoch sidecar leaked\nstdout={result.stdout}"
+    assert legacy_sidecar.read_text() == "1780000000 foo\n"
     assert not session.exists(), (
         f"session-keyed lease leaked (finding #12/#13)\nstdout={result.stdout}"
     )
-    assert not session_sidecar.exists(), f"session epoch sidecar leaked\nstdout={result.stdout}"
+    assert session_sidecar.read_text() == "1780000000 foo\n"
 
 
 def test_cc_close_preserves_session_lease_naming_a_different_task(
