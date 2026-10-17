@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,6 +47,121 @@ def _load_registry() -> PlatformCapabilityRegistry:
     return PlatformCapabilityRegistry.model_validate(
         json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
     )
+
+
+FETCH_BINDING_SHA = "a" * 64
+FETCH_NOW = datetime(2026, 10, 16, 22, 0, tzinfo=UTC)
+
+
+def _fetch_receipt(**changes):
+    kwargs = {
+        "receipt_type": "read_only_fetch",
+        "route_id": "codex.headless.full",
+        "task_ids": ["fetch-task"],
+        "receipt_id": "fetch-run-fixture",
+        "evidence_refs": [f"candidate-binding-sha256:{FETCH_BINDING_SHA}"],
+        "issued_at": FETCH_NOW,
+        "stale_after": "1h",
+    }
+    return build_route_authority_receipt(**(kwargs | changes))
+
+
+def _check_fetch_receipt(receipt, **changes):
+    from shared import dispatcher_policy
+
+    check = getattr(dispatcher_policy, "check_read_only_fetch_receipt", None)
+    assert callable(check), "bounded read-only fetch receipt check is missing"
+    kwargs = {
+        "task_id": "fetch-task",
+        "route_id": "codex.headless.full",
+        "binding_sha256": FETCH_BINDING_SHA,
+        "now": FETCH_NOW,
+    }
+    return check(receipt, **(kwargs | changes))
+
+
+@pytest.mark.parametrize(
+    ("kind", "route", "floors", "surfaces"),
+    [
+        ("opus_model_entitlement", "claude.headless.opus", [], []),
+        ("quality_equivalence", "codex.headless.full", ["frontier_required"], []),
+        ("runtime_actuation", "codex.headless.full", [], ["runtime"]),
+        ("connector_mutation", "codex.headless.full", [], ["connector"]),
+        ("local_inference_entitlement", "local_tool.local.worker", [], []),
+    ],
+)
+def test_read_only_fetch_rejects_every_other_receipt_kind(kind, route, floors, surfaces):
+    receipt = _fetch_receipt(
+        receipt_type=kind, route_id=route, quality_floors=floors, mutation_surfaces=surfaces
+    )
+    with pytest.raises(ValueError, match="read_only_fetch"):
+        _check_fetch_receipt(receipt, route_id=route)
+
+
+def test_read_only_fetch_rejects_another_tasks_receipt():
+    receipt = _fetch_receipt(task_ids=["other-task"])
+    with pytest.raises(ValueError, match="task"):
+        _check_fetch_receipt(receipt)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"task_ids": []},
+        {"task_ids": ["fetch-task", "other-task"]},
+        {"task_ids": [""]},
+        {"mutation_surfaces": ["runtime"]},
+        {"quality_floors": ["frontier_required"]},
+        {"evidence_refs": ["operator-signed:unbound-data"]},
+        {"receipt_id": "../outside"},
+    ],
+)
+def test_read_only_fetch_receipt_requires_one_bounded_read_only_scope(changes):
+    assert _fetch_receipt().receipt_type == "read_only_fetch"
+    with pytest.raises(ValueError):
+        _fetch_receipt(**changes)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"route_id": "claude.headless.opus"},
+        {"binding_sha256": "b" * 64},
+        {"now": FETCH_NOW + timedelta(hours=1)},
+        {"now": FETCH_NOW - timedelta(seconds=1)},
+    ],
+)
+def test_read_only_fetch_check_rejects_wrong_binding_or_stale_receipt(changes):
+    receipt = _fetch_receipt()
+    with pytest.raises(ValueError):
+        _check_fetch_receipt(receipt, **changes)
+
+
+def test_read_only_fetch_receipt_round_trip_and_tamper_rejection():
+    receipt = _fetch_receipt()
+    assert _check_fetch_receipt(receipt) == route_authority_receipt_reference(receipt)
+    payload = receipt.model_dump(mode="json")
+    payload["task_ids"] = ["other-task"]
+    with pytest.raises(ValueError, match="hash"):
+        RouteAuthorityReceipt.model_validate(payload)
+
+
+def test_read_only_fetch_receipt_cannot_promote_route_supply(tmp_path):
+    registry = _load_registry()
+    receipt = _fetch_receipt()
+    write_route_authority_receipt(receipt, receipt_dir=tmp_path)
+    assert _route_authority_removable_reasons(receipt) == set()
+    observed = apply_route_authority_receipts(registry, receipt_dir=tmp_path, now=FETCH_NOW)
+    assert observed.model_dump(mode="json") == registry.model_dump(mode="json")
+
+
+def test_read_only_fetch_receipt_write_does_not_replace_a_previous_run(tmp_path):
+    receipt = _fetch_receipt()
+    target = write_route_authority_receipt(receipt, receipt_dir=tmp_path)
+    before = target.read_bytes()
+    with pytest.raises(FileExistsError):
+        write_route_authority_receipt(receipt, receipt_dir=tmp_path)
+    assert target.read_bytes() == before
 
 
 def test_receipt_dir_defaults_to_platform_capability_dir_when_env_unset() -> None:

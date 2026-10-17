@@ -303,13 +303,15 @@ def main(argv: list[str] | None = None) -> int:
             "quality_equivalence",
             "runtime_actuation",
             "connector_mutation",
+            "read_only_fetch",
         ],
         help="opus_model_entitlement raises the opus authority ceiling; "
         "local_inference_entitlement clears a local_tool worker's admission + quota-telemetry "
         "blockers (route-id must be a local_tool.* route); "
         "quality_equivalence records a bounded-floor equivalence for a fallback route; "
         "runtime_actuation records task-bound authority for a runtime mutation; "
-        "connector_mutation records task-bound authority for an MCP/app connector mutation.",
+        "connector_mutation records task-bound authority for an MCP/app connector mutation; "
+        "read_only_fetch records one task and candidate-binding hash, not first-exposure authority.",
     )
     parser.add_argument(
         "--route-id",
@@ -415,6 +417,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.receipt_type == "read_only_fetch" and args.ensure_fresh:
+        print(
+            "read_only_fetch cannot auto-renew; mint a new bounded receipt explicitly",
+            file=sys.stderr,
+        )
+        return 2
     evidence_refs = args.evidence_refs or [f"operator-signed:{args.receipt_type}:{args.route_id}"]
     mutation_surfaces = args.mutation_surfaces
     if args.receipt_type == "runtime_actuation" and not mutation_surfaces:

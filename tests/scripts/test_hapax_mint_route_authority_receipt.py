@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from shared.dispatcher_policy import RouteAuthorityReceipt
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +39,61 @@ def _mint_module() -> ModuleType:
 
 
 MINT = _mint_module()
+
+
+def _fetch_args(receipt_dir: Path) -> list[str]:
+    return [
+        "--receipt-type",
+        "read_only_fetch",
+        "--route-id",
+        "codex.headless.full",
+        "--task-id",
+        "fetch-task",
+        "--evidence-ref",
+        "candidate-binding-sha256:" + "a" * 64,
+        "--receipt-id",
+        "fetch-run-fixture",
+        "--receipt-dir",
+        str(receipt_dir),
+        "--now",
+        "2026-10-16T22:00:00Z",
+        "--json",
+    ]
+
+
+def test_fetch_minter_records_one_task_without_mutation_or_quality_grants(capsys, tmp_path):
+    rc, output = _run_json(capsys, _fetch_args(tmp_path))
+    assert rc == 0
+    receipt = RouteAuthorityReceipt.model_validate_json(Path(output["receipt_path"]).read_text())
+    assert receipt.receipt_type == "read_only_fetch"
+    assert receipt.task_ids == ("fetch-task",)
+    assert receipt.mutation_surfaces == receipt.quality_floors == ()
+    assert receipt.evidence_refs == ("candidate-binding-sha256:" + "a" * 64,)
+
+
+@pytest.mark.parametrize("missing", ["--task-id", "--evidence-ref"])
+def test_fetch_minter_refuses_an_unbound_receipt(tmp_path, missing):
+    args = _fetch_args(tmp_path)
+    offset = args.index(missing)
+    del args[offset : offset + 2]
+    assert MINT.main(args) == 2
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_fetch_minter_refuses_automatic_renewal(tmp_path):
+    assert MINT.main([*_fetch_args(tmp_path), "--ensure-fresh"]) == 2
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_fetch_minter_cannot_replace_another_tasks_run(capsys, tmp_path):
+    args = _fetch_args(tmp_path)
+    rc, output = _run_json(capsys, args)
+    assert rc == 0
+    path = Path(output["receipt_path"])
+    original = path.read_bytes()
+    args[args.index("--task-id") + 1] = "another-task"
+    assert MINT.main(args) == 2
+    assert path.read_bytes() == original
 
 
 def _ensure_args(receipt_dir: Path, *, now: str, extra: list[str] | None = None) -> list[str]:

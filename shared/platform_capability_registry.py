@@ -486,13 +486,13 @@ _PRIMARY_SOURCE_DOMAIN_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+
 
 
 class PrimarySourceCandidateBinding(StrictModel):
-    """Planned composition only; neither a supplied tool nor an egress grant."""
+    """Unexposed composition only; neither admitted supply nor an egress grant."""
 
     state: Literal["candidate_only"]
     carrier_route_id: Literal["codex.headless.full"]
     fetch_path: Literal["scripts/hapax-primary-source-fetch"]
-    fetch_path_state: Literal["planned"]
-    receipt_binding_state: Literal["producer_absent"]
+    fetch_path_state: Literal["implemented_unexposed"]
+    receipt_binding_state: Literal["implemented_unexposed"]
     authority_contract_ref: Literal["shared/dispatcher_policy.py:RouteAuthorityReceipt"]
     observation_contract_ref: Literal[
         "shared/platform_capability_receipts.py:PlatformCapabilityReceipt"

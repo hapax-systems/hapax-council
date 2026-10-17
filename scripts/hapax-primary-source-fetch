@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Bounded primary-source GET implementation; production first exposure is closed.
+
+Receipt hashes bind data, not operator consent. A separate seat ruling and
+reviewed activation change are required to open require_first_exposure().
+There is no command-line, environment, or receipt-field override for that gate.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import http.client
+import ipaddress
+import json
+import os
+import socket
+import ssl
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urljoin, urlsplit
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from shared.dispatcher_policy import (  # noqa: E402
+    RouteAuthorityReceipt,
+    check_read_only_fetch_receipt,
+    now_utc,
+    quota_spend_ledger_live_path_from_env,
+)
+from shared.platform_capability_receipts import (  # noqa: E402
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    PlatformCapabilityReceipt,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    PLATFORM_CAPABILITY_REGISTRY,
+    PlatformCapabilityRegistry,
+    check_primary_source_candidate_request,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    SubscriptionQuotaState,
+    load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
+)
+
+
+class FetchStop(ValueError):
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def require_first_exposure() -> None:
+    """Unconditionally closed until the independent first-exposure ruling."""
+    raise FetchStop("failed_admission")
+
+
+def load_binding():
+    registry = PlatformCapabilityRegistry.model_validate_json(
+        PLATFORM_CAPABILITY_REGISTRY.read_text()
+    )
+    return next(
+        row.candidate_binding
+        for row in registry.omitted_capability_shapes
+        if row.shape_id == "research.external_primary_source_fetch"
+    )
+
+
+def binding_sha256(binding) -> str:
+    return hashlib.sha256(
+        json.dumps(binding.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def admission(receipt, task_id, binding) -> str:
+    require_first_exposure()
+    now = now_utc()
+    try:
+        ref = check_read_only_fetch_receipt(
+            receipt,
+            task_id=task_id,
+            route_id=binding.carrier_route_id,
+            binding_sha256=binding_sha256(binding),
+            now=now,
+        )
+        resolved = load_quota_spend_ledger_resolved(
+            live_path=quota_spend_ledger_live_path_from_env()
+        )
+        if resolved.source != "live" or resolved.live_error:
+            raise FetchStop("failed_admission")
+        state, _ = subscription_quota_state_for_route(
+            resolved.ledger, binding.carrier_route_id, now=now
+        )
+        snapshots = [
+            s
+            for s in resolved.ledger.quota_snapshots
+            if s.route_id == binding.carrier_route_id
+            and s.admission_compatible
+            and s.capacity_pool == "subscription_quota"
+        ]
+        if (
+            state is not SubscriptionQuotaState.FRESH
+            or not snapshots
+            or any(
+                s.fresh_until is None or not s.captured_at <= now < s.fresh_until for s in snapshots
+            )
+        ):
+            raise FetchStop("failed_admission")
+        return ref
+    except (OSError, ValueError) as exc:
+        raise FetchStop("failed_admission") from exc
+
+
+def embedded_ipv4(ip: ipaddress.IPv6Address) -> tuple[ipaddress.IPv4Address, ...]:
+    for inner in (ip.ipv4_mapped, ip.sixtofour):
+        if inner is not None:
+            return (inner,)
+    if ip.teredo is not None:
+        return ip.teredo  # Both the server and client must pass the public rule.
+    if ip in ipaddress.IPv6Network("64:ff9b::/96"):
+        return (ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF),)
+    return ()
+
+
+def public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if not (
+        ip.is_global
+        and not (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        )
+    ):
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        return not ip.is_site_local and all(public_ip(inner) for inner in embedded_ipv4(ip))
+    return True
+
+
+def public_address(host: str) -> str:
+    addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    if not addresses:
+        raise FetchStop("unsafe_endpoint")
+    for _, _, _, _, address in addresses:
+        if not public_ip(ipaddress.ip_address(address[0])):
+            raise FetchStop("unsafe_endpoint")
+    return addresses[0][4][0]
+
+
+class PinnedHTTPS(http.client.HTTPSConnection):
+    def __init__(self, host: str, address: str):
+        context = ssl.create_default_context()
+        context.minimum_version = max(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+        super().__init__(host, port=443, timeout=20, context=context)
+        self.address = address
+
+    def connect(self):
+        # Connect to the already checked numeric address, preserving TLS hostname verification.
+        raw = socket.create_connection((self.address, 443), timeout=self.timeout)
+        try:
+            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        except BaseException:
+            raw.close()
+            raise
+
+
+def check_next(binding, url, document_index, gets, downloaded):
+    result = check_primary_source_candidate_request(
+        binding.model_dump(mode="json"),
+        {
+            "url": url,
+            "documents_used": document_index,
+            "gets_used": gets,
+            "downloaded_bytes": downloaded,
+            "request_byte_limit": 1,
+            "authentication": "none",
+            "billing": "declared_zero_incremental",
+            "endpoint_public": True,
+            "admission_passed": True,
+            "quota_fresh": True,
+        },
+    )
+    if result.stop_reasons:
+        raise FetchStop(result.stop_reasons[0])
+
+
+def login_redirect(url: str) -> bool:
+    path = urlsplit(url).path
+    while (decoded := unquote(path)) != path:
+        path = decoded
+    path = path.casefold()
+    return any(token in path for token in ("login", "signin", "sign-in", "oauth", "/auth"))
+
+
+def write_observation(directory, binding, result) -> Path:
+    now = now_utc()
+    ref = result["authority_receipt_ref"]
+    # The run manifest is a supporting artifact, not a native instruction load-set.
+    manifest = json.dumps(result, indent=2, sort_keys=True).encode() + b"\n"
+    with (directory / "run.json").open("xb") as output:
+        output.write(manifest)
+    artifact_ref = "artifact-sha256:" + hashlib.sha256(manifest).hexdigest()
+    script = Path(__file__).resolve()
+    surface = dict(
+        status="blocked",
+        source="scripts/hapax-primary-source-fetch",
+        observed_at=now,
+        stale_after="1h",
+        reason_codes=["first_exposure_not_authorized"],
+    )
+    receipt = PlatformCapabilityReceipt(
+        receipt_id=directory.name,
+        platform="codex",
+        routes=[binding.carrier_route_id],
+        observed_at=now,
+        stale_after="1h",
+        cli={"binary": str(script), "available": script.is_file()},
+        wrapper={
+            "path": str(script),
+            "exists": script.is_file(),
+            "executable": os.access(script, os.X_OK),
+            "sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+        },
+        tool_state=[
+            dict(
+                tool_id="primary_source_fetch",
+                available=False,
+                authority_use=[ref],
+                evidence_ref=artifact_ref,
+            )
+        ],
+        capability=surface,
+        resource=surface,
+        quota=surface,
+        provider_docs={
+            "refs": [ref],
+            "fetched_at": now,
+            "stale_after": "1h",
+            "fetch_status": "unobservable",
+        },
+        known_unknowns=["Local observations do not grant first exposure or route eligibility."],
+    )
+    path = directory / "observation.json"
+    with path.open("x") as output:
+        output.write(receipt.model_dump_json(indent=2) + "\n")
+    return path
+
+
+def fetch(task_id: str, receipt_path: Path, urls: list[str]) -> Path:
+    try:
+        binding = load_binding()
+        receipt = RouteAuthorityReceipt.model_validate_json(receipt_path.read_text())
+        authority_ref = admission(receipt, task_id, binding)
+        if not urls:
+            raise FetchStop("failed_admission")
+        # The existing receipt namespace holds observations; no global route overlay is published.
+        root = Path(
+            os.environ.get(
+                PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+            )
+        ).expanduser()
+        parent = root / "fetch-runs"
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = parent / receipt.receipt_id
+        directory.mkdir()  # One receipt, one bounded run; failures remain spent evidence.
+    except (OSError, ValueError) as exc:
+        raise FetchStop("failed_admission") from exc
+    result = dict(
+        task_id=task_id,
+        authority_receipt_ref=authority_ref,
+        candidate_binding_sha256=binding_sha256(binding),
+        execution_authorized=False,
+        gets=0,
+        downloaded_bytes=0,
+        requests=[],
+        documents=[],
+        stop_reason=None,
+    )
+    try:
+        for index, initial in enumerate(urls):
+            url = initial
+            while True:
+                admission(receipt, task_id, binding)
+                check_next(binding, url, index, result["gets"], result["downloaded_bytes"])
+                target = urlsplit(url)
+                address = public_address(target.hostname)
+                admission(receipt, task_id, binding)
+                connection = PinnedHTTPS(target.hostname, address)
+                try:
+                    result["gets"] += 1
+                    request = dict(url=url, address=address, status=None)
+                    result["requests"].append(request)
+                    connection.request(
+                        "GET",
+                        target.path or "/",
+                        headers={
+                            "Accept": "*/*",
+                            "Accept-Encoding": "identity",
+                            "Connection": "close",
+                        },
+                    )
+                    response = connection.getresponse()
+                    request["status"] = response.status
+                    if (
+                        response.status in (401, 407)
+                        or response.getheader("WWW-Authenticate")
+                        or response.getheader("Proxy-Authenticate")
+                    ):
+                        raise FetchStop("unexpected_authentication")
+                    if response.status == 402:
+                        raise FetchStop("unknown_billing")
+                    if response.status in (301, 302, 303, 307, 308):
+                        location = response.getheader("Location")
+                        if not location:
+                            raise FetchStop("unsafe_endpoint")
+                        # Validate the raw header before urljoin can remove control characters.
+                        if any(c.isspace() or ord(c) < 32 for c in location):
+                            raise FetchStop("unsafe_endpoint")
+                        url = urljoin(url, location)
+                        if login_redirect(url):
+                            raise FetchStop("unexpected_authentication")
+                        continue
+                    if response.status != 200:
+                        raise FetchStop("failed_admission")
+                    remaining = binding.max_download_bytes - result["downloaded_bytes"]
+                    if response.length is not None and response.length > remaining:
+                        raise FetchStop("bound_exhausted")
+                    document = dict(
+                        url=url, body=f"{index}.body", bytes=0, sha256=None, complete=False
+                    )
+                    result["documents"].append(document)
+                    digest = hashlib.sha256()
+                    try:
+                        with (directory / document["body"]).open("xb") as output:
+                            while response.length != 0:
+                                admission(receipt, task_id, binding)
+                                remaining = binding.max_download_bytes - result["downloaded_bytes"]
+                                if remaining <= 0:
+                                    raise FetchStop("bound_exhausted")
+                                chunk = response.read1(min(65536, remaining))
+                                if not chunk:
+                                    if response.length not in (None, 0):
+                                        raise FetchStop("failed_admission")
+                                    break
+                                output.write(chunk)
+                                digest.update(chunk)
+                                document["bytes"] += len(chunk)
+                                result["downloaded_bytes"] += len(chunk)
+                        document["complete"] = True
+                    finally:
+                        document["sha256"] = digest.hexdigest()
+                    break
+                finally:
+                    connection.close()
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        result["stop_reason"] = exc.reason if isinstance(exc, FetchStop) else "failed_admission"
+        raise FetchStop(result["stop_reason"]) from exc
+    finally:
+        path = write_observation(directory, binding, result)
+    return path
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task-id", required=True)
+    parser.add_argument("--receipt", required=True, type=Path)
+    parser.add_argument("urls", nargs="+")
+    args = parser.parse_args(argv)
+    try:
+        print(fetch(args.task_id, args.receipt, args.urls))
+        return 0
+    except FetchStop as exc:
+        print(
+            f"STOP {exc.reason}; repair the stated admission or bound before a new authorized run.",
+            file=sys.stderr,
+        )
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
