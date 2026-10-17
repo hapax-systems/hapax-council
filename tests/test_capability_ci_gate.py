@@ -181,8 +181,8 @@ class CapabilityCIGateTest(unittest.TestCase):
         # are still in that file and are no longer in the live supply plane.
         self.assertEqual(set(legacy["fingerprints"]) - set(current_fingerprints), retired_supply)
         self.assertTrue(set(current_fingerprints) <= set(legacy["fingerprints"]))
-        # The Claude reviewer declaration has since changed; loading v1 must
-        # preserve and report that difference among the ids that remain.
+        # The Claude and AGY reviewer declarations have since changed; loading
+        # v1 must preserve and report those differences among the ids that remain.
         self.assertEqual(
             {
                 capability_id
@@ -190,7 +190,7 @@ class CapabilityCIGateTest(unittest.TestCase):
                 if capability_id in current_fingerprints
                 and fingerprint != current_fingerprints[capability_id]
             },
-            {"claude.review.opus"},
+            {"agy.review.direct", "claude.review.opus"},
         )
         registered = _load_inventory_baseline(HISTORICAL_V1_BASELINE)
 
@@ -200,7 +200,7 @@ class CapabilityCIGateTest(unittest.TestCase):
             set(delta.new_capability_ids),
             {descriptor.shape_id for descriptor in snapshot.evidence_only_non_supply_descriptors()},
         )
-        self.assertEqual(delta.changed_capability_ids, ["claude.review.opus"])
+        self.assertEqual(delta.changed_capability_ids, ["agy.review.direct", "claude.review.opus"])
         self.assertEqual(delta.missing_capability_ids, sorted(retired_supply))
 
     def test_v1_to_v2_wrapper_has_a_fixed_known_answer(self) -> None:

@@ -73,18 +73,19 @@ def agy_review_model_binding() -> tuple[str, str]:
             raise ValueError("expected one agy review route")
         route = routes[0]
         base = route["execution_descriptor"]["model_id"]
+        effort = route["execution_descriptor"]["effort"]
         variants = [
             v
             for v in route["descriptor_variants"]
             if v["knobs_override"].get("model_id", base) == base
-            and v["knobs_override"].get("effort") == "high"
+            and v["knobs_override"].get("effort") == effort
         ]
         if (
             len(variants) != 1
             or not isinstance(variants[0]["blocked_reasons"], list)
             or variants[0]["blocked_reasons"]
         ):
-            raise ValueError("expected one unblocked high-effort base-model variant")
+            raise ValueError("expected one unblocked base-model/effort variant")
         variant_id = variants[0]["variant_id"]
         if not variant_id.startswith("agy@"):
             raise ValueError("expected an agy CLI variant")
@@ -95,9 +96,43 @@ def agy_review_model_binding() -> tuple[str, str]:
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ValueError(
             "agy review registry binding unavailable or ambiguous; repair the governed "
-            "agy.review.direct base-model/high-effort variant in "
+            "agy.review.direct base-model/effort variant in "
             "config/platform-capability-registry.json; no model fallback"
         ) from exc
+
+
+def agy_measurement_model(model: str) -> str:
+    """Select only an explicitly declared measurement leaf, without route admission."""
+    path = REPO_ROOT / "config/platform-capability-registry.json"
+    try:
+        routes = [
+            r
+            for r in json.loads(path.read_text())["routes"]
+            if r["route_id"] == "agy.review.direct"
+        ]
+        if len(routes) != 1:
+            raise ValueError("ambiguous route")
+        variants = [
+            v for v in routes[0]["descriptor_variants"] if v["variant_id"] == f"agy@{model}"
+        ]
+        if len(variants) != 1:
+            raise ValueError("undeclared measurement model")
+        variant = variants[0]
+        knobs = variant["knobs_override"]
+        if (
+            variant["blocked_reasons"] != ["measurement_only"]
+            or variant.get("scores_inherited_from") is not None
+            or variant["score_delta"]
+            or knobs.get("effort") not in {"low", "medium", "high"}
+            or model != f"{knobs.get('model_id')}-{knobs.get('effort')}"
+            or re.fullmatch(r"gemini-[a-z0-9][a-z0-9_.-]*", model) is None
+        ):
+            raise ValueError("not a measurement-only leaf")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(
+            "declare an unscored measurement_only agy registry variant; no model fallback"
+        ) from exc
+    return model
 
 
 AGY_ADMISSION_RECEIPT_LABEL_RE = re.compile(
@@ -329,6 +364,7 @@ class ModelId(StrEnum):
     QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_4_ARGON = "gemini-4-argon"
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
