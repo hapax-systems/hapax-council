@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -12,8 +13,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -36,6 +39,17 @@ HEADLESS = REPO_ROOT / "scripts/hapax-codex-headless"
 INTERACTIVE = REPO_ROOT / "scripts/hapax-codex"
 REGISTRY = REPO_ROOT / "config/platform-capability-registry.json"
 LAUNCHERS = (INTERACTIVE, HEADLESS)
+CODEX_BINDER = REPO_ROOT / "scripts/capability-execution.sh"
+PIN_PATH_EXPR = (
+    'os.path.join(account_home,".codex/packages/standalone/releases/'
+    '0.160.1-x86_64-unknown-linux-musl/bin/codex")'
+)
+PIN_RELATIVE_PATH = (
+    ".codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/bin/codex"
+)
+PIN_SHA = (
+    "f34a4d2301892ae96c90097786bfe5dc269f187b6f69faf42a7b357b8c081e35"  # pragma: allowlist secret
+)
 IDENTITY_SOURCES = (
     *LAUNCHERS,
     REPO_ROOT / "scripts/hapax-methodology-dispatch",
@@ -43,6 +57,350 @@ IDENTITY_SOURCES = (
     REPO_ROOT / "scripts/hapax-claude-reviewer",
     REPO_ROOT / "scripts/hapax-lane-idle-watchdog",
 )
+
+
+def _fleet_pin_source(text, binary, digest=None):
+    # Specialize immutable source constants for a fake release, never runtime overrides.
+    return text.replace(PIN_PATH_EXPR, json.dumps(str(binary))).replace(
+        PIN_SHA, digest or hashlib.sha256(binary.read_bytes()).hexdigest()
+    )
+
+
+def _fleet_prepare_fixture(args, kwargs):
+    """Provision old launcher fixtures as fake qualified packages, without a bypass.
+
+    Only copies of the source constants change. Adversarial pin tests provision
+    their own release and never use this helper to bless changed binary bytes.
+    """
+    args = list(args)
+    env = dict(kwargs.get("env", os.environ))
+    remote = len(args) > 2 and args[1] == "-c" and PIN_PATH_EXPR in args[2]
+    launcher = Path(args[0]).name in ("hapax-codex", "hapax-codex-headless")
+    source = Path(
+        env.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or env.get("HAPAX_COUNCIL_DIR")
+        or (Path(env["HOME"]) / ".cache/hapax/source-activation/worktree")
+    )
+    binder = source / "scripts/capability-execution.sh"
+    if not remote and not (launcher and binder.exists() and PIN_PATH_EXPR in binder.read_text()):
+        return args, kwargs
+    payload = (
+        json.loads(base64.b64decode(env["HAPAX_REMOTE_PAYLOAD"]))
+        if remote and "HAPAX_REMOTE_PAYLOAD" in env
+        else {}
+    )
+    candidate = payload.get("codex_bin_path") or env.get("HAPAX_CODEX_BIN_PATH")
+    candidate = candidate or shutil.which("codex", path=env.get("PATH", ""))
+    binary = (
+        Path(candidate) if candidate else Path(tempfile.gettempdir()) / "missing-qualified-codex"
+    )
+    # Never execute or modify a real installed CLI in source tests.
+    scratch = Path(tempfile.gettempdir()).resolve()
+    if scratch.name == "temp":
+        scratch = scratch.parent
+    if candidate and not binary.resolve().is_relative_to(scratch):
+        raise AssertionError(f"source fixture selected a non-synthetic executable: {binary}")
+    digest = "0" * 64
+    if binary.is_file():
+        body = binary.read_text()
+        assert body.startswith("#!"), f"fixture is not a synthetic script: {binary}"
+        if "--version" not in body:
+            first, rest = body.split("\n", 1)
+            binary.write_text(
+                first
+                + '\nif [[ "$1" == --version ]]; then echo "codex-cli 0.160.1"; exit 0; fi\n'
+                + rest
+            )
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    if remote:
+        args[2] = _fleet_pin_source(args[2], binary, digest)
+    else:
+        # An existing synthetic release can be specialized in place. The tested
+        # repository and installed releases are never modified by a fixture.
+        if not source.resolve().is_relative_to(scratch) or source == REPO_ROOT:
+            target = Path(tempfile.mkdtemp(prefix="codex-pin-source-"))
+            (target / "scripts").mkdir()
+            for item in (source / "scripts").iterdir():
+                if item.name != "capability-execution.sh":
+                    (target / "scripts" / item.name).symlink_to(item)
+            for name in ("shared", "config", "hooks", ".venv"):
+                (target / name).symlink_to(source / name, target_is_directory=True)
+            env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(target)
+            binder_out = target / "scripts/capability-execution.sh"
+        else:
+            binder_out = binder
+        binder_out.write_text(_fleet_pin_source(binder.read_text(), binary, digest))
+    return args, dict(kwargs, env=env)
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_fleet_fixture_refuses_non_synthetic_executable(tmp_path, symlink):
+    candidate = Path(sys.executable)
+    before = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    if symlink:
+        candidate = tmp_path / "codex"
+        candidate.symlink_to(sys.executable)
+    env = {**os.environ, "HAPAX_CODEX_BIN_PATH": str(candidate)}
+    code = CODEX_BINDER.read_text().split("CODEX_PIN_PY='", 1)[1].split("'\n", 1)[0]
+    with pytest.raises(AssertionError, match="non-synthetic executable"):
+        _fleet_prepare_fixture([sys.executable, "-c", code], {"env": env})
+    assert hashlib.sha256(candidate.read_bytes()).hexdigest() == before
+
+
+def fleet_fixture_run(args, **kwargs):
+    args, kwargs = _fleet_prepare_fixture(args, kwargs)
+    return subprocess.run(args, **kwargs)
+
+
+def fleet_fixture_popen(args, **kwargs):
+    args, kwargs = _fleet_prepare_fixture(args, kwargs)
+    return subprocess.Popen(args, **kwargs)
+
+
+# Keep unrelated subprocess behavior and exception types; only fake native
+# fixture invocations receive a qualified package before launch.
+fleet_fixture_subprocess = SimpleNamespace(
+    **{name: getattr(subprocess, name) for name in dir(subprocess) if name not in ("run", "Popen")},
+    run=fleet_fixture_run,
+    Popen=fleet_fixture_popen,
+)
+
+
+def _fleet_test_release(root, binary):
+    root.mkdir()
+    (root / "scripts").mkdir()
+    for source in (REPO_ROOT / "scripts").iterdir():
+        target = root / "scripts" / source.name
+        if source in (*LAUNCHERS, CODEX_BINDER):
+            target.write_text(_fleet_pin_source(source.read_text(), binary))
+            target.chmod(0o755)
+        else:
+            target.symlink_to(source)
+    for name in ("shared", "config", "hooks", ".venv"):
+        (root / name).symlink_to(REPO_ROOT / name, target_is_directory=True)
+    return root
+
+
+def _fleet_fake_binary(path, log, version="0.160.1"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\0' \"$0 $*\" >> {shlex.quote(str(log))}\n"
+        f'if [[ "$1" == --version ]]; then echo "codex-cli {version}"; exit 0; fi\n'
+        "printf '%s\\n' "
+        + shlex.quote(
+            '{"type":"item.completed","item":{"type":"agent_message",'
+            '"text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+        )
+        + "\n"
+    )
+    path.chmod(0o755)
+
+
+def test_fleet_pin_uses_account_home_despite_hostile_environment(tmp_path, monkeypatch):
+    account_home = tmp_path / "account"
+    binary = account_home / PIN_RELATIVE_PATH
+    log = tmp_path / "selected.log"
+    _fleet_fake_binary(binary, log)
+    hostile_home = tmp_path / "hostile"
+    impostor = hostile_home / PIN_RELATIVE_PATH
+    impostor.parent.mkdir(parents=True)
+    shutil.copy2(binary, impostor)
+    monkeypatch.setenv("HOME", str(hostile_home))
+    monkeypatch.setenv("PATH", str(impostor.parent))
+    namespace = {}
+    code = CODEX_BINDER.read_text().split("CODEX_PIN_PY='", 1)[1].split("'\n", 1)[0]
+    exec(code.replace(PIN_SHA, hashlib.sha256(binary.read_bytes()).hexdigest()), namespace)
+    lookups = []
+
+    def account_for(uid):
+        lookups.append(uid)
+        return SimpleNamespace(pw_dir=str(account_home))
+
+    namespace["pwd"] = SimpleNamespace(getpwuid=account_for)
+    selected, error = namespace["_resolve_codex_bin"]()
+    assert (selected, error) == (str(binary), "")
+    assert lookups == [os.getuid()]
+    assert log.read_text().split("\0") == [f"{binary} --version", ""]
+    log.unlink()
+    selected, error = namespace["_resolve_codex_bin"](str(impostor))
+    assert selected is None and "codex_pin_path_mismatch" in error
+    assert not log.exists()
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing", "missing_attribute", "empty", "none", "relative", "file", "symlink"]
+)
+def test_fleet_pin_refuses_invalid_account_binding_before_execution(tmp_path, failure):
+    account_home = tmp_path / "account"
+    account_home.mkdir()
+    invalid = {
+        "empty": "",
+        "none": None,
+        "relative": "relative-home",
+        "file": str(tmp_path / "file"),
+        "symlink": str(tmp_path / "alias"),
+    }
+    (tmp_path / "file").write_text("not a directory")
+    (tmp_path / "alias").symlink_to(account_home)
+
+    def account_for(uid):
+        assert uid == os.getuid()
+        if failure == "missing":
+            raise KeyError(uid)
+        if failure == "missing_attribute":
+            return SimpleNamespace()
+        return SimpleNamespace(pw_dir=invalid[failure])
+
+    namespace = {}
+    code = CODEX_BINDER.read_text().split("CODEX_PIN_PY='", 1)[1].split("'\n", 1)[0]
+    exec(code, namespace)
+    namespace["pwd"] = SimpleNamespace(getpwuid=account_for)
+    with patch.object(subprocess, "run") as execute:
+        selected, error = namespace["_resolve_codex_bin"]()
+    execute.assert_not_called()
+    assert selected is None
+    assert error.startswith("codex_pin_account_home_unavailable:")
+    assert "next action: repair the executing Unix account home binding" in error
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+@pytest.mark.parametrize("hint", [False, True])
+def test_fleet_pin_selects_qualified_absolute_before_stale_path(tmp_path, launcher, hint):
+    env, _ = _env_with_fake_codex(tmp_path)
+    binary = tmp_path / "qualified/bin/codex"
+    log = tmp_path / "selected.log"
+    _fleet_fake_binary(binary, log)
+    release = _fleet_test_release(tmp_path / "release", binary)
+    env["HAPAX_COUNCIL_DIR"] = str(release)
+    if hint:
+        env["HAPAX_CODEX_BIN_PATH"] = str(binary)
+    result = _launch(launcher, env)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().rstrip("\0").split("\0") if log.exists() else []
+    assert calls and calls[0] == f"{binary} --version", calls
+    assert all(call.startswith(str(binary) + " ") for call in calls)
+    native_calls = [call for call in calls if not call.endswith(" --version")]
+    assert native_calls and all(
+        "check_for_update_on_startup=false" in call for call in native_calls
+    )
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+@pytest.mark.parametrize(
+    "failure", ["missing", "nonexecutable", "wrong_hash", "wrong_version", "wrong_path"]
+)
+def test_fleet_pin_refuses_before_local_auth_or_spawn(tmp_path, launcher, failure):
+    env, args_file = _env_with_fake_codex(tmp_path)
+    binary = tmp_path / "qualified/bin/codex"
+    log = tmp_path / "selected.log"
+    _fleet_fake_binary(binary, log, "0.160.0" if failure == "wrong_version" else "0.160.1")
+    release = _fleet_test_release(tmp_path / "release", binary)
+    env["HAPAX_COUNCIL_DIR"] = str(release)
+    if failure == "missing":
+        binary.unlink()
+    elif failure == "nonexecutable":
+        binary.chmod(0o644)
+    elif failure == "wrong_hash":
+        binary.write_text(binary.read_text() + "# unqualified bytes\n")
+    elif failure == "wrong_path":
+        env["HAPAX_CODEX_BIN_PATH"] = str(tmp_path / "bin/codex")
+    result = _launch(launcher, env)
+    assert result.returncode != 0, result.stdout
+    assert "codex_pin_" in result.stderr
+    assert not args_file.with_suffix(".calls").exists(), "stale CLI reached auth/turn"
+    calls = log.read_text().rstrip("\0").split("\0") if log.exists() else []
+    assert calls == ([f"{binary} --version"] if failure == "wrong_version" else [])
+
+
+def _fleet_remote_code(launcher, name, binary, digest):
+    code = launcher.read_text().split(f"{name}='", 1)[1].split("'\n", 1)[0]
+    binder = CODEX_BINDER.read_text()
+    if "CODEX_PIN_PY='" in binder:
+        code = binder.split("CODEX_PIN_PY='", 1)[1].split("'\n", 1)[0] + "\n" + code
+    return _fleet_pin_source(code, binary, digest)
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+@pytest.mark.parametrize("boundary", ["REMOTE_PREFLIGHT_PY", "REMOTE_EXEC_PY"])
+@pytest.mark.parametrize(
+    "failure", ["none", "missing", "wrong_hash", "wrong_version", "wrong_path"]
+)
+def test_fleet_pin_remote_boundaries(tmp_path, launcher, boundary, failure):
+    env, args_file = _env_with_fake_codex(tmp_path)
+    binary = tmp_path / "qualified/bin/codex"
+    log = tmp_path / "selected.log"
+    _fleet_fake_binary(binary, log, "0.160.0" if failure == "wrong_version" else "0.160.1")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    payload = dict(
+        workdir=str(tmp_path),
+        execution_args=[],
+        argv=["codex", "exec", "fake turn"],
+        proof_file=str(tmp_path / "proof.json"),
+        codex_bin_path=str(binary),
+    )
+    if failure == "missing":
+        binary.unlink()
+    elif failure == "wrong_hash":
+        binary.write_text(binary.read_text() + "# unqualified bytes\n")
+    elif failure == "wrong_path":
+        payload["codex_bin_path"] = str(tmp_path / "bin/codex")
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    result = subprocess.run(
+        [sys.executable, "-c", _fleet_remote_code(launcher, boundary, binary, digest)],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert not args_file.with_suffix(".calls").exists(), "PATH binary reached auth/turn"
+    calls = log.read_text().rstrip("\0").split("\0") if log.exists() else []
+    if failure == "none":
+        assert result.returncode == 0, result.stderr
+        assert calls[0] == f"{binary} --version"
+        assert len(calls) == 2 and calls[1].startswith(f"{binary} exec ")
+    else:
+        assert result.returncode != 0
+        assert "codex_pin_" in result.stderr
+        assert not (tmp_path / "proof.json").exists()
+        assert calls == ([f"{binary} --version"] if failure == "wrong_version" else [])
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+@pytest.mark.parametrize("change", ["replace", "delete"])
+def test_fleet_pin_remote_exec_revalidates_after_preflight(tmp_path, launcher, change):
+    env, _ = _env_with_fake_codex(tmp_path)
+    binary = tmp_path / "qualified/bin/codex"
+    log = tmp_path / "selected.log"
+    _fleet_fake_binary(binary, log)
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    payload = dict(
+        workdir=str(tmp_path),
+        execution_args=[],
+        argv=["codex", "exec", "fake turn"],
+        proof_file=str(tmp_path / "proof.json"),
+        codex_bin_path=str(binary),
+    )
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    for boundary in ("REMOTE_PREFLIGHT_PY", "REMOTE_EXEC_PY"):
+        result = subprocess.run(
+            [sys.executable, "-c", _fleet_remote_code(launcher, boundary, binary, digest)],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        if boundary == "REMOTE_PREFLIGHT_PY":
+            assert result.returncode == 0, result.stderr
+            if change == "replace":
+                binary.write_text(binary.read_text() + "# changed after auth\n")
+            else:
+                binary.unlink()
+            log.unlink(missing_ok=True)
+        else:
+            assert result.returncode != 0
+            assert "codex_pin_" in result.stderr
+            assert not log.exists() and not (tmp_path / "proof.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -188,7 +546,7 @@ def _launch(launcher, env, route="codex.headless.full", extra=(), workdir=None):
         ]
     if extra:
         args += ["--", *extra]
-    return subprocess.run(
+    return fleet_fixture_run(
         [str(launcher), *args], capture_output=True, text=True, env=env, timeout=20
     )
 
@@ -225,12 +583,13 @@ def test_both_launchers_deliver_exact_common_configuration(tmp_path, launcher, l
     settings = [
         'approval_policy="never"',
         'sandbox_mode="danger-full-access"',
+        "check_for_update_on_startup=false",
         f'projects."{home}/projects".trust_level="trusted"',
         f'projects."{workdir}".trust_level="trusted"',
-        f'hooks.SessionStart=[{{command="{hook}",timeout=20,statusMessage="Loading Hapax context"}}]',
-        f'hooks.PreToolUse=[{{command="{hook}",timeout=20,include_apply_patch_tool=true,statusMessage="Hapax guardrails"}}]',
-        f'hooks.PostToolUse=[{{command="{hook}",timeout=20,include_apply_patch_tool=true,statusMessage="Hapax audit"}}]',
-        f'hooks.Stop=[{{command="{hook}",timeout=20,statusMessage="Writing Hapax session summary"}}]',
+        f'hooks.SessionStart=[{{hooks=[{{type="command",command="{hook}",timeout=20,statusMessage="Loading Hapax context"}}]}}]',
+        f'hooks.PreToolUse=[{{hooks=[{{type="command",command="{hook}",timeout=20,statusMessage="Hapax guardrails"}}]}}]',
+        f'hooks.PostToolUse=[{{hooks=[{{type="command",command="{hook}",timeout=20,statusMessage="Hapax audit"}}]}}]',
+        f'hooks.Stop=[{{hooks=[{{type="command",command="{hook}",timeout=20,statusMessage="Writing Hapax session summary"}}]}}]',
         f'mcp_servers.hapax.command="{home}/.local/bin/uv"',
         f'mcp_servers.hapax.args=["--directory","{home}/projects/hapax-mcp","run","hapax-mcp"]',
         f'mcp_servers.hapax.env.LOGOS_BASE_URL="{env["LOGOS_BASE_URL"]}"',
@@ -679,7 +1038,7 @@ def test_interactive_reentry_keeps_selected_source_release(tmp_path):
         '  env -u HAPAX_SOURCE_ACTIVATE_WORKTREE bash "${@: -1}";;\n*) exit 0;;\nesac\n'
     )
     tmux.chmod(0o755)
-    result = subprocess.run(
+    result = fleet_fixture_run(
         [
             str(INTERACTIVE),
             "--session",
@@ -696,6 +1055,8 @@ def test_interactive_reentry_keeps_selected_source_release(tmp_path):
         text=True,
         timeout=30,
     )
+    assert PIN_PATH_EXPR not in (activation / "scripts/capability-execution.sh").read_text()
+    assert PIN_SHA not in (activation / "scripts/capability-execution.sh").read_text()
     assert result.returncode == 0, result.stderr
     argv = calls.read_text().splitlines()
     assert 'model="gpt-5.5"' in argv
@@ -816,6 +1177,7 @@ def test_remote_auth_probe_carries_descriptor(tmp_path, launcher):
     text = launcher.read_text()
     start = text.index("REMOTE_PREFLIGHT_PY='") + len("REMOTE_PREFLIGHT_PY='")
     code = text[start : text.index("'\n", start)]
+    code = CODEX_BINDER.read_text().split("CODEX_PIN_PY='", 1)[1].split("'\n", 1)[0] + "\n" + code
     descriptor = resolve_execution_descriptor("codex.headless.full")
     expected = [
         "-c",
@@ -831,7 +1193,7 @@ def test_remote_auth_probe_carries_descriptor(tmp_path, launcher):
         "execution_args": expected,
     }
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
-    result = subprocess.run(
+    result = fleet_fixture_run(
         [sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=10
     )
     assert result.returncode == 0, result.stderr

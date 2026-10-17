@@ -8,7 +8,6 @@ import hmac
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -16,6 +15,13 @@ from pathlib import Path
 import pytest
 
 from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
+from tests.scripts.test_capability_execution_contract import (
+    CODEX_BINDER,
+    _fleet_pin_source,
+)
+from tests.scripts.test_capability_execution_contract import (
+    fleet_fixture_subprocess as subprocess,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
@@ -56,7 +62,10 @@ def _extract_shell_function(name: str) -> str:
     text = SCRIPT.read_text(encoding="utf-8")
     start = text.index(f"{name}() {{")
     end = text.index("\n}\n\n", start) + len("\n}\n")
-    return text[start:end]
+    code = text[start:end]
+    if name in {"resolve_local_codex_bin", "prove_local_codex_exec_auth"}:
+        code = CODEX_BINDER.read_text() + "\n" + code
+    return code
 
 
 def _write_rejecting_codex(
@@ -215,7 +224,8 @@ def _extract_remote_python(name: str) -> str:
     text = SCRIPT.read_text(encoding="utf-8")
     start = text.index(prefix) + len(prefix)
     end = text.index("'\n", start)
-    return text[start:end]
+    pin = CODEX_BINDER.read_text().split("CODEX_PIN_PY='", 1)[1].split("'\n", 1)[0]
+    return pin + "\n" + text[start:end]
 
 
 def _python_only_remote_path(tmp_path: Path) -> Path:
@@ -230,7 +240,7 @@ def _python_only_remote_path(tmp_path: Path) -> Path:
     return remote_bin
 
 
-def test_resolve_local_codex_bin_skips_directory_candidates(tmp_path: Path) -> None:
+def test_resolve_local_codex_bin_refuses_directory_hint(tmp_path: Path) -> None:
     bad_dir = tmp_path / "not-a-codex-binary"
     bad_dir.mkdir()
     home = tmp_path / "home"
@@ -238,13 +248,15 @@ def test_resolve_local_codex_bin_skips_directory_candidates(tmp_path: Path) -> N
     _write_executable(fallback_codex, "exit 0\n")
     path_dir = tmp_path / "path"
     path_dir.mkdir()
+    (path_dir / "python3").symlink_to(sys.executable)
     bash = shutil.which("bash") or "/usr/bin/bash"
 
     result = subprocess.run(
         [
             bash,
             "-c",
-            f"{_extract_shell_function('resolve_local_codex_bin')}\nresolve_local_codex_bin",
+            _fleet_pin_source(CODEX_BINDER.read_text(), fallback_codex)
+            + "\nresolve_governed_codex_bin",
         ],
         capture_output=True,
         text=True,
@@ -257,8 +269,9 @@ def test_resolve_local_codex_bin_skips_directory_candidates(tmp_path: Path) -> N
         timeout=10,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == str(fallback_codex)
+    assert result.returncode == 78
+    assert "codex_pin_path_mismatch" in result.stderr
+    assert result.stdout == ""
 
 
 def _write_descriptor_runtime(path: Path) -> None:
@@ -1962,6 +1975,7 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
         ssh_log,
         remove_workdir_on_worktree=workdir,
         remote_path_on_preflight=_python_only_remote_path(tmp_path),
+        before_preflight_run=f'  rm "{bin_dir / "codex"}"\n',
     )
 
     env = os.environ.copy()
