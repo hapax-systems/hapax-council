@@ -32,7 +32,7 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
 REGISTRY_BYTE_PIN = (
-    "517544b61c09b60229d5fcaf024b2c4146eae2ad2e567b5f998dcbecbb82d3f9"  # pragma: allowlist secret
+    "7d7518c484b90dbb16728993a4c9b5a69b0ad402bb541d254c447470f16d73ca"  # pragma: allowlist secret
 )
 
 

@@ -20,9 +20,15 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import textwrap
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
+
+from shared.sdlc_lifecycle import TASK_PIPELINE_HELD_STATUSES
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "codex-claim-audit"
 
@@ -1742,6 +1748,178 @@ class TestCapabilityBlockedHolders:
 # ---------------------------------------------------------------------------
 # Systemd unit validation
 # ---------------------------------------------------------------------------
+
+
+class TestLiveHeldStatusCache:
+    """Held work keeps its projection while the holder lives, including without a PR."""
+
+    ROLE = "cx-audit-held-test"
+    SESSION = "d8510e37-56df-4556-b42b-e3c633fd56e8"
+
+    def _held(self, tmp_path, status, *, keyed=False, age_hours=8, assigned=None):
+        vault = _make_vault(tmp_path)
+        cache = tmp_path / "cache"
+        note = _write_task_note(
+            vault,
+            "held-task",
+            assigned_to=assigned or self.ROLE,
+            status=status,
+            claimed_at=(datetime.now(UTC) - timedelta(hours=age_hours)).isoformat(),
+        )
+        key = f"{self.ROLE}-{self.SESSION}" if keyed else self.ROLE
+        marker = _write_claim_cache(cache, key, "held-task")
+        return vault, cache, note, marker
+
+    @contextmanager
+    def _live(self, identity, *, cwd=None):
+        # A real same-user process, like the existing capability-blocker tests.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", identity], cwd=cwd
+        )
+        try:
+            yield proc
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def _empty_inventory(self, tmp_path):
+        site = tmp_path / "empty_proc"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            "from pathlib import Path\n"
+            "original = Path.iterdir\n"
+            "def empty(path):\n"
+            "    return iter(()) if str(path) == '/proc' else original(path)\n"
+            "Path.iterdir = empty\n"
+        )
+        return {"PYTHONPATH": str(site)}
+
+    @pytest.mark.parametrize("status", sorted(TASK_PIPELINE_HELD_STATUSES | {"blocked"}))
+    @pytest.mark.parametrize("keyed", [False, True])
+    def test_live_holder_retains_every_held_status(self, tmp_path, status, keyed):
+        vault, cache, note, marker = self._held(tmp_path, status, keyed=keyed)
+        original, claim = note.read_bytes(), marker.read_bytes()
+        with self._live(self.SESSION if keyed else self.ROLE) as proc:
+            result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
+        assert marker.exists(), result.stdout + result.stderr
+        assert marker.read_bytes() == claim and note.read_bytes() == original
+        assert "HELD_STATUS_PROTECTED" in result.stdout
+        assert f"live_executor_pid_{proc.pid}" in result.stdout
+        assert "codex-claim-audit[v2]: PROTECT " in result.stdout
+
+    def test_dispatch_binding_session_protects_plain_marker(self, tmp_path):
+        vault, cache, note, marker = self._held(tmp_path, "blocked")
+        _write_dispatch_binding(cache, self.ROLE, "held-task", session=self.SESSION)
+        original = note.read_bytes()
+        with self._live(self.SESSION) as proc:
+            result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
+        assert marker.exists() and note.read_bytes() == original, result.stdout + result.stderr
+        assert f"live_executor_pid_{proc.pid}" in result.stdout
+
+    @pytest.mark.parametrize("status", ["blocked", "ready_for_review"])
+    def test_role_mismatch_still_clears(self, tmp_path, status):
+        vault, cache, note, marker = self._held(tmp_path, status, assigned="cx-other")
+        original = note.read_bytes()
+        with self._live(self.ROLE):
+            result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
+        assert not marker.exists(), result.stdout + result.stderr
+        assert note.read_bytes() == original
+        assert "HELD_STATUS_PROTECTED" not in result.stdout
+
+    @pytest.mark.parametrize("status", ["done", "withdrawn", "offered"])
+    def test_terminal_or_unheld_status_still_clears(self, tmp_path, status):
+        vault, cache, note, marker = self._held(tmp_path, status)
+        original = note.read_bytes()
+        with self._live(self.ROLE):
+            result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
+        assert not marker.exists(), result.stdout + result.stderr
+        assert note.read_bytes() == original
+        assert "HELD_STATUS_PROTECTED" not in result.stdout
+
+    @pytest.mark.parametrize("status", ["blocked", "ready_for_review"])
+    def test_gone_holder_past_six_hours_still_clears(self, tmp_path, status):
+        vault, cache, note, marker = self._held(tmp_path, status, keyed=True)
+        original = note.read_bytes()
+        # Prove a complete empty inventory in isolation. Unreadable processes
+        # on the shared host are UNKNOWN, not evidence that this holder died.
+        result = _run_audit(
+            tmp_path, vault, cache, gh_state="CLOSED", extra_env=self._empty_inventory(tmp_path)
+        )
+        assert not marker.exists(), result.stdout + result.stderr
+        assert note.read_bytes() == original
+
+    @pytest.mark.parametrize("status", ["blocked", "ready_for_review"])
+    def test_gone_holder_within_six_hours_keeps_lease(self, tmp_path, status):
+        vault, cache, note, marker = self._held(tmp_path, status, age_hours=1)
+        original = note.read_bytes()
+        result = _run_audit(
+            tmp_path, vault, cache, gh_state="CLOSED", extra_env=self._empty_inventory(tmp_path)
+        )
+        assert marker.exists(), result.stdout + result.stderr
+        assert note.read_bytes() == original
+        assert "HELD_STATUS_PROTECTED" in result.stdout
+
+    def test_unreadable_process_inventory_cannot_prove_holder_gone(self, tmp_path):
+        vault, cache, note, marker = self._held(tmp_path, "blocked")
+        site = tmp_path / "unreadable_proc"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            "from pathlib import Path\n"
+            "original = Path.iterdir\n"
+            "def unreadable(path):\n"
+            "    if str(path) == '/proc':\n"
+            "        raise PermissionError('fixture proc read denied')\n"
+            "    return original(path)\n"
+            "Path.iterdir = unreadable\n"
+        )
+        original = note.read_bytes()
+        result = _run_audit(
+            tmp_path, vault, cache, gh_state="CLOSED", extra_env={"PYTHONPATH": str(site)}
+        )
+        assert marker.exists(), result.stdout + result.stderr
+        assert note.read_bytes() == original
+        assert "HELD_STATUS_PROTECTED" in result.stdout
+        assert "unknown" in result.stdout.lower()
+
+    def test_failed_holder_probe_cannot_clear(self, tmp_path):
+        vault, cache, note, marker = self._held(tmp_path, "blocked")
+        gh = _gh_stub(tmp_path, state="CLOSED")
+        python = gh.parent / "python3"
+        python.write_text("#!/bin/sh\nexit 7\n")
+        python.chmod(0o755)
+        original = note.read_bytes()
+        result = _run_audit(tmp_path, vault, cache, gh_stub_path=gh)
+        assert marker.exists() and note.read_bytes() == original, result.stdout + result.stderr
+        assert "unknown_holder_probe_failed" in result.stdout
+
+    @pytest.mark.parametrize("claimed_at", ["null", "invalid", "2999-01-01T00:00:00Z"])
+    def test_unusable_claim_time_cannot_prove_lease_expired(self, tmp_path, claimed_at):
+        vault, cache, note, marker = self._held(tmp_path, "blocked")
+        note.write_text(re.sub(r"claimed_at: .*", f"claimed_at: {claimed_at}", note.read_text()))
+        original = note.read_bytes()
+        result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
+        assert marker.exists(), result.stdout + result.stderr
+        assert note.read_bytes() == original
+        assert "unknown_claim_age" in result.stdout
+
+    def test_worktree_cwd_protects_holder_without_role_in_command(self, tmp_path):
+        vault, cache, note, marker = self._held(tmp_path, "ready_for_review")
+        repo = _pushed_repo(tmp_path / "git", "feat/held")
+        tree = tmp_path / "working-copy"
+        _git(repo, "worktree", "add", "-q", "-b", "feat/held", str(tree))
+        note.write_text(note.read_text().replace("branch: null", "branch: feat/held"))
+        original = note.read_bytes()
+        with self._live("unnamed-executor", cwd=tree) as proc:
+            result = _run_audit(
+                tmp_path,
+                vault,
+                cache,
+                gh_state="CLOSED",
+                extra_env={"HAPAX_CLAIM_AUDIT_REPO": str(repo)},
+            )
+        assert marker.exists(), result.stdout + result.stderr
+        assert note.read_bytes() == original
+        assert f"live_executor_pid_{proc.pid}" in result.stdout
 
 
 class TestSystemdUnits:

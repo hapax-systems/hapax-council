@@ -317,6 +317,130 @@ _cache_role_matches_note() {
   esac
 }
 
+# A held row is not an orphan just because it is outside the working-state
+# pair. Use the lifecycle vocabulary and the capability-blocker's existing
+# evidence: task-bound session markers/bindings, process identity and worktree
+# cwd. A failed read cannot prove the holder gone; retain and report it.
+_held_cache_protection_for() {
+  local role="$1" task_id="$2" status="$3" claimed_at="$4" branch="$5" source_root
+  source_root="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
+  timeout 5s python3 - "$role" "$task_id" "$status" "$claimed_at" "$branch" \
+    "$CLAIM_CACHE_DIR" "$CLAIM_AUDIT_REPO" "$source_root" "$now_epoch" "$stale_threshold" <<'PYEOF'
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+role, task, status, claimed_at, branch, cache, repo, source, now, threshold = sys.argv[1:]
+# The running script's source, never the caller's potentially older cwd.
+sys.path.insert(0, source)
+from shared.sdlc_lifecycle import TASK_PIPELINE_HELD_STATUSES
+
+if status not in TASK_PIPELINE_HELD_STATUSES | {"blocked"}:
+    sys.exit(0)
+
+
+def retain(reason):
+    print("PROTECTED " + reason)
+    raise SystemExit(0)
+
+
+try:
+    when = datetime.fromisoformat(claimed_at.replace("Z", "+00:00"))
+    if when.tzinfo is None or when.timestamp() > int(now):
+        raise ValueError("claim timestamp does not establish age")
+    age = int(now) - when.timestamp()
+except (ValueError, OverflowError):
+    retain("unknown_claim_age")
+if age < int(threshold):
+    retain("lease_within_stale_threshold")
+
+sessions = set()
+session_id = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+unknown = []
+try:
+    for marker in Path(cache).glob(f"cc-active-task-{role}-*"):
+        suffix = marker.name[len(f"cc-active-task-{role}-") :]
+        if session_id.fullmatch(suffix) and marker.read_text().split()[:1] == [task]:
+            sessions.add(suffix)
+    for binding in Path(cache).glob(f"cc-claim-dispatch-{role}*.json"):
+        key = binding.name[len("cc-claim-dispatch-") : -len(".json")]
+        if key != role and not (
+            key.startswith(role + "-") and session_id.fullmatch(key[len(role) + 1 :])
+        ):
+            continue
+        data = json.loads(binding.read_text())
+        if (
+            isinstance(data, dict)
+            and data.get("schema") == "hapax.claim-dispatch-binding.v1"
+            and data.get("lane") == role
+            and data.get("task_id") == task
+            and isinstance(data.get("session_id"), str)
+            and session_id.fullmatch(data["session_id"])
+        ):
+            sessions.add(data["session_id"])
+except (OSError, ValueError, UnicodeError):
+    unknown.append("session_bindings_unreadable")
+
+trees = []
+if branch not in {"", "null", "none", "~"}:
+    try:
+        listing = subprocess.run(
+            ["git", "-C", repo, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if listing.returncode:
+            unknown.append("worktrees_unreadable")
+        tree = ""
+        for line in listing.stdout.splitlines():
+            if line.startswith("worktree "):
+                tree = line[len("worktree ") :]
+            elif line == f"branch refs/heads/{branch}" and tree:
+                trees.append(tree)
+    except (OSError, subprocess.SubprocessError):
+        unknown.append("worktrees_unreadable")
+
+lane = re.compile(rf"(?<![A-Za-z0-9]){re.escape(role)}(?![A-Za-z0-9])")
+ancestors, pid = set(), os.getpid()
+while pid > 1 and pid not in ancestors:
+    ancestors.add(pid)
+    try:
+        pid = int((Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        retain("unknown_audit_ancestry")
+try:
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            if proc.stat().st_uid != os.getuid():
+                continue
+            cmd = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+            if not cmd:  # no userspace executor (zombie/kernel task)
+                continue
+            if int(proc.name) in ancestors and not any(s in cmd for s in sessions):
+                continue
+            if any(s in cmd for s in sessions) or lane.search(cmd):
+                retain(f"live_executor_pid_{proc.name}")
+            cwd = os.readlink(proc / "cwd")
+            if lane.search(cwd) or any(cwd == t or cwd.startswith(t + "/") for t in trees):
+                retain(f"live_executor_pid_{proc.name}")
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # a process that exited during the observation
+        except OSError:
+            unknown.append("process_unreadable")
+except OSError:
+    unknown.append("process_inventory_unreadable")
+if unknown:
+    retain("unknown_" + ",".join(sorted(set(unknown))))
+# No live holder was found in a complete local observation and the lease is
+# expired. Continue into the existing PR protection and compare/delete path.
+PYEOF
+}
+
 # This host's short name. HAPAX_AUDIT_SELF_HOST overrides it (peer-derivation
 # tests, and any host whose `hostname` does not match its claim-plane name).
 _self_host_short() {
@@ -1294,6 +1418,19 @@ if [ -d "$CLAIM_CACHE_DIR" ]; then
       note_is_active_claim=true
     else
       note_is_active_claim=false
+    fi
+
+    if [ "$note_is_active_claim" = false ] && _cache_role_matches_note "$assigned" "$note_assigned"; then
+      held_verdict="$(_held_cache_protection_for "$note_assigned" "$claimed_task" "$note_status" \
+        "$(_fm_value claimed_at "$note")" "$(_fm_value branch "$note")")" \
+        || held_verdict="PROTECTED unknown_holder_probe_failed"
+      if [[ "$held_verdict" == PROTECTED\ * ]]; then
+        printf 'HELD_STATUS_PROTECTED: cache=%s task=%s assigned=%s status=%s %s; retained\n' \
+          "$(basename "$claim_file")" "$claimed_task" "$note_assigned" "$note_status" "${held_verdict#PROTECTED }"
+        _journal_attr "PROTECT" "$(basename "$claim_file")" \
+          "held_status task=$claimed_task status=$note_status ${held_verdict#PROTECTED }"
+        continue
+      fi
     fi
 
     if [ "$note_is_active_claim" = false ] || ! _cache_role_matches_note "$assigned" "$note_assigned"; then

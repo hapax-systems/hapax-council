@@ -2293,12 +2293,14 @@ def _quota_ledger_fresh_for(
         # label and the witness, exactly as the admission writer stamps them.
         stamp = captured_at.replace("-", "").replace(":", "").lower()
         if route_id.startswith("agy."):
+            from shared.quota_spend_ledger import agy_review_model_binding
+
             # The validator's agy shape: an agy-quota-admission label, exactly one safe witness,
             # the sanctioned reviewer tool and model, and both timestamps.
             return [
                 f"relay-receipt:agy-quota-admission-{stamp}.yaml"
                 f":witness:agy-headroom-observed-{stamp}"
-                f":supported_tool:hapax-agy-reviewer:model:gemini-3.1-pro-high"
+                f":supported_tool:hapax-agy-reviewer:model:{agy_review_model_binding()[0]}"
                 f":observed_at:{captured_at}:fresh_until:{fresh_until}"
             ]
         label = f"claude-subscription-quota-admission-{route_id.replace('.', '-')}-{stamp}.yaml"
