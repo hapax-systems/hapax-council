@@ -9,6 +9,13 @@
 # Scoped by local branches: only blocks on PRs whose branch is checked out in
 # THIS worktree. One session's PR doesn't block the other session.
 # "Resolved" means: PR merged or closed, local branch deleted.
+#
+# Local-forge (Forgejo) origins are first-class: the PR-open requirement is
+# satisfied by an open PR on the local forge, not only on GitHub. The listing
+# runs through the same gh-shaped shim as every other forge consumer
+# (HAPAX_GH_BIN → scripts/gh-forge inside the status helper); GitHub origins
+# keep using gh exactly as before. An unreachable forge FAILS CLOSED: source
+# edits block with a named next action until the PR listing can be verified.
 set -euo pipefail
 
 # --- 1. Read tool invocation from stdin ---
@@ -55,9 +62,6 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 0
 fi
 
-if ! command -v gh &>/dev/null; then
-  exit 0
-fi
 if ! command -v python3 &>/dev/null; then
   exit 0
 fi
@@ -104,10 +108,95 @@ github_repo_slug() {
   esac
 }
 
-repo_slug="$(github_repo_slug 2>/dev/null || true)"
+# Local-forge origin → "owner/name". ssh/scp origins count as forge only
+# when HAPAX_FORGE_URL is set and its host matches the origin's host;
+# http(s) origins are forge on their face, but when HAPAX_FORGE_URL is set
+# its host must match too — an env var set for the forge must never claim
+# an unrelated host's repo. GitHub origins and anything unparseable
+# return 1: the GitHub path takes over, and unparseable keeps the gate open
+# exactly as before local-forge support existed.
+forge_repo_slug() {
+  local origin rest authority path slug api_url api_host origin_host
+  origin="$(git remote get-url origin 2>/dev/null || true)"
+  [[ -z "$origin" ]] && return 1
+  case "$origin" in
+    git@github.com:*|ssh://git@github.com/*|http://github.com/*|https://github.com/*)
+      return 1
+      ;;
+  esac
+  api_url=""
+  case "$origin" in
+    http://*|https://*)
+      rest="${origin#*://}"
+      authority="${rest%%/*}"
+      path="${rest#*/}"
+      # With a declared forge, an http(s) origin must be that forge — the
+      # same host guard as ssh/scp below. Without the declaration the origin
+      # itself declares its forge (API base derives from the origin), so no
+      # cross-host claim is possible and none is checked.
+      if [[ -n "${HAPAX_FORGE_URL:-}" ]]; then
+        api_url="${HAPAX_FORGE_URL%/}"
+      fi
+      ;;
+    ssh://*)
+      [[ -n "${HAPAX_FORGE_URL:-}" ]] || return 1
+      rest="${origin#ssh://}"
+      rest="${rest#*@}"
+      authority="${rest%%/*}"
+      path="${rest#*/}"
+      api_url="${HAPAX_FORGE_URL%/}"
+      ;;
+    *@*:*)
+      [[ -n "${HAPAX_FORGE_URL:-}" ]] || return 1
+      authority="${origin%%:*}"
+      authority="${authority#*@}"
+      path="${origin#*:}"
+      api_url="${HAPAX_FORGE_URL%/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  if [[ -n "$api_url" ]]; then
+    api_host="${api_url#*://}"
+    api_host="${api_host%%/*}"
+    api_host="${api_host%%:*}"
+    origin_host="${authority%%:*}"
+    [[ "$origin_host" == "$api_host" ]] || return 1
+  fi
+  path="${path%.git}"
+  case "$path" in
+    */*) slug="$path" ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$slug"
+}
+
+forge_slug="$(forge_repo_slug 2>/dev/null || true)"
+origin_url="$(git remote get-url origin 2>/dev/null || true)"
+if [[ -n "${HAPAX_CC_PR_REPO:-}" ]]; then
+  repo_slug="$HAPAX_CC_PR_REPO"
+else
+  repo_slug="$(github_repo_slug 2>/dev/null || true)"
+fi
+if [[ -z "$repo_slug" && -n "$forge_slug" ]]; then
+  repo_slug="$forge_slug"
+fi
 if [[ -z "$repo_slug" ]]; then
   exit 0
 fi
+
+# gh serves the GitHub path only; the forge path lists through the shim
+# (HAPAX_GH_BIN → scripts/gh-forge), so no gh binary is needed there.
+if [[ -z "$forge_slug" ]] && ! command -v gh &>/dev/null; then
+  exit 0
+fi
+
+# The listing error detail travels through this file: rest_pr_json is
+# always invoked under $(...), so a variable assigned inside it never
+# reaches the parent shell. On failure the file is left behind for
+# on_listing_error, which consumes and removes it.
+wrgate_err_file="/tmp/hapax-wrgate-err-$$"
 
 rest_pr_json() {
   local limit="$1"
@@ -133,7 +222,38 @@ rest_pr_json() {
         ;;
     esac
   done
+  if [[ -n "$forge_slug" ]]; then
+    # One mechanism: the helper lists forge PRs through the gh-shaped shim
+    # (HAPAX_GH_BIN → scripts/gh-forge), never a second HTTP client. On
+    # failure the stderr file survives for on_listing_error (see above).
+    if HAPAX_GH_BIN="$repo_root/scripts/gh-forge" "${args[@]}" 2>"$wrgate_err_file"; then
+      rm -f "$wrgate_err_file" 2>/dev/null || true
+      return 0
+    fi
+    printf 'error\n'
+    return 0
+  fi
   "${args[@]}" 2>/dev/null || printf 'error\n'
+}
+
+# Unreachable forge FAILS CLOSED (row ruling R1, 2026-10-11): a listing the
+# gate could not obtain must never read as "no PR" — that would let unmerged
+# source work through on exactly the days the forge is down. The GitHub path
+# keeps its historical advisory behavior (exit 0, and at the §7 site the old
+# "[]" cache write so the next edit re-queries); docs/cognition paths never
+# reach here (exempted in §2c).
+on_listing_error() {
+  if [[ -n "$forge_slug" ]]; then
+    local detail=""
+    detail="$(head -c 300 "$wrgate_err_file" 2>/dev/null || true)"
+    rm -f "$wrgate_err_file" 2>/dev/null || true
+    echo "BLOCKED: local forge unreachable — cannot verify PR state for '${repo_slug}'. Restore the forge (origin: ${origin_url:-unknown}), or work from a branch whose PR the forge can list.${detail:+ Detail: $detail}" >&2
+    exit 2
+  fi
+  if [[ -n "${cache_file:-}" ]]; then
+    echo "[]" > "$cache_file" 2>/dev/null || true
+  fi
+  exit 0
 }
 
 # --- 6. Feature branch checks (not on main/master) ---
@@ -155,7 +275,7 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
   if [[ "$ahead" -gt 0 ]]; then
     pr_json="$(rest_pr_json 5 --head "$branch")"
     if [[ "$pr_json" == "error" ]]; then
-      exit 0
+      on_listing_error
     fi
 
     pr_count="$(printf '%s' "$pr_json" | jq 'length' 2>/dev/null || echo 0)"
@@ -167,7 +287,7 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
       stacked=false
       open_prs_without_status="$(rest_pr_json 100 --no-status)"
       if [[ "$open_prs_without_status" == "error" ]]; then
-        exit 0
+        on_listing_error
       fi
       open_branches="$(
         printf '%s' "$open_prs_without_status" |
@@ -295,8 +415,7 @@ fi
 # Fetch all open PRs for this repo
 all_prs="$(rest_pr_json 100)"
 if [[ "$all_prs" == "error" ]]; then
-  echo "[]" > "$cache_file" 2>/dev/null || true
-  exit 0
+  on_listing_error
 fi
 
 # Build PR list (exclude dependabot)

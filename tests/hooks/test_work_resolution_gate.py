@@ -334,3 +334,454 @@ class TestExternalToolGating:
             timeout=15,
         )
         assert result.returncode == 0
+
+
+# ── Local-forge origins (PLAN §4 S2: local PR refs) ─────────────────
+
+
+def _install_stub_status_helper(
+    repo: Path, *, rows: str, log_path: Path, fail: bool = False, fail_stderr: str = ""
+) -> None:
+    """A github_pr_status.py stand-in that prints fixed rows and logs its argv.
+
+    The shim path inside the real helper is covered by
+    tests/scripts/test_github_pr_status.py; here only the gate's plumbing —
+    slug parsing, HAPAX_GH_BIN export, gh independence — is under test.
+    """
+    scripts = repo / "scripts"
+    scripts.mkdir(exist_ok=True)
+    stub = scripts / "github_pr_status.py"
+    lines = [
+        "import json, os, sys",
+        "with open(os.environ['FORGE_HELPER_LOG'], 'a', encoding='utf-8') as fh:",
+        "    fh.write(json.dumps({'argv': sys.argv[1:], "
+        "'gh_bin': os.environ.get('HAPAX_GH_BIN')}) + '\\n')",
+    ]
+    if fail:
+        lines.append(f"print({fail_stderr!r}, file=sys.stderr)")
+        lines.append("raise SystemExit(1)")
+    lines.append(f"print({rows!r})")
+    stub.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _gh_free_path(tmp_path: Path) -> Path:
+    """PATH with the gate's shell tools symlinked in and gh excluded."""
+    bin_dir = tmp_path / "gh-free-bin"
+    bin_dir.mkdir(exist_ok=True)
+    for tool in (
+        "bash",
+        "git",
+        "jq",
+        "python3",
+        "cat",
+        "dirname",
+        "grep",
+        "md5sum",
+        "stat",
+        "date",
+        "cut",
+        "head",
+        "rm",
+    ):
+        found = shutil.which(tool)
+        if found:
+            (bin_dir / tool).symlink_to(found)
+    return bin_dir
+
+
+def _forge_repo(tmp_path: Path, origin: str, branch: str = "feat/forge-wip") -> tuple[Path, Path]:
+    repo = _make_repo(tmp_path)
+    subprocess.run(["git", "remote", "add", "origin", origin], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=repo, check=True)
+    target = repo / "ok.py"
+    target.write_text("# ok\n")
+    subprocess.run(["git", "add", "ok.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feature"], cwd=repo, check=True)
+    return repo, target
+
+
+class TestForgeOrigins:
+    def test_forge_http_origin_no_pr_blocks_without_gh(self, tmp_path: Path) -> None:
+        """An http-origin forge repo is gated on its local PRs, with no gh binary."""
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 2
+        assert "with no PR" in result.stderr
+        calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        # one mechanism: the helper lists through the shim selected by
+        # HAPAX_GH_BIN — the dropped --forge-url flag must never reappear
+        assert all("--forge-url" not in call["argv"] for call in calls)
+        assert any(call["gh_bin"] == str(repo / "scripts" / "gh-forge") for call in calls)
+        assert any("--head" in call["argv"] and "feat/forge-wip" in call["argv"] for call in calls)
+
+    def test_forge_http_origin_open_pr_allows_and_notes_failing_checks(
+        self, tmp_path: Path
+    ) -> None:
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(
+            repo,
+            rows=json.dumps(
+                [
+                    {
+                        "number": 12,
+                        "headRefName": "feat/forge-wip",
+                        "statusCheckRollup": [{"context": "ci/lint", "state": "FAILURE"}],
+                    }
+                ]
+            ),
+            log_path=log_path,
+        )
+
+        result = _run(
+            _edit(target),
+            extra_env={"PATH": os.environ["PATH"], "FORGE_HELPER_LOG": str(log_path)},
+        )
+
+        assert result.returncode == 0
+        assert "PR #12" in result.stderr
+        assert "failing check(s)" in result.stderr
+
+    def test_forge_ssh_origin_fails_open_without_forge_url_env(self, tmp_path: Path) -> None:
+        repo, target = _forge_repo(tmp_path, "ssh://git@100.85.131.41:2222/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        env = {k: v for k, v in os.environ.items() if k != "HAPAX_FORGE_URL"}
+        env["FORGE_HELPER_LOG"] = str(log_path)
+
+        result = subprocess.run(
+            ["bash", str(HOOK)],
+            input=json.dumps(_edit(target)),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=15,
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert not log_path.exists()
+
+    def test_forge_ssh_origin_uses_forge_url_env_when_hosts_match(self, tmp_path: Path) -> None:
+        repo, target = _forge_repo(tmp_path, "ssh://git@100.85.131.41:2222/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 2
+        assert "with no PR" in result.stderr
+        calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        assert all("--forge-url" not in call["argv"] for call in calls)
+        assert any(call["gh_bin"] == str(repo / "scripts" / "gh-forge") for call in calls)
+
+    def test_foreign_origin_with_forge_url_env_stays_open(self, tmp_path: Path) -> None:
+        """HAPAX_FORGE_URL set for the forge must not claim an unrelated host."""
+        repo, target = _forge_repo(tmp_path, "git@gitlab.example:owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert not log_path.exists()
+
+    def test_foreign_http_origin_with_forge_url_env_stays_on_github_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Re-review blocker (#5048): an http origin whose host is not the
+        declared forge is NOT a forge origin — it stays on the GitHub path
+        (gate open, no forge listing), never blocked as unreachable."""
+        repo, target = _forge_repo(tmp_path, "http://gitlab.example/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}",
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert not log_path.exists()
+
+    def test_foreign_https_origin_with_forge_url_env_stays_on_github_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Same guard for https: gitea.example.org is not the declared forge."""
+        repo, target = _forge_repo(tmp_path, "https://gitea.example.org/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}",
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert not log_path.exists()
+
+    def test_foreign_ssh_url_origin_with_forge_url_env_stays_on_github_path(
+        self, tmp_path: Path
+    ) -> None:
+        """ssh://-form host mismatch takes the GitHub path, like scp-form."""
+        repo, target = _forge_repo(tmp_path, "ssh://git@gitlab.example:2222/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert not log_path.exists()
+
+    def test_matching_http_origin_with_forge_url_env_gates(self, tmp_path: Path) -> None:
+        """Matching host with the env set: still the forge path, listed
+        through the shim."""
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}",
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 2
+        assert "with no PR" in result.stderr
+        calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        assert any(call["gh_bin"] == str(repo / "scripts" / "gh-forge") for call in calls)
+
+    def test_matching_https_origin_port_insensitive_gates(self, tmp_path: Path) -> None:
+        """The host guard compares hosts, not ports: an https origin on the
+        forge host (different scheme/port) still matches the declared forge."""
+        repo, target = _forge_repo(tmp_path, "https://100.85.131.41:3443/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}",
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 2
+        assert "with no PR" in result.stderr
+        calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        assert any(call["gh_bin"] == str(repo / "scripts" / "gh-forge") for call in calls)
+
+    def test_forge_listing_failure_on_feature_branch_blocks(self, tmp_path: Path) -> None:
+        """R1 (#5048): an unreachable forge blocks source edits.
+
+        A listing the gate could not obtain must never read as "no PR" — that
+        would let unmerged source work through on exactly the days the forge
+        is down. The block carries a named next action, and the helper's
+        error detail must reach the block message (rest_pr_json runs under
+        $(...), so the detail travels via file, not variables).
+        """
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(
+            repo,
+            rows="[]",
+            log_path=log_path,
+            fail=True,
+            fail_stderr="github_pr_status: shim_listing_failed: cannot reach"
+            " http://100.85.131.41:3000",
+        )
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={"PATH": f"{bin_dir}", "FORGE_HELPER_LOG": str(log_path)},
+        )
+
+        assert result.returncode == 2
+        assert "local forge unreachable" in result.stderr
+        assert "Restore the forge" in result.stderr
+        assert "owner/repo" in result.stderr
+        assert "shim_listing_failed: cannot reach http://100.85.131.41:3000" in result.stderr
+
+    def test_forge_listing_failure_on_main_sweep_blocks(self, tmp_path: Path) -> None:
+        """R1 (#5048) at the §7 site: the on-main open-PR sweep fails closed
+        on the forge path too, instead of caching "[]" and letting edits
+        through unverified."""
+        repo = _make_repo(tmp_path)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "http://100.85.131.41:3000/owner/repo.git"],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "branch", "feat/forge-wip"], cwd=repo, check=True)
+        target = repo / "ok.py"
+        target.write_text("# ok\n")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(
+            repo, rows="[]", log_path=log_path, fail=True, fail_stderr="listing failed"
+        )
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={"PATH": f"{bin_dir}", "FORGE_HELPER_LOG": str(log_path)},
+        )
+
+        assert result.returncode == 2
+        assert "local forge unreachable" in result.stderr
+        assert "listing failed" in result.stderr
+
+    def test_docs_edit_allowed_even_when_forge_unreachable(self, tmp_path: Path) -> None:
+        """The fail-closed block is for release-risk SOURCE work only: docs
+        and cognition paths keep their exemption regardless of forge state."""
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        docs_dir = repo / "docs"
+        docs_dir.mkdir()
+        doc = docs_dir / "note.md"
+        doc.write_text("note\n")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(
+            repo, rows="[]", log_path=log_path, fail=True, fail_stderr="listing failed"
+        )
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(doc),
+            extra_env={"PATH": f"{bin_dir}", "FORGE_HELPER_LOG": str(log_path)},
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert not log_path.exists()
+
+    def test_cc_pr_repo_override_wins_on_forge_origin(self, tmp_path: Path) -> None:
+        """R3 (#5048), set outcome: the override slug wins and the listing
+        still runs through the forge mechanism (HAPAX_GH_BIN shim)."""
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}",
+                "FORGE_HELPER_LOG": str(log_path),
+                "HAPAX_CC_PR_REPO": "other-owner/other-repo",
+            },
+        )
+
+        assert result.returncode == 2
+        assert "with no PR" in result.stderr
+        calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        assert calls
+        for call in calls:
+            argv = call["argv"]
+            assert argv[argv.index("--repo") + 1] == "other-owner/other-repo"
+            assert call["gh_bin"] == str(repo / "scripts" / "gh-forge")
+
+    def test_cc_pr_repo_unset_falls_back_to_forge_origin_slug(self, tmp_path: Path) -> None:
+        """R3 (#5048), unset outcome: without the override the slug comes
+        from the forge origin."""
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        bin_dir = _gh_free_path(tmp_path)
+        env = {k: v for k, v in os.environ.items() if k != "HAPAX_CC_PR_REPO"}
+        env.update({"PATH": f"{bin_dir}", "FORGE_HELPER_LOG": str(log_path)})
+
+        result = subprocess.run(
+            ["bash", str(HOOK)],
+            input=json.dumps(_edit(target)),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=15,
+        )
+
+        assert result.returncode == 2
+        calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        assert calls
+        for call in calls:
+            argv = call["argv"]
+            assert argv[argv.index("--repo") + 1] == "owner/repo"
+
+
+# ── Executable bit (re-review blocker on #5048) ─────────────────────
+
+
+class TestHookExecutableBit:
+    """The hook must stay executable on disk and as the tracked git mode.
+
+    A git-data API tree entry keeps its mode only when the push sends it
+    explicitly; a push that omits it silently downgrades 100755 → 100644.
+    Every functional test runs the hook as `bash HOOK`, so the mode loss
+    is invisible to them — it is pinned here, on both signals.
+    """
+
+    def test_hook_executable_on_disk(self) -> None:
+        assert os.access(HOOK, os.X_OK), (
+            f"{HOOK} lost its on-disk executable bit; restore with chmod +x"
+        )
+
+    def test_hook_tracked_mode_is_100755(self) -> None:
+        listing = subprocess.run(
+            ["git", "ls-files", "-s", "--", "hooks/scripts/work-resolution-gate.sh"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        assert listing, "hook is not tracked by git"
+        assert listing[0] == "100755", f"tracked mode is {listing[0]}, expected 100755"

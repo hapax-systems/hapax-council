@@ -869,3 +869,230 @@ def test_single_value_flag_equals_form_maps_same_url_as_space_form(shim):
     assert json.loads(out) == [
         {"number": 3, "title": "Fix typo", "labels": [{"name": "sdlc:done"}], "state": "CLOSED"}
     ]
+
+
+# --- pr list (#5048: one mechanism — the gate lists through the shim) ---------
+
+
+_FORGE_LIST_PULL = {
+    "number": 12,
+    "id": 9912,
+    "title": "forge PR",
+    "body": "body",
+    "state": "open",
+    "merged": False,
+    "draft": True,
+    "labels": [{"name": "agent-authored"}],
+    "html_url": "http://forge.test/forge-admin/driver/pulls/12",
+    "updated_at": "2026-10-06T12:00:00Z",
+    "merged_at": None,
+    "head": {"ref": "feat/forge-branch", "sha": "abc123"},
+    "base": {"ref": "main", "sha": "def456", "repo": {"default_branch": "main"}},
+}
+
+_LIST_ENUM = "pulls?type=pulls&state=open&limit=50&page=1"
+
+
+def test_pr_list_maps_fields_and_rollup(shim):
+    shim._fake_forge.responses = {
+        _LIST_ENUM: (200, [_FORGE_LIST_PULL]),
+        "/commits/abc123/statuses": (
+            200,
+            [
+                # older row FIRST: first-wins and latest-id-wins disagree on
+                # this ordering, so this pins the dedup rule for real
+                {
+                    "id": 1,
+                    "context": "ci/lint",
+                    "status": "pending",
+                    "updated_at": "2026-10-06T12:00:30Z",
+                },
+                {
+                    "id": 2,
+                    "context": "ci/lint",
+                    "status": "success",
+                    "updated_at": "2026-10-06T12:01:00Z",
+                },
+            ],
+        ),
+    }
+    code, out, err, fake = run(
+        shim,
+        [
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            "50",
+            "--json",
+            "number,id,state,title,body,url,updatedAt,mergedAt,headRefName,"
+            "headRefOid,baseRefName,baseRepoDefaultBranch,changedFiles,files,"
+            "autoMergeRequest,mergeStateStatus,isDraft,labels,reviewDecision,"
+            "statusCheckRollup",
+        ],
+    )
+    assert code == 0, err
+    rows = json.loads(out)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["number"] == 12
+    assert row["id"] == 9912
+    assert row["state"] == "OPEN"
+    assert row["url"] == "http://forge.test/forge-admin/driver/pulls/12"
+    assert row["headRefName"] == "feat/forge-branch"
+    assert row["headRefOid"] == "abc123"
+    assert row["baseRefName"] == "main"
+    assert row["baseRepoDefaultBranch"] == "main"
+    assert row["isDraft"] is True
+    assert row["changedFiles"] is None and row["files"] is None
+    assert row["autoMergeRequest"] is None
+    assert row["mergeStateStatus"] == "UNKNOWN"
+    assert row["reviewDecision"] is None
+    assert row["labels"] == [{"name": "agent-authored"}]
+    # legacy-status shape the gate's jq consumes: only the highest-id row per
+    # context counts, unknown states read as PENDING, never as passing
+    assert row["statusCheckRollup"] == [
+        {"context": "ci/lint", "state": "SUCCESS", "updated_at": "2026-10-06T12:01:00Z"}
+    ]
+    assert fake.calls[0].url.endswith(_LIST_ENUM)
+    assert fake.calls[1].url.endswith("/commits/abc123/statuses")
+
+
+def test_pr_list_rollup_pends_unknown_states(shim):
+    shim._fake_forge.responses = {
+        _LIST_ENUM: (200, [_FORGE_LIST_PULL]),
+        "/commits/abc123/statuses": (
+            200,
+            [{"id": 1, "context": "ci/b", "status": "who-knows"}],
+        ),
+    }
+    code, out, err, _ = run(shim, ["pr", "list", "--json", "number,statusCheckRollup"])
+    assert code == 0, err
+    assert json.loads(out)[0]["statusCheckRollup"] == [
+        {"context": "ci/b", "state": "PENDING", "updated_at": None}
+    ]
+
+
+def test_pr_list_defaults_to_open_state(shim):
+    shim._fake_forge.responses = {_LIST_ENUM: (200, [])}
+    code, out, err, fake = run(shim, ["pr", "list", "--json", "number"])
+    assert code == 0, err
+    assert json.loads(out) == []
+    assert "state=open" in fake.calls[0].url
+
+
+def test_pr_list_head_filters_client_side(shim):
+    other = json.loads(json.dumps(_FORGE_LIST_PULL))
+    other["number"] = 13
+    other["head"] = {"ref": "feat/other", "sha": "zzz999"}
+    shim._fake_forge.responses = {_LIST_ENUM: (200, [other, _FORGE_LIST_PULL])}
+    code, out, err, fake = run(
+        shim, ["pr", "list", "--head", "feat/forge-branch", "--json", "number,headRefName"]
+    )
+    assert code == 0, err
+    rows = json.loads(out)
+    assert [row["number"] for row in rows] == [12]
+    # the forge API has no server-side head filter: the enumeration query
+    # carries no head parameter, filtering happens on the full list
+    assert "head=" not in fake.calls[0].url
+    assert fake.calls[0].url.endswith(_LIST_ENUM)
+
+
+def test_pr_list_paginates_until_short_page(shim):
+    page1 = [dict(_FORGE_LIST_PULL, number=n) for n in range(50)]
+    page2 = [dict(_FORGE_LIST_PULL, number=99)]
+    shim._fake_forge.responses = {
+        "pulls?type=pulls&state=open&limit=50&page=1": (200, page1),
+        "pulls?type=pulls&state=open&limit=1&page=2": (200, page2),
+    }
+    code, out, err, fake = run(shim, ["pr", "list", "--limit", "51", "--json", "number"])
+    assert code == 0, err
+    numbers = [row["number"] for row in json.loads(out)]
+    assert numbers == list(range(50)) + [99]
+    assert [call.url.rsplit("&page=", 1)[1] for call in fake.calls] == ["1", "2"]
+
+
+def test_pr_list_unknown_field_fails_closed_with_next_action(shim):
+    shim._fake_forge.responses = {_LIST_ENUM: (200, [_FORGE_LIST_PULL])}
+    code, _, err, _ = run(shim, ["pr", "list", "--json", "number,bogus"])
+    assert code != 0
+    assert "bogus" in err
+    assert "Next action" in err
+
+
+def test_pr_list_requires_json_fields(shim):
+    code, _, err, _ = run(shim, ["pr", "list"])
+    assert code != 0
+    assert "--json" in err
+    assert "Next action" in err
+
+
+# --- token port (B602 invariant follows the mechanism, #5048) -----------------
+
+
+def test_token_env_beats_token_cmd(shim, monkeypatch):
+    module = _load_shim()
+    monkeypatch.setattr(module, "_env", lambda k, d=None: {"FORGE_TOKEN": "env-token"}.get(k, d))
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("FORGE_TOKEN set: the command must not run"),
+    )
+    assert module._token() == "env-token"
+
+
+def test_token_cmd_runs_shell_free_with_literal_argv(shim, monkeypatch):
+    module = _load_shim()
+    monkeypatch.setattr(
+        module,
+        "_env",
+        lambda k, d=None: {"FORGE_TOKEN_CMD": "printer 'from *.cfg' ~token"}.get(k, d),
+    )
+    seen: list[tuple[list[str], object]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append((cmd, kwargs.get("shell")))
+        return SimpleNamespace(returncode=0, stdout="cmd-token\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module._token() == "cmd-token"
+    assert seen == [(["printer", "from *.cfg", "~token"], False)]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "hapax-secret show forge | tr -d x",
+        "hapax-secret show forge > /tmp/leak",
+        "echo $(hapax-secret show forge)",
+        "echo `hapax-secret show forge`",
+        "hapax-secret show forge; tr -d x",
+        "printer 'unclosed",
+    ],
+)
+def test_token_cmd_shell_syntax_is_refused_with_next_action(shim, monkeypatch, command):
+    module = _load_shim()
+    monkeypatch.setattr(module, "_env", lambda k, d=None: {"FORGE_TOKEN_CMD": command}.get(k, d))
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("a refused token command must not run"),
+    )
+    with pytest.raises(module.ForgeError) as excinfo:
+        module._token()
+    # FORGE_TOKEN_CMD_NEXT_ACTION is ported verbatim from the helper and says
+    # "next action:" in lowercase; assert the contract, not the casing.
+    assert "next action" in str(excinfo.value).lower()
+
+
+def test_token_cmd_failure_raises_with_next_action(shim, monkeypatch):
+    module = _load_shim()
+    monkeypatch.setattr(module, "_env", lambda k, d=None: {"FORGE_TOKEN_CMD": "printer"}.get(k, d))
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(returncode=3, stdout="", stderr="no"),
+    )
+    with pytest.raises(module.ForgeError, match="token command failed"):
+        module._token()

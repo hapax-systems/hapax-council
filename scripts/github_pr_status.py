@@ -10,6 +10,14 @@ measured to be in trouble.
 
 Some operations still have no REST replacement (native merge-queue metadata, the
 dequeue mutation) and remain GraphQL regardless.
+
+A local-forge (Forgejo) listing serves the same open-PR row contract for repos
+whose origin points at the local forge (PLAN §4 S2): the helper lists through
+the gh-shaped shim selected by ``HAPAX_GH_BIN`` (one mechanism — no second
+HTTP client in this module), so forge-backed checkouts need no ``gh`` binary.
+Forge rows deliberately carry ``reviewDecision: None`` plus
+``reviewAuthority: "spine-receipt"`` — the forge PR is a container, and review
+authority stays estate-side in spine receipts.
 """
 
 from __future__ import annotations
@@ -56,6 +64,14 @@ STATUS_CACHE_SCHEMA_VERSION = 2
 GRAPHQL_BACKOFF_RC = 75
 REST_INDETERMINATE_CHECK_NAME = "github-rest-status-indeterminate"
 DEFAULT_REVIEW_DECISION_REST_LIMIT = 5000
+
+FORGE_REVIEW_AUTHORITY = "spine-receipt"
+GH_BIN_ENV = "HAPAX_GH_BIN"
+# The forge API has no server-side head filter, so a --head query enumerates
+# the open list and the shim filters client-side; a page-limited fetch could
+# miss the PR the caller asked about and read as "no PR" — the false block
+# this gate exists to avoid being wrong about.
+FORGE_HEAD_SCAN_LIMIT = 1000
 
 _SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -905,6 +921,16 @@ def listing_unavailable_detail(exc: PrListingUnavailable) -> str:
     state they are actually in; one shared formatter keeps the three from drifting apart
     again.
     """
+    if isinstance(exc, ForgeListingFailed):
+        return (
+            " (local forge listing failed; GitHub was not consulted). "
+            "Next action: check HAPAX_GH_BIN points at the repo's scripts/gh-forge, "
+            "FORGE_URL, FORGE_TOKEN (or the hapax-secret binding), that the forge is "
+            "reachable, and that the token has read scope for the repo. The "
+            "work-resolution gate blocks source edits until the listing can be "
+            "verified; restore the forge or work from a branch whose PR the forge "
+            "can list."
+        )
     if isinstance(exc, RestPoolExhausted):
         # "Next action: none" was wrong: a pool that stays empty across cycles is a spend
         # problem, not weather, and the operator is the only one who can look into what is
@@ -1630,6 +1656,143 @@ def get_pr_status_rest(
     )
 
 
+# ── Local-forge backend (Forgejo api/v1) ───────────────────────────────────────
+#
+# Surfaces the same open-PR row contract as the GitHub readers so the
+# work-resolution gate and fleet consumers need no fork. Endpoints and payload
+# shapes are the ones the gh-forge shim verified against Forgejo v15.0.9:
+# `repos/{owner}/{repo}/pulls` and `repos/{owner}/{repo}/commits/{sha}/statuses`.
+
+
+class ForgeListingFailed(PrListingUnavailable):
+    """The local-forge listing could not be completed — "we did not look"."""
+
+
+#: Fields the shim's ``pr list`` must serve for the open-PR row contract.
+_SHIM_PR_LIST_FIELDS = (
+    "number",
+    "id",
+    "state",
+    "title",
+    "body",
+    "url",
+    "updatedAt",
+    "mergedAt",
+    "headRefName",
+    "headRefOid",
+    "baseRefName",
+    "baseRepoDefaultBranch",
+    "isDraft",
+    "labels",
+    "statusCheckRollup",
+)
+
+
+def _gh_bin(env: dict[str, str] | None = None) -> str:
+    """The gh-shaped binary this helper drives; ``gh`` unless HAPAX_GH_BIN overrides."""
+    source = dict(os.environ) if env is None else dict(env)
+    return str(source.get(GH_BIN_ENV, "gh")).strip() or "gh"
+
+
+def list_open_pr_statuses_via_shim(
+    *,
+    repo: str,
+    repo_root: Path,
+    limit: int = 100,
+    include_status: bool = True,
+    head: str | None = None,
+    env: dict[str, str] | None = None,
+    runner: Any = subprocess.run,
+) -> list[dict[str, Any]]:
+    """Open-PR rows from the local forge, listed through the gh-shaped shim.
+
+    One mechanism (#5048): the shim selected by ``HAPAX_GH_BIN`` is the only
+    forge client; this helper never speaks to the forge API directly. Any
+    failure — missing binary, nonzero exit, malformed payload — raises
+    ``ForgeListingFailed`` rather than returning a shorter list, so a consumer
+    can never read "we did not look" as "nothing needs attention". A ``--head``
+    query widens the enumeration to ``FORGE_HEAD_SCAN_LIMIT`` because the forge
+    has no server-side head filter and the shim filters client-side.
+    """
+    fields = [
+        field for field in _SHIM_PR_LIST_FIELDS if include_status or field != "statusCheckRollup"
+    ]
+    cmd = [
+        _gh_bin(env),
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        str(limit if head is None else max(limit, FORGE_HEAD_SCAN_LIMIT)),
+    ]
+    if head:
+        cmd += ["--head", head]
+    cmd += ["--json", ",".join(fields)]
+    try:
+        proc = _run(runner, cmd, repo_root=repo_root)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ForgeListingFailed(f"shim_unavailable: {cmd[0]} ({type(exc).__name__})") from exc
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        detail = (proc.stderr or "").strip().splitlines()
+        first = detail[0][:200] if detail else f"exit {proc.returncode}, no stderr"
+        raise ForgeListingFailed(f"shim_listing_failed: {first}")
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise ForgeListingFailed("shim_listing_failed: shim stdout was not JSON") from exc
+    if not isinstance(payload, list):
+        raise ForgeListingFailed("shim_listing_failed: shim stdout was not a list")
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(payload):
+        number = item.get("number") if isinstance(item, dict) else None
+        if isinstance(number, bool) or not isinstance(number, int):
+            raise ForgeListingFailed(f"shim_listing_invalid_row:{index}")
+        reference_reasons = pr_reference_reasons(
+            {
+                "headRefName": item.get("headRefName"),
+                "baseRefName": item.get("baseRefName"),
+                "baseRepoDefaultBranch": item.get("baseRepoDefaultBranch"),
+            }
+        )
+        rollup = item.get("statusCheckRollup")
+        rows.append(
+            {
+                "number": number,
+                "id": item.get("id"),
+                "state": item.get("state"),
+                "title": item.get("title") or "",
+                "body": item.get("body") or "",
+                "url": item.get("url"),
+                "updatedAt": item.get("updatedAt"),
+                "mergedAt": item.get("mergedAt"),
+                "headRefName": read_ref_name(item.get("headRefName")),
+                "headRefOid": str(item.get("headRefOid") or ""),
+                "baseRefName": read_ref_name(item.get("baseRefName")),
+                "baseRepoDefaultBranch": read_ref_name(item.get("baseRepoDefaultBranch")),
+                **({"refEvidenceReasons": reference_reasons} if reference_reasons else {}),
+                "changedFiles": None,
+                "files": None,
+                "isDraft": bool(item.get("isDraft")),
+                "labels": item.get("labels") if isinstance(item.get("labels"), list) else [],
+                # The forge PR is a container: review authority stays in spine receipts.
+                "reviewDecision": None,
+                "reviewAuthority": FORGE_REVIEW_AUTHORITY,
+                "autoMergeRequest": None,
+                "mergeStateStatus": "UNKNOWN",
+                # The field was not requested when include_status is False; a forge
+                # that serves it anyway must not leak checks into the row.
+                "statusCheckRollup": (rollup if isinstance(rollup, list) else [])
+                if include_status
+                else [],
+                "transport": "forge",
+            }
+        )
+    return rows
+
+
 #: Header/body separator in an ``gh api -i`` response: a blank line, CRLF or LF.
 #:
 #: HTTP puts ``\r\n\r\n`` on the wire. ``_run`` passes ``text=True``, whose universal-newline
@@ -2062,7 +2225,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "open-prs":
         include_status = not args.no_status
         try:
-            if args.head:
+            if _gh_bin() != "gh":
+                # One mechanism (#5048): HAPAX_GH_BIN selects the gh-shaped
+                # shim, and it is the only forge client. No fallback to gh.
+                rows = list_open_pr_statuses_via_shim(
+                    repo=args.repo,
+                    repo_root=args.repo_root,
+                    limit=args.limit,
+                    include_status=include_status,
+                    head=args.head,
+                    runner=subprocess.run,
+                )
+            elif args.head:
                 rows = list_pr_statuses_for_branch_rest(
                     args.head,
                     repo=args.repo,

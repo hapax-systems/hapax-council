@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import urllib.error
@@ -43,6 +44,20 @@ import urllib.request
 DEFAULT_FORGE_URL = "http://100.85.131.41:3000"
 DEFAULT_TOKEN_CMD = "hapax-secret forgejo-shadow/s2-review-chain"
 TRANSPORT_TIMEOUT_SECONDS = 60
+TOKEN_CMD_TIMEOUT_SECONDS = 30
+# Token-command syntax that only a shell could interpret, checked on the
+# post-split argv so an operator cannot accidentally embed an operator inside
+# a quoted token (``token>x`` splits to one token and still matches ``>``).
+FORGE_TOKEN_CMD_SHELL_MARKERS = ("|", "<", ">", ";", "&", "`", "$(", "${", "\n")
+FORGE_TOKEN_CMD_NEXT_ACTION = (
+    "FORGE_TOKEN_CMD needs shell syntax (pipe/redirect/substitution) and no shell is used "
+    "here; next action: point the setting at an executable script."
+)
+PAGE_SIZE = 50
+# The forge API has no server-side head filter, so a --head query enumerates
+# the open list and filters client-side; a page-limited fetch could miss the
+# PR the caller asked about and read as "no PR".
+HEAD_SCAN_LIMIT = 1000
 
 
 class ForgeError(Exception):
@@ -74,11 +89,36 @@ def transport_request(
 
 
 def _token() -> str:
+    """Resolve the API token; FORGE_TOKEN wins, else FORGE_TOKEN_CMD runs shell-free.
+
+    The command runs as literal argv (``shlex.split``, ``shell=False``), so a
+    configured command can only ever be an executable plus literal arguments;
+    one that needs shell syntax is refused with a next action instead of being
+    run through a shell.
+    """
     token = _env("FORGE_TOKEN")
     if token:
         return token.strip()
-    command = _env("FORGE_TOKEN_CMD", DEFAULT_TOKEN_CMD)
-    result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+    command = (_env("FORGE_TOKEN_CMD", DEFAULT_TOKEN_CMD) or "").strip()
+    if not command:
+        raise ForgeError("no token configured. Next action: set FORGE_TOKEN or FORGE_TOKEN_CMD.")
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise ForgeError(
+            f"token command is not valid argv: {command}. {FORGE_TOKEN_CMD_NEXT_ACTION}"
+        ) from exc
+    if not argv:
+        raise ForgeError(f"token command is empty: {command!r}. {FORGE_TOKEN_CMD_NEXT_ACTION}")
+    if any(marker in part for part in argv for marker in FORGE_TOKEN_CMD_SHELL_MARKERS):
+        raise ForgeError(f"token command needs a shell: {command}. {FORGE_TOKEN_CMD_NEXT_ACTION}")
+    result = subprocess.run(
+        argv,
+        shell=False,
+        capture_output=True,
+        text=True,
+        timeout=TOKEN_CMD_TIMEOUT_SECONDS,
+    )
     if result.returncode != 0 or not result.stdout.strip():
         raise ForgeError(
             f"token command failed: {command}. "
@@ -288,6 +328,104 @@ class Forge:
                 }
             )
         return checks
+
+    def _status_rollup(self, sha: str) -> list[dict]:
+        """Rollup in the legacy-status shape the gate's jq already consumes.
+
+        Per context only the highest-id status counts (the dedup rule shared
+        with pr_checks); an unrecognized state reads as PENDING, never as
+        silently passing. An empty sha (forge rows can lack head shas) is no
+        evidence at all, not a failure.
+        """
+        if not sha:
+            return []
+        rows = self.json("GET", f"repos/{self.repo}/commits/{sha}/statuses")
+        latest: dict[str, dict] = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            context = str(row.get("context") or "unnamed-status")
+            if context not in latest or (row.get("id") or 0) > (latest[context].get("id") or 0):
+                latest[context] = row
+        rollup = []
+        for context, row in latest.items():
+            state = str(row.get("status") or "").upper()
+            rollup.append(
+                {
+                    "context": context,
+                    "state": state if state in ("SUCCESS", "FAILURE", "ERROR") else "PENDING",
+                    "updated_at": row.get("updated_at"),
+                }
+            )
+        return rollup
+
+    def _pr_list_row(self, pull: dict, fields: list[str]) -> dict:
+        head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
+        base = pull.get("base") if isinstance(pull.get("base"), dict) else {}
+        base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+        sha = str(head.get("sha") or "")
+        full = {
+            "number": pull.get("number"),
+            "id": pull.get("id"),
+            "state": _pr_state(pull),
+            "title": pull.get("title"),
+            "body": pull.get("body") or "",
+            "url": pull.get("html_url") or pull.get("url"),
+            "updatedAt": pull.get("updated_at"),
+            "mergedAt": pull.get("merged_at"),
+            "headRefName": head.get("ref", ""),
+            "headRefOid": sha,
+            "baseRefName": base.get("ref", ""),
+            "baseRepoDefaultBranch": base_repo.get("default_branch"),
+            "changedFiles": None,
+            "files": None,
+            "autoMergeRequest": None,
+            # Forgejo does not serve GitHub's merge-state; UNKNOWN, not a guess.
+            "mergeStateStatus": "UNKNOWN",
+            "isDraft": bool(pull.get("draft")),
+            "labels": [{"name": lb.get("name")} for lb in pull.get("labels", [])],
+            # The forge PR is a container: review authority stays in spine receipts.
+            "reviewDecision": None,
+            "statusCheckRollup": None,
+        }
+        if "statusCheckRollup" in fields:
+            full["statusCheckRollup"] = self._status_rollup(sha)
+        for field in fields:
+            if field not in full:
+                raise ForgeError(
+                    f"unknown --json field '{field}' for pr list. "
+                    "Next action: use one of: " + ",".join(sorted(full)) + "."
+                )
+        return {field: full[field] for field in fields}
+
+    def pr_list(self, state: str, limit: int, head: str, fields: list[str]) -> list[dict]:
+        """Enumerate pulls gh-style; --head filters client-side.
+
+        The forge API has no server-side head filter, so a --head query scans
+        up to HEAD_SCAN_LIMIT rows before filtering — a page-limited fetch
+        could miss the PR the caller asked about and read as "no PR".
+        """
+        scan = max(limit, HEAD_SCAN_LIMIT) if head else limit
+        rows: list[dict] = []
+        page = 1
+        while len(rows) < scan:
+            size = min(PAGE_SIZE, scan - len(rows))
+            payload = self.json(
+                "GET",
+                f"repos/{self.repo}/pulls?type=pulls&state={state}&limit={size}&page={page}",
+            )
+            if not isinstance(payload, list):
+                raise ForgeError(
+                    f"pulls payload was not a list for {self.repo}. "
+                    "Next action: check the forge API version and token read scope."
+                )
+            rows.extend(item for item in payload if isinstance(item, dict))
+            if len(payload) < size:
+                break
+            page += 1
+        if head:
+            rows = [row for row in rows if (row.get("head") or {}).get("ref") == head]
+        return [self._pr_list_row(row, fields) for row in rows[:limit]]
 
     # -- api passthrough ------------------------------------------------------
 
@@ -587,6 +725,26 @@ def main(argv: list[str]) -> int:
                         "the fields you consume."
                     )
                 _emit(forge.pr_view(number, fields_json), jq)
+            elif verb == "list":
+                if not fields_json:
+                    raise ForgeError(
+                        "pr list needs --json fields. Next action: pass --json with "
+                        "the fields you consume."
+                    )
+                state = single.get("--state", "open")
+                limit_text = single.get("--limit", "100")
+                try:
+                    limit_n = int(limit_text)
+                except ValueError as exc:
+                    raise ForgeError(
+                        f"--limit must be an integer, got '{limit_text}'. "
+                        "Next action: pass --limit N."
+                    ) from exc
+                if limit_n < 1:
+                    raise ForgeError(
+                        f"--limit must be >= 1, got {limit_n}. Next action: pass --limit N."
+                    )
+                _emit(forge.pr_list(state, limit_n, single.get("--head", ""), fields_json), jq)
             elif verb == "diff":
                 sys.stdout.write(forge.pr_diff(number))
             elif verb == "checks":
@@ -614,7 +772,7 @@ def main(argv: list[str]) -> int:
             else:
                 raise ForgeError(
                     f"unsupported pr verb '{verb}'. Next action: use "
-                    "view|diff|checks|comment|create|edit."
+                    "view|list|diff|checks|comment|create|edit."
                 )
             return 0
 
