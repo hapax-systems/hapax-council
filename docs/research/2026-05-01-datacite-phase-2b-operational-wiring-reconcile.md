@@ -6,6 +6,12 @@
 + version), merged 2026-04-29 onto main as commit `157a298e5`
 **Parent task:** `pub-bus-datacite-graphql-mirror`
 
+**2026-09-24 source correction:** PR #4722 changes the first-mint and
+recovery contract under `pub-bus-eddy-composition-rework-20260922`. The
+historical wiring and credential observations below remain dated evidence.
+The current source behavior is described under "First-mint and reconciliation
+contract"; it is not proof of installation, a public DOI, or release authority.
+
 ## Premise
 
 PR #1726 wired the Phase 2 mint + version path for the DataCite
@@ -46,13 +52,11 @@ adds:
   request + persistence time to land plus accommodating the mirror
   unit's 1min timer accuracy slack).
 
-The graph publisher is **safe to fire on every tick regardless of
-credential state** because `self_citation_graph_doi.py` documents
-"no token → skip-with-message + zero exit" — it logs the
-credential-blocked state, increments the appropriate metric, and
-exits cleanly. The timer can run from boot; first-mint will fire on
-the first daily tick after the operator inserts `zenodo/api-token`
-into pass.
+Missing credentials cause `self_citation_graph_doi.py` to skip with a
+message and zero exit. Credential arrival alone does not guarantee first mint:
+publisher admission, a durable attempt fence and consistent local state must
+also permit the operation. An unresolved attempt holds future ticks for
+reconciliation; see the current source contract below.
 
 ## Frontmatter writeback decision
 
@@ -88,48 +92,122 @@ verification — that runs daily and queries the operator's ORCID
 record to confirm DataCite-minted DOIs land on the public ORCID
 profile. No vault writeback required.
 
-## First-mint confirmation status
+## First-mint and reconciliation contract
 
-**Blocked.** First-mint requires `HAPAX_ZENODO_TOKEN`, which derives
-from `pass zenodo/api-token` (see `agents/hapax_cred_monitor/
-registry.py::EXPECTED_ENTRIES` per PR #1948). The cred-watch state
-file at `~/.cache/hapax/cred-watch-state.json` reports
-`zenodo/api-token` as missing. The operator-action-cred-watch report
-ranks Zenodo as the highest-value-unlocked entry (unblocks 6 Phase
-2 publication-bus tasks).
+**Historical observation, 2026-05-01:** first mint was credential-blocked;
+cred-watch reported `zenodo/api-token` missing. The former `pass` provisioning
+instructions and promise of minting on the next tick are not current operational
+instructions. Resolve credentials through the declared secret binding. Credential
+arrival, a running timer and an `ok` counter do not establish public delivery.
 
-When the operator runs `pass insert zenodo/api-token` and
-hapax-secrets-loader populates `HAPAX_ZENODO_TOKEN`, the next daily
-tick of `hapax-datacite-graph-publish.timer` will:
+**Current source, PR #4722 (2026-09-24; release held):**
 
-1. Attempt `mint_or_version` against Zenodo.
-2. On success (assuming non-empty diff), persist `concept-doi.txt`
-   + first entry in `version-doi-history.jsonl`.
-3. Increment `hapax_publication_bus_publishes_total{result="ok",
-   surface="datacite-graphql-mirror"}` Counter.
+1. `self_citation_graph_doi --commit` enters `GraphPublisher.publish` admission.
+   The graph creator comes from the existing formal-name binding
+   `HAPAX_OPERATOR_NAME`; there is no placeholder, inferred name or coauthor
+   fallback. Missing, control-bearing or conflicting identity returns an
+   actionable refusal before creating a fence or making a remote call. The
+   value is sent only in formal creator metadata, not printed or saved in local
+   graph state. This binding is an input to authorized publication, not release
+   authority. With credentials, a valid creator and an admitted target, the
+   publisher creates the intended state directory chain and exclusively creates
+   `mint-attempt.json`. The fence,
+   graph directory and every ancestor are synced before remote calls. Directory,
+   fence or sync failure permits no remote mint.
+2. The publisher checks the existing checkpoint against the latest history row.
+   Both stored DOIs must pass the same bounded syntax check as remote DOIs.
+   A consistent unchanged fingerprint clears the fence and returns a skip; it
+   does not create a DOI. Incomplete, inconsistent or malformed legacy state
+   remains held without rewriting history or making a remote call.
+3. First mint creates and publishes a deposit; later changes use the verified
+   new-version draft. Published deposit identity and bare concept/version DOI
+   syntax must validate before success or checkpoint persistence. Syntax alone
+   does not prove resolution or public content identity.
+4. On success, the publisher durably appends `version-doi-history.jsonl`, writes
+   the concept DOI and deposit ID, writes the fingerprint last, and syncs the
+   directory before clearing the attempt fence. A failure after remote creation
+   is not reported as successful publication. The failure detail includes the
+   validated deposit ID when known, without echoing response bodies or tokens.
 
-First-mint confirmation lives on the existing cred-watch arrival
-log: when `cred-arrival-log.jsonl` records arrival of
-`zenodo/api-token`, the operator can verify by:
+A surviving `mint-attempt.json` (including an empty or torn file) blocks another
+remote attempt. No age, missing history file or second invocation clears it.
+After an ambiguous remote response, interruption or persistence failure, inspect
+that fence, the failure detail and the four state files. Under separate recovery
+authority, reconcile the identified deposit and its public version against the
+intended snapshot/fingerprint, repair and durably verify the checkpoint/history,
+and only then clear the fence. If non-emission is independently established,
+recovery may instead establish a safe fresh attempt. Unknown remote outcome stays
+held; do not delete the fence merely to retry. A process interruption may leave
+no known deposit ID, so this source does not promise automatic reconciliation.
 
+Independent remote readback is required to confirm the intended public DOI and
+version. The local files and counters are bounded local evidence. No real deposit,
+installation or runtime release is authorized by this source correction.
+
+### Read-only rechecks
+
+From the reviewed checkout, select the graph directory from the caller's
+declared `--graph-dir` binding (the default below is only the historical local
+binding). This reads state without invoking `--commit`, creating an attempt,
+rewriting a checkpoint or printing the creator binding:
+
+```bash
+graph_state_dir="$HOME/hapax-state/publications/self-citation-graph"
+uv run --no-sync python - "$graph_state_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+from agents.publication_bus.graph_publisher import GraphPublisherError, _persisted_fingerprint
+
+root = Path(sys.argv[1])
+fence = root / "mint-attempt.json"
+print("attempt_fence_present:", fence.exists())
+if fence.exists():
+    try:
+        attempt = json.loads(fence.read_text())
+        print("attempt_fingerprint:", attempt["fingerprint"])
+    except (OSError, ValueError, KeyError, TypeError):
+        print("attempt unreadable or malformed; HOLD remains")
+try:
+    print("consistent_checkpoint_fingerprint:", _persisted_fingerprint(root))
+except GraphPublisherError:
+    print("checkpoint invalid; reconcile remote identity and local evidence")
+PY
 ```
-$ ls ~/hapax-state/publications/self-citation-graph/
-$ cat ~/hapax-state/publications/self-citation-graph/concept-doi.txt
-$ jq . ~/hapax-state/publications/self-citation-graph/version-doi-history.jsonl
+
+A valid fingerprint does not override an existing fence. Preserve the four
+checkpoint/history files and fence for authorized reconciliation. A read-only
+observation can race an active publisher; it is not permission to clear state.
+
+The focused regression selectors use fake HTTP and temporary state; they do not
+make a real deposit:
+
+```bash
+uv run --no-sync pytest tests/agents/publication_bus/test_self_citation_graph_doi.py -q \
+  -k 'creator or malformed_legacy or save_failure or first_version_then_version'
 ```
 
-No additional first-mint-confirmation tooling is needed — the
-existing persistence trail + cred-watch daemon together cover the
-audit surface.
+When a validated deposit ID is known, the public record can be checked without
+credentials using `GET https://zenodo.org/api/records/{deposit_id}`. Verify the
+returned ID, concept/version DOI, actual files and their checksums against the
+intended snapshot and publication evidence. An HTTP success or syntactically
+valid DOI alone does not prove artifact identity. Missing public state leaves
+the outcome unresolved; draft inspection may require separately authorized
+credentialed reads. No readback instruction authorizes minting or retrying.
+
+The [Zenodo metadata contract](https://developers.zenodo.org/#representation)
+requires creators and defines access rights and licensing. The source repair
+does not establish rights clearance, artifact upload/identity, public resolution
+or independent release acceptance. Those remain explicit publication boundaries;
+credential insertion alone discharges none of them.
 
 ## Disposition for `pub-bus-datacite-graphql-mirror` (parent task)
 
-The parent task should be marked **Phase 2 complete; Phase 2B
-operational wiring closed by this PR; first-mint blocked on
-operator credential insertion**. Follow-on cc-task
-`datacite-citation-graph-refresh-diff-publish` already covers the
-graph-refresh / diff-publish loop and is appropriately blocked on
-operator ORCID config + Zenodo token; no new follow-up needed.
+The historical Phase 2B disposition concerned timer wiring and frontmatter
+writeback. It is not current first-mint acceptance. PR #4722 remains a source
+candidate with release held; current creator admission, rights clearance,
+artifact/remote identity and independent review must be established before
+publication. This correction does not change either historical task's status.
 
 ## Acceptance status
 
@@ -144,13 +222,13 @@ operator ORCID config + Zenodo token; no new follow-up needed.
   out-of-scope; canonical trail at
   `~/hapax-state/publications/self-citation-graph/` is sufficient.
 - [x] Record first-mint confirmation evidence or explain the
-  concrete blocker → §"First-mint confirmation status" — blocked
-  on `pass insert zenodo/api-token`, observable via cred-watch
-  arrival log + the persistence trail.
+  concrete blocker → [First-mint and reconciliation contract](#first-mint-and-reconciliation-contract)
+  and its read-only rechecks. No current public first-mint confirmation is
+  claimed; creator/rights/artifact identity and release acceptance remain open.
 - [x] Update `pub-bus-datacite-graphql-mirror` with the Phase 2B
   disposition → §"Disposition for pub-bus-datacite-graphql-mirror"
-  records "Phase 2 complete; Phase 2B closed; first-mint
-  cred-blocked".
+  distinguishes the historical wiring disposition from current publication
+  acceptance; it does not authorize a task-state change.
 
 ## Pointers
 
@@ -160,5 +238,6 @@ operator ORCID config + Zenodo token; no new follow-up needed.
 - New chained timer (this PR): `systemd/units/hapax-datacite-graph-publish.{service,timer}` (04:30 UTC daily)
 - Wire-status: `agents/publication_bus/wire_status.py::PUBLISHER_WIRE_REGISTRY["agents.publication_bus.graph_publisher"]`
 - Persistence: `~/hapax-state/publications/self-citation-graph/{concept-doi.txt,last-fingerprint.txt,last-deposit-id.txt,version-doi-history.jsonl}`
-- Credential gate: `pass zenodo/api-token` → `HAPAX_ZENODO_TOKEN` via hapax-secrets-loader; missing-state observable in `~/.cache/hapax/cred-watch-state.json` (PR #1948)
+- Credential binding: `hapax-secret`/FileStore → `HAPAX_ZENODO_TOKEN`; the dated cred-watch observation above does not prove current availability.
+- Formal creator binding: `HAPAX_OPERATOR_NAME`, used only for the admitted graph's creator metadata; never echo it into diagnostic evidence.
 - Predecessor PR: #1726 `feat(publication-bus): wire DataCite graph publisher Phase 2 (mint + version)`

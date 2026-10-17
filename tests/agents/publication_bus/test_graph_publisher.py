@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from requests import RequestException
 
 from agents.publication_bus.graph_publisher import (
     GRAPH_PUBLISHER_SURFACE,
@@ -16,6 +17,42 @@ from agents.publication_bus.graph_publisher import (
     persist_graph_state,
 )
 from agents.publication_bus.publisher_kit import PublisherPayload
+
+
+@pytest.fixture(autouse=True)
+def declared_creator(monkeypatch):
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Synthetic, Creator")
+
+
+@pytest.mark.parametrize(
+    "creators",
+    [
+        None,
+        [],
+        [{"name": "Undeclared, Creator"}],
+        [{"name": "Synthetic, Creator", "orcid": "undeclared"}],
+    ],
+)
+def test_emit_refuses_conflicting_creator_before_fence(tmp_path, creators):
+    pub = GraphPublisher(zenodo_token="synthetic-token", graph_dir=tmp_path / "graph")
+    payload = PublisherPayload(
+        target=GRAPH_PUBLISHER_SURFACE,
+        text="snapshot description",
+        metadata={
+            "snapshot_path": str(tmp_path / "snap.json"),
+            "fingerprint": "abc",
+            "deposit_metadata": {"creators": creators},
+        },
+    )
+    with patch("agents.publication_bus.graph_publisher.requests") as http:
+        result = pub.publish(payload)
+    assert result.refused
+    assert "creator identity" in result.detail
+    assert "Next action" in result.detail
+    http.post.assert_not_called()
+    http.put.assert_not_called()
+    assert not pub.graph_dir.exists()
+
 
 # === GraphPublisher class shape ===
 
@@ -106,7 +143,7 @@ def test_mint_or_version_first_call_creates_and_publishes(tmp_path: Path):
 
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.side_effect = [create_resp, publish_resp]
-        mock_requests.RequestException = Exception
+        mock_requests.RequestException = RequestException
         concept_doi, version_doi, deposit_id = mint_or_version(
             zenodo_token="ztk",
             graph_dir=tmp_path / "graph",
@@ -122,10 +159,10 @@ def test_mint_or_version_first_call_creates_and_publishes(tmp_path: Path):
     assert mock_requests.post.call_count == 2
 
 
-def test_mint_or_version_first_call_no_concept_doi_in_response_uses_top_level(
+def test_mint_or_version_first_call_requires_concept_doi_in_publish_response(
     tmp_path: Path,
 ):
-    """Some Zenodo responses omit conceptdoi; fall back to the top-level doi."""
+    """A version DOI cannot stand in for a missing published concept DOI."""
     snapshot = tmp_path / "snap.json"
     snapshot.write_text("{}", encoding="utf-8")
 
@@ -136,18 +173,15 @@ def test_mint_or_version_first_call_no_concept_doi_in_response_uses_top_level(
 
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.side_effect = [create_resp, publish_resp]
-        mock_requests.RequestException = Exception
-        concept_doi, version_doi, _ = mint_or_version(
-            zenodo_token="ztk",
-            graph_dir=tmp_path / "graph",
-            snapshot_path=snapshot,
-            fingerprint="fp1",
-            metadata={"title": "graph"},
-        )
-
-    # When conceptdoi missing, fall back to top-level doi (single-version concept)
-    assert concept_doi == "10.5281/zenodo.200"
-    assert version_doi == "10.5281/zenodo.200"
+        mock_requests.RequestException = RequestException
+        with pytest.raises(GraphPublisherError, match="conceptdoi"):
+            mint_or_version(
+                zenodo_token="ztk",
+                graph_dir=tmp_path / "graph",
+                snapshot_path=snapshot,
+                fingerprint="fp1",
+                metadata={"title": "graph"},
+            )
 
 
 # === mint_or_version: new version path ===
@@ -164,9 +198,8 @@ def test_mint_or_version_uses_newversion_endpoint_when_state_present(tmp_path: P
 
     newver_resp = Mock(status_code=201)
     newver_resp.json.return_value = {
-        "id": 101,
-        "doi": "10.5281/zenodo.101",
-        "conceptdoi": "10.5281/zenodo.99",
+        "id": 100,
+        "links": {"latest_draft": "https://zenodo.org/api/deposit/depositions/101"},
     }
     put_resp = Mock(status_code=200)
     put_resp.json.return_value = {"id": 101}
@@ -180,7 +213,7 @@ def test_mint_or_version_uses_newversion_endpoint_when_state_present(tmp_path: P
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.side_effect = [newver_resp, publish_resp]
         mock_requests.put.return_value = put_resp
-        mock_requests.RequestException = Exception
+        mock_requests.RequestException = RequestException
         concept_doi, version_doi, deposit_id = mint_or_version(
             zenodo_token="ztk",
             graph_dir=graph_dir,
@@ -226,7 +259,7 @@ def test_mint_or_version_raises_on_non_2xx_create(tmp_path: Path):
 
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.return_value = create_resp
-        mock_requests.RequestException = Exception
+        mock_requests.RequestException = RequestException
         with pytest.raises(GraphPublisherError) as excinfo:
             mint_or_version(
                 zenodo_token="ztk",
