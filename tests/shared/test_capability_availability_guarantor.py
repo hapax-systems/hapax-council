@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 from datetime import UTC, datetime
+
+import pytest
 
 import shared.capability_availability_guarantor as guarantor
 from shared.dispatcher_policy import _capability_state
@@ -195,33 +198,146 @@ def test_codex_oauth_subscription_route_accepts_current_session_and_exec_auth_wi
     assert receipt.reason_codes == ()
 
 
-def test_codex_oauth_subscription_route_accepts_explicit_local_exec_auth_witness(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("HAPAX_CODEX_EXEC_AUTH_HOST", "local")
+@pytest.fixture
+def codex_physical_host(monkeypatch):
+    for name in (
+        "HAPAX_CODEX_EXEC_AUTH_HOST",
+        "HAPAX_DISPATCH_HOST",
+        "HAPAX_DEFAULT_DISPATCH_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "workbench-7.example.test")
+    return "workbench-7"
+
+
+def _codex_host_receipt(witness_host: str, account_evidence: str = "observed"):
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
     _mark_fresh(route_payload)
-    _mark_current_codex_session_usable(route_payload)
-    _mark_local_codex_exec_auth_observed(route_payload)
-    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
-        "local:codex:quota-probe:unobservable",
-        "platform-capability-receipt:codex:test-codex-receipt",
-    ]
+    route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].append(
+        f"host:{witness_host}:codex:exec:auth:saved-login:observed"
+    )
+    if account_evidence == "observed":
+        _mark_account_live_quota_observed(route_payload)
+    elif account_evidence in {"current-session", "mismatched-session"}:
+        platform = "codex" if account_evidence == "current-session" else "claude"
+        route_payload["freshness"]["evidence"]["resource"]["evidence_refs"].append(
+            f"local:current-{platform}-session:filesystem-shell-browser-usable:test"
+        )
+        route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+            "local:codex:quota-probe:unobservable",
+            "platform-capability-receipt:codex:test-codex-receipt",
+        ]
     registry = PlatformCapabilityRegistry.model_validate(payload)
     route = registry.require("codex.headless.full")
     freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
-
-    receipt = guarantor.evaluate_route_availability(
+    assert freshness.ok is True
+    return guarantor.evaluate_route_availability(
         route,
         freshness,
         refresh_strategies=guarantor.RefreshStrategyRegistry(()),
         now=NOW,
     )
 
+
+@pytest.mark.parametrize(
+    "setting",
+    ["HAPAX_DISPATCH_HOST", "HAPAX_DEFAULT_DISPATCH_HOST", "HAPAX_CODEX_EXEC_AUTH_HOST"],
+)
+@pytest.mark.parametrize("transport", ["local", "localhost"])
+@pytest.mark.parametrize("account_evidence", ["observed", "current-session"])
+def test_codex_local_transport_accepts_physical_host(
+    monkeypatch, codex_physical_host, setting, transport, account_evidence
+) -> None:
+    monkeypatch.setenv(setting, transport)
+    receipt = _codex_host_receipt(codex_physical_host, account_evidence)
+
     assert receipt.available is True
     assert receipt.predicate.exec_auth_attested is True
+    assert receipt.predicate.account_live_quota_attested is True
     assert receipt.reason_codes == ()
+
+
+@pytest.mark.parametrize("transport", ["local", "localhost"])
+@pytest.mark.parametrize("witness_host", ["local", "localhost"])
+@pytest.mark.parametrize("account_evidence", ["observed", "missing"])
+def test_codex_local_transport_rejects_literal_witness(
+    monkeypatch, codex_physical_host, transport, witness_host, account_evidence
+) -> None:
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", transport)
+    receipt = _codex_host_receipt(witness_host, account_evidence)
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
+
+
+@pytest.mark.parametrize("transport", ["local", "podium"])
+@pytest.mark.parametrize("witness_host", ["override-host", "workbench-7", "hapax-podium"])
+def test_codex_physical_override_preserves_exact_host(
+    monkeypatch, codex_physical_host, transport, witness_host
+) -> None:
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", transport)
+    monkeypatch.setenv("HAPAX_CODEX_EXEC_AUTH_HOST", "override-host")
+    receipt = _codex_host_receipt(witness_host)
+
+    assert receipt.available is (witness_host == "override-host")
+    assert receipt.predicate.exec_auth_attested is (witness_host == "override-host")
+    assert receipt.predicate.account_live_quota_attested is True
+
+
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("account_evidence", ["missing", "mismatched-session"])
+def test_codex_physical_host_requires_account_evidence(
+    monkeypatch, codex_physical_host, override, account_evidence
+) -> None:
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "local")
+    if override:
+        monkeypatch.setenv("HAPAX_CODEX_EXEC_AUTH_HOST", codex_physical_host)
+    receipt = _codex_host_receipt(codex_physical_host, account_evidence)
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is True
+    assert receipt.predicate.account_live_quota_attested is False
+    assert "account_live_quota_evidence_absent" in receipt.reason_codes
+
+
+@pytest.mark.parametrize(
+    "witness_host", ["podium", "hapax-podium", "hapax-appendix", "workbench-7", "local"]
+)
+def test_codex_remote_target_preserves_exact_host(
+    monkeypatch, codex_physical_host, witness_host
+) -> None:
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "podium")
+    receipt = _codex_host_receipt(witness_host)
+
+    assert receipt.available is (witness_host in {"podium", "hapax-podium"})
+    assert receipt.predicate.exec_auth_attested is (witness_host in {"podium", "hapax-podium"})
+
+
+@pytest.mark.parametrize("hostname", ["", " ", "local", "localhost", "-", "bad:host"])
+def test_codex_local_transport_rejects_unusable_hostname(
+    monkeypatch, codex_physical_host, hostname
+) -> None:
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "local")
+    monkeypatch.setattr(socket, "gethostname", lambda: hostname)
+
+    assert guarantor._expected_exec_auth_hosts() == frozenset()
+    assert _codex_host_receipt("local").available is False
+    assert _codex_host_receipt(codex_physical_host).available is False
+
+
+def test_codex_local_transport_rejects_hostname_lookup_error(
+    monkeypatch, codex_physical_host
+) -> None:
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "localhost")
+
+    def unavailable_hostname():
+        raise OSError("synthetic hostname lookup failure")
+
+    monkeypatch.setattr(socket, "gethostname", unavailable_hostname)
+    assert guarantor._expected_exec_auth_hosts() == frozenset()
+    assert _codex_host_receipt(codex_physical_host).available is False
 
 
 def test_codex_oauth_subscription_route_accepts_remote_exec_auth_witness(monkeypatch) -> None:
