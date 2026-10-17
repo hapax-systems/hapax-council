@@ -1,0 +1,5 @@
+# Declared stop decisions. Section 5 prose is not an input.
+# The hook reads the vault copy at 30-areas/hapax/frame/seat-stop-decisions.yaml.
+m103_in_force: true
+cite: session-conductor-false-parent-spawn-repair-20260924
+applies_to: all
