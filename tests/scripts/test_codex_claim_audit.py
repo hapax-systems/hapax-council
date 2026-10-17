@@ -2561,9 +2561,13 @@ class TestLiveHeldStatusCache:
             result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
         assert marker.exists(), result.stdout + result.stderr
         assert marker.read_bytes() == claim and note.read_bytes() == original
-        assert "HELD_STATUS_PROTECTED" in result.stdout
-        assert f"live_executor_pid_{proc.pid}" in result.stdout
-        assert "codex-claim-audit[v2]: PROTECT " in result.stdout
+        if status == "merged_awaiting_runtime_witness":
+            # The activation hold is unconditional and precedes the holder probe.
+            assert "ACTIVATION_OR_PR_PROTECTED" in result.stdout
+        else:
+            assert "HELD_STATUS_PROTECTED" in result.stdout
+            assert f"live_executor_pid_{proc.pid}" in result.stdout
+            assert "codex-claim-audit[v2]: PROTECT " in result.stdout
 
     def test_dispatch_binding_session_protects_plain_marker(self, tmp_path):
         vault, cache, note, marker = self._held(tmp_path, "blocked")
