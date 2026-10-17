@@ -48,6 +48,8 @@ def _delivery_observation(kind="action", **over):
         "verification": "command_receipt",
     }
     value.update(over)
+    if "source_sha256" in over and "event_id" not in over:
+        value["event_id"] += ":" + over["source_sha256"]
     return value
 
 
@@ -651,3 +653,200 @@ def test_round4_yaml_datetime_construction_is_local_to_one_source(bad):
     assert len(ema.parse_delivery_source(_desk_go(), source_ref="GO.md", bounds={})) == 1
     text = _desk_go().replace("2026-10-16T11:00:00Z", bad)
     assert ema.parse_delivery_source(text, source_ref="GO.md", bounds={}) == []
+
+
+def _assert_unknown(report):
+    assert report["N"] == report["unknown"] == 1
+    assert report["timely"] == report["missed"] == 0
+    assert not report["baseline_complete"]
+
+
+@pytest.mark.parametrize("outside", ["2026-10-14T11:00:00Z", "2026-10-17T11:00:00Z"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round5_window_conflict(outside, reverse):
+    records = [_delivery_obligation(), _delivery_obligation(assigned_at=outside)]
+    report = _delivery(
+        *(records[::-1] if reverse else records),
+        observations=[_delivery_observation("native_submission"), _delivery_observation()],
+    )
+    assert report["N"] == report["unknown"] == 1
+    assert report["timely"] == report["missed"] == report["excluded"] == 0
+    assert report["outcomes"][0]["cause"] == "conflicting_obligation_records"
+    assert not report["baseline_complete"]
+
+
+def _parsed_delivery(text, source_ref="20261016T110000Z-GO.md"):
+    bound = _delivery_obligation()
+    return ema.parse_delivery_source(
+        text,
+        source_ref=source_ref,
+        bounds={"cx-test": {**bound, "frozen_at": bound["bounds_frozen_at"]}},
+    )
+
+
+@pytest.mark.parametrize(
+    "other", ["Start within 1 min.", "1-min start window", "Start within five min."]
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round5_deadline_conflict(other, reverse):
+    declarations = ["Start within 5 min.", other]
+    records = _parsed_delivery(_desk_go("\n".join(declarations[::-1] if reverse else declarations)))
+    assert len(records) == 1
+    observations = [
+        _delivery_observation(kind, source_sha256=records[0]["source_sha256"], timestamp=at)
+        for kind, at in [
+            ("native_submission", "2026-10-16T11:00:30Z"),
+            ("action", "2026-10-16T11:02:00Z"),
+        ]
+    ]
+    report = _delivery(*records, observations=observations)
+    assert records[0]["authority_expires_at"] is None
+    _assert_unknown(report)
+
+
+@pytest.mark.parametrize(
+    "field,values",
+    [
+        ("predicate", ["command_attempt", "admitted_claim"]),
+        ("to", ["cx-test", "cx-other"]),
+        ("created_at", ["2026-10-16T11:00:00Z", "2026-10-16T11:01:00Z"]),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round5_yaml_conflict(field, values, reverse):
+    text = _desk_go()
+    values = values[::-1] if reverse else values
+    text = text.replace(f"{field}: {values[0]}\n", "").replace(f"{field}: {values[1]}\n", "")
+    text = text.replace("---\n", f"---\n{field}: {values[0]}\n'{field}': {values[1]}\n", 1)
+    assert _parsed_delivery(text) == []
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round5_action_tie(reverse):
+    events = [
+        _delivery_observation(),
+        _delivery_observation(event_id="refusal", result="authorized_refusal"),
+    ]
+    report = _delivery(
+        observations=[
+            _delivery_observation("native_submission"),
+            *(events[::-1] if reverse else events),
+        ]
+    )
+    _assert_unknown(report)
+
+
+@pytest.mark.parametrize(
+    "change", [{"evidence_sha256": "bad"}, {"observer_role": "other"}, {"recipient": "cx-other"}]
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round5_event_binding_conflict(change, reverse):
+    events = [_delivery_observation(), _delivery_observation(**change)]
+    report = _delivery(
+        observations=[
+            _delivery_observation("native_submission"),
+            *(events[::-1] if reverse else events),
+        ]
+    )
+    _assert_unknown(report)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("to", "cx-test, cx-other"),
+        ("created_at", "2026-10-16T11:00:00Z (or 2026-10-16T11:01:00Z)"),
+    ],
+)
+def test_round5_scalar_conflict(field, value):
+    old = "cx-test" if field == "to" else "2026-10-16T11:00:00Z"
+    records = _parsed_delivery(_desk_go().replace(f"{field}: {old}", f"{field}: {value}"))
+    if records:
+        report = _delivery(
+            *records,
+            observations=[
+                _delivery_observation(kind, source_sha256=records[0]["source_sha256"])
+                for kind in ("native_submission", "action")
+            ],
+        )
+        _assert_unknown(report)
+
+
+def test_round5_filename_clock():
+    records = _parsed_delivery(_desk_go(), "20261016T110000Z-copy/20261016T110100Z-GO.md")
+    assert records[0]["assignment_time_exact"] is False
+
+
+def test_round5_agreement_and_window_controls():
+    records = _parsed_delivery(_desk_go("Start within 5 min.\n5-min start window"))
+    assert records[0]["authority_expires_at"] == "2026-10-16T11:05:00+00:00"
+    report = _delivery(
+        _delivery_obligation(assigned_at="2026-10-14T11:00:00Z"),
+        _delivery_obligation(assigned_at="2026-10-17T11:00:00Z"),
+    )
+    assert report["N"] == report["unknown"] == 0
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round5_catalogue_dates(reverse):
+    dates = ["2026-09-01", "2026-10-01"]
+    cat = ema.parse_catalogue("### M01 " + " or ".join(dates[::-1] if reverse else dates))
+    assert cat.entries["M01"].encountered is None
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "catalogue_header",
+        "ledger_header",
+        "ledger_sections",
+        "trailing_table",
+        "class_key",
+        "membership",
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round5_table_conflicts(kind, reverse):
+    header = "| class | members | disposition | row |\n|---|---|---|---|\n"
+    rows = ["| `hazard` | M01 | owed | — |", "| `retained` | M02 | retain | — |"]
+    if kind == "class_key":
+        rows[1] = rows[1].replace("`retained`", "`hazard`")
+    if kind == "membership":
+        rows[1] = rows[1].replace("M02", "M01")
+    if kind == "ledger_header":
+        header = header.replace("| row |", "| row | class |")
+        rows = [row + f" `extra{n}` |" for n, row in enumerate(rows)]
+    text = "## Class ledger\n" + header + "\n".join(rows[::-1] if reverse else rows)
+    if kind == "ledger_sections":
+        text += "\n\n" + text
+    if kind == "trailing_table":
+        text += "\n\n" + header + rows[0]
+    with pytest.raises(ema.LedgerError, match="next action"):
+        if kind == "catalogue_header":
+            cells = ["OPEN", "RETIRED"]
+            ema.parse_catalogue(
+                "| # | status | status |\n|---|---|---|\n| M01 | "
+                + " | ".join(cells[::-1] if reverse else cells)
+                + " |"
+            )
+        else:
+            ema.parse_ledger(text)
+
+
+@pytest.mark.parametrize("change", [{"assignment_time_exact": 1}, {"response_seconds": 300.0}])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round5_frozen_types(change, reverse):
+    records = [
+        _delivery_obligation(assignment_time_exact=True),
+        _delivery_obligation(assignment_time_exact=True),
+    ]
+    records[1].update(change)
+    report = _delivery(
+        *(records[::-1] if reverse else records),
+        observations=[
+            _delivery_observation("native_submission"),
+            _delivery_observation(),
+        ],
+    )
+    _assert_unknown(report)
+    assert report["outcomes"][0]["cause"] == "conflicting_obligation_records"

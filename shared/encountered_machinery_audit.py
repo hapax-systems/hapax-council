@@ -147,6 +147,17 @@ def _normalize(raw: str | None, vocab: tuple[str, ...]) -> str | None:
     return None
 
 
+class _SourceLoader(yaml.SafeLoader):
+    """Frozen bindings cannot use YAML's implicit last-key-wins resolution."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        self.flatten_mapping(node)
+        keys = [self.construct_object(key, deep=True) for key, _ in node.value]
+        if any(not isinstance(key, str) for key in keys) or len(keys) != len(set(keys)):
+            raise yaml.YAMLError("ambiguous source mapping")
+        return super().construct_mapping(node, deep=deep)
+
+
 def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---\n"):
         return {}, text
@@ -154,7 +165,7 @@ def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if end < 0:
         return {}, text
     try:
-        data = yaml.safe_load(text[4:end]) or {}
+        data = yaml.load(text[4:end], Loader=_SourceLoader) or {}
     except (yaml.YAMLError, ValueError, OverflowError):
         # SafeLoader constructs timestamps too; bad calendar/offset fields are unknown.
         data = {}
@@ -211,19 +222,19 @@ def _walls_of(cell: str | None) -> tuple[str, ...]:
 
 
 def _date_of(text: str, context: datetime | None) -> datetime | None:
-    m = _FULL_DATE_RE.search(text)
-    if m:
-        try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=UTC)
-        except ValueError:
-            return context
-    m = _ENCOUNTERED_RE.search(text)
-    if m and context is not None:
-        try:
-            return datetime(context.year, int(m.group(1)), int(m.group(2)), tzinfo=UTC)
-        except ValueError:
-            return context
-    return context
+    try:
+        dates = {datetime(*(int(x) for x in m), tzinfo=UTC) for m in _FULL_DATE_RE.findall(text)}
+        if len(dates) > 1:
+            return None
+        basis = next(iter(dates)) if dates else context
+        if basis is not None:
+            dates.update(
+                datetime(basis.year, int(month), int(day), tzinfo=UTC)
+                for month, day in _ENCOUNTERED_RE.findall(text)
+            )
+        return next(iter(dates)) if len(dates) == 1 else None if dates else context
+    except ValueError:
+        return None
 
 
 def parse_catalogue(text: str) -> Catalogue:
@@ -278,6 +289,8 @@ def _table_record(
     cells: list[str], header: list[str], lineno: int, context: datetime | None
 ) -> _Record | None:
     first_head = header[0]
+    if len(header) != len(set(header)):
+        raise LedgerError("ambiguous catalogue columns; next action: use unique headers")
     col = {name: i for i, name in enumerate(header)}
     first = cells[0]
     status_i = col.get("status")
@@ -419,7 +432,10 @@ class LedgerClass:
 
 def parse_ledger(text: str) -> list[LedgerClass]:
     lines = text.splitlines()
-    start = next((i for i, ln in enumerate(lines) if ln.startswith("## Class ledger")), None)
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("## Class ledger")]
+    if len(starts) > 1:
+        raise LedgerError("ambiguous class ledger; next action: retain one authoritative section")
+    start = starts[0] if starts else None
     if start is None:
         raise LedgerError(
             "no '## Class ledger' section; next action: restore the ledger table in "
@@ -432,14 +448,14 @@ def parse_ledger(text: str) -> list[LedgerClass]:
         if lines[i].startswith("## "):
             break
         if not ln.startswith("|"):
-            if header is not None and classes:
-                break
             continue
         if _is_separator(ln):
             continue
         cells = split_cells(ln)
         if header is None:
             header = [c.lower() for c in cells]
+            if len(header) != len(set(header)):
+                raise LedgerError("ambiguous ledger columns; next action: use unique headers")
             if not {"class", "members", "disposition", "row"} <= set(header):
                 raise LedgerError(
                     f"ledger header {header} lacks class/members/disposition/row; next action: "
@@ -484,7 +500,14 @@ def parse_ledger(text: str) -> list[LedgerClass]:
         )
     if not classes:
         raise LedgerError("class ledger table is empty; next action: restore its rows")
+    _validate_ledger(classes)
     return classes
+
+
+def _validate_ledger(ledger: list[LedgerClass]) -> None:
+    for ids in ([c.key for c in ledger], [mid for c in ledger for mid, _ in c.members]):
+        if len(ids) != len(set(ids)):
+            raise LedgerError("ambiguous ledger ids; next action: remove duplicates")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -629,15 +652,13 @@ def evaluate(
     The wall catalogue (row ``wall-catalogue-and-judgment-basis-20260925``) supplies it; until
     then it is None and T9 is not evaluated. Walls are never invented here."""
     ledger = list(ledger)
+    _validate_ledger(ledger)
     flags: list[Flag] = [Flag("T7", s, d) for s, d in catalogue.hygiene]
     member_class: dict[str, tuple[str, int]] = {}
     for c in ledger:
         for bad in c.bad_members:
             flags.append(Flag("T7", c.key, f"unparseable ledger member {bad!r}"))
         for mid, weight in c.members:
-            if mid in member_class:
-                flags.append(Flag("T7", mid, f"in two classes: {member_class[mid][0]} and {c.key}"))
-                continue
             member_class[mid] = (c.key, weight)
             if mid not in catalogue.entries:
                 flags.append(Flag("T7", mid, f"ledger member not in catalogue: class {c.key}"))
@@ -1203,7 +1224,10 @@ def parse_delivery_source(
     front, body = split_frontmatter(text)
     if not re.search(r"\b(?:CLAIM|CLOSE)\s+TURN\s*\d+[^\n]*\bGO\b", body):
         return []
-    target = re.match(r"(?:claude/|codex/)?(cx-[\w-]+|dev\d+)\b", str(front.get("to", "")))
+    target = re.fullmatch(
+        r"(?:claude/|codex/)?(cx-[\w-]+|dev\d+)(?:\s+\([^()\n]*\))?\s*",
+        str(front.get("to", "")),
+    )
     clock_text = str(front.get("created_at", ""))
     clock_match = re.match(
         r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))", clock_text
@@ -1211,7 +1235,7 @@ def parse_delivery_source(
     assigned = _delivery_time(front.get("created_at"))
     if assigned is None and clock_match:
         assigned = _delivery_time(clock_match.group(1))
-    filename = re.search(r"(?:^|/)(\d{8}T\d{6}Z)", source_ref)
+    filename = re.match(r"(\d{8}T\d{6}Z)", source_ref.rsplit("/", 1)[-1])
     try:
         filename_time = (
             datetime.strptime(filename.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
@@ -1220,8 +1244,11 @@ def parse_delivery_source(
         )
     except (ValueError, OverflowError):
         return []  # One malformed source remains unclassified; keep folding others.
-    exact_clock = "estimate" not in clock_text.lower() and (
-        not filename_time or filename_time == assigned
+    clocks = re.findall(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})", clock_text)
+    exact_clock = (
+        len(set(clocks)) <= 1
+        and "estimate" not in clock_text.lower()
+        and (not filename_time or filename_time == assigned)
     )
     if assigned is None:
         assigned = filename_time
@@ -1232,19 +1259,18 @@ def parse_delivery_source(
     bound = bounds.get(recipient, {})
     bound = bound if isinstance(bound, Mapping) else {}
     expiry = None
-    window = re.search(
-        r"\bstart\s+within\s+(\d+)\s+min(?:ute)?s?\b"
-        r"|\b(\d+)[ -]min(?:ute)?s?\s+(?:start\s+)?window\b",
+    windows = re.findall(
+        r"\bstart\s+within\s+(\S+)\s+min(?:ute)?s?\b"
+        r"|(?<!\S)(\S+)[ -]min(?:ute)?s?\s+(?:start\s+)?window\b",
         body,
         re.I,
     )
-    if window:
-        try:
-            minutes = int(window.group(1) or window.group(2))
-            if minutes > 0:
-                expiry = (assigned + timedelta(minutes=minutes)).isoformat()
-        except (ValueError, OverflowError):
-            pass  # Missing/unparseable authority bounds must score UNKNOWN.
+    try:
+        minutes = {int(a or b) for a, b in windows}
+        if len(minutes) == 1 and (duration := minutes.pop()) > 0:
+            expiry = (assigned + timedelta(minutes=duration)).isoformat()
+    except (ValueError, OverflowError):
+        pass  # Missing, conflicting or unparseable authority bounds stay UNKNOWN.
     commands = dict.fromkeys(_DELIVERY_COMMAND.findall(body))
     return [
         {
@@ -1267,6 +1293,20 @@ def parse_delivery_source(
         }
         for command in commands
     ]
+
+
+def _same_frozen_value(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_frozen_value(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(
+            _same_frozen_value(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return left == right
 
 
 def evaluate_delivery(
@@ -1310,22 +1350,23 @@ def evaluate_delivery(
         window_start = None
     population: dict[tuple[str, str, str], dict[str, Any]] = {}
     conflicts: set[tuple[str, str, str]] = set()
+    intersects: set[tuple[str, str, str]] = set()
     for raw in obligations:
+        k = key(raw)
         assigned = _delivery_time(raw.get("assigned_at"))
         if (
-            assigned is not None
-            and window_start is not None
-            and clock is not None
-            and not window_start <= assigned <= clock
+            assigned is None
+            or window_start is None
+            or clock is None
+            or window_start <= assigned <= clock
         ):
-            continue
-        k = key(raw)
+            intersects.add(k)
         item = dict(raw, recipient=k[1])
         # Copy paths differ, but all other frozen predicate fields must agree.
         if k in population:
             old = {a: b for a, b in population[k].items() if a != "source_ref"}
             new = {a: b for a, b in item.items() if a != "source_ref"}
-            if old != new:
+            if not _same_frozen_value(old, new):
                 conflicts.add(k)
         else:
             population[k] = item
@@ -1349,8 +1390,23 @@ def evaluate_delivery(
         "author_native_execution_id"
     )
     evidence = list(observations)
+    versions: dict[str, dict[str, Any]] = {}
+    conflicted_events: set[str] = set()
+    for event in evidence:
+        event_id = event.get("event_id")
+        if not event_id:
+            continue
+        # Identity conflicts are checked before any subject/binding/time filtering.
+        version = {name: value for name, value in event.items() if name != "source_ref"}
+        version["recipient"] = canonical(event.get("recipient"))
+        if event_id in versions and not _same_frozen_value(versions[event_id], version):
+            conflicted_events.add(event_id)
+        else:
+            versions[event_id] = version
     outcomes: list[dict[str, Any]] = []
     for k, obligation in population.items():
+        if k not in intersects:
+            continue
         assigned = _delivery_time(obligation.get("assigned_at"))
         oid = hashlib.sha256("\0".join(k).encode()).hexdigest()
         outcome: dict[str, Any] = {
@@ -1429,21 +1485,11 @@ def evaluate_delivery(
         ):
             outcome["cause"] = "invalid_observation_time"
             continue
-        versions: dict[str, dict[str, Any]] = {}
-        conflicted_events: set[str] = set()
-        for event in relevant:
-            event_id = event["event_id"]
-            # Copied paths and recipient aliases do not change an event's identity.
-            version = {name: value for name, value in event.items() if name != "source_ref"}
-            version["recipient"] = canonical(event.get("recipient"))
-            if event_id in versions and versions[event_id] != version:
-                conflicted_events.add(event_id)
-            else:
-                versions[event_id] = version
-        if conflicted_events:
+        conflicts_here = conflicted_events.intersection(e["event_id"] for e in relevant)
+        if conflicts_here:
             outcome.update(
                 cause="conflicting_observation_records",
-                observation_event_ids=sorted(conflicted_events),
+                observation_event_ids=sorted(conflicts_here),
             )
             continue
         start_kind = obligation["clock_start"]
@@ -1500,6 +1546,9 @@ def evaluate_delivery(
             actions.append((at, event))
         actions.sort(key=lambda pair: pair[0])
         action = actions[0] if actions else None
+        if action and len({e["result"] for at, e in actions if at == action[0]}) > 1:
+            outcome["cause"] = "conflicting_action_results"
+            continue
         if not delivery_missed and not action and clock < response_due:
             outcome["cause"] = "response_window_open"
             continue
