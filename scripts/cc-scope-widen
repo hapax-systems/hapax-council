@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -101,7 +102,27 @@ def _surface_ok(item: str) -> bool:
             return True
         if not item.endswith("/") and (target.exists() or target.parent.is_dir()):
             return True
-    return False
+    # A linked checkout may live outside both authored roots. Admit only its
+    # exact path as reported by this repository's worktree registry; a parent,
+    # child, glob, or unrelated external path must not widen scope.
+    candidate = Path(item.rstrip("/")).expanduser()
+    if not candidate.is_absolute() or not candidate.is_dir():
+        return False
+    if any(part in {".", ".."} for part in candidate.parts):
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return f"worktree {candidate}" in result.stdout.splitlines()
 
 
 def widen(task_id: str, additions: list[str], removals: list[str] | None = None) -> int:
@@ -115,8 +136,7 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
     for item in additions:
         if not _surface_ok(item):
             return _refuse(
-                f"path '{item}' has no existing surface under {REPO_ROOT} "
-                f"or {PERSONAL_VAULT_ROOT}"
+                f"path '{item}' has no existing surface under {REPO_ROOT} or {PERSONAL_VAULT_ROOT}"
             )
 
     if str(REPO_ROOT) not in sys.path:
@@ -141,16 +161,15 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
                 return ERROR
             return _widen_locked(task_id, note, additions, removals)
 
-
     except TaskNoteLockError as exc:
         # A refusal from the lock is an operator-facing outcome, not a crash: the estate's
         # executive_function axiom requires the message to carry its own next action, and a
         # Python traceback carries the stack instead.
         print(f"cc-scope-widen: REFUSED — {exc}", file=sys.stderr)
         return REFUSED
-def _widen_locked(
-    task_id: str, note: Path, additions: list[str], removals: list[str]
-) -> int:
+
+
+def _widen_locked(task_id: str, note: Path, additions: list[str], removals: list[str]) -> int:
     """The read-modify-write itself. Called only with the projection lock held."""
 
     text = note.read_text(encoding="utf-8")
