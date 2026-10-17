@@ -1,0 +1,511 @@
+"""The seat cannot start with missing, stale or misdirected global instructions."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts/hapax-seat-launch"
+loader = importlib.machinery.SourceFileLoader("hapax_seat_launch", str(SCRIPT))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+assert spec is not None
+seat = importlib.util.module_from_spec(spec)
+loader.exec_module(seat)
+VERIFY_BINARY = seat._verified_codex_binary
+PREFIX = b"<!-- Generated from Council config/agent-instructions; edit the source. -->\n\n"
+PINNED_BINARY_RELATIVE = Path(
+    ".codex/packages/standalone/releases/0.160.0-x86_64-unknown-linux-musl/bin/codex"
+)
+
+
+@pytest.fixture
+def binding(tmp_path: Path, monkeypatch) -> tuple[Path, dict[str, str]]:
+    monkeypatch.setattr(seat, "_verified_codex_binary", lambda: "codex")
+    default = tmp_path / ".codex"
+    seat_home = tmp_path / ".codex-seat"
+    state = tmp_path / ".config/hapax/agent-instructions"
+    activated = tmp_path / ".cache/hapax/source-activation/worktree/config/agent-instructions"
+    for directory in (default, seat_home, state, activated):
+        directory.mkdir(parents=True)
+    shared = b"# Canonical shared body\nKeep the receipt current.\n"
+    generated = PREFIX + shared
+    (state / "AGENTS.md").write_bytes(shared)
+    (activated / "AGENTS.md").write_bytes(shared)
+    (default / "AGENTS.md").write_bytes(generated)
+    for name in ("auth.json", "config.toml"):
+        (default / name).write_text("fixture")
+        (seat_home / name).symlink_to(default / name)
+    (seat_home / "AGENTS.md").symlink_to(default / "AGENTS.md")
+    receipt = {
+        "source_revision": "fixture",
+        "observation": "filesystem_readback",
+        "files": [
+            {
+                "binding": "shared",
+                "path": str(state / "AGENTS.md"),
+                "sha256": hashlib.sha256(shared).hexdigest(),
+                "bytes": len(shared),
+            },
+            {
+                "binding": "codex",
+                "path": str(default / "AGENTS.md"),
+                "sha256": hashlib.sha256(generated).hexdigest(),
+                "bytes": len(generated),
+            },
+        ],
+    }
+    (state / "current.json").write_text(json.dumps(receipt))
+    return tmp_path, {"CODEX_HOME": str(seat_home)}
+
+
+def write_first_turn(path: Path, launch_id: str, *, completion_turn: str = "turn-1") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"type": "session_meta", "payload": {"id": "new-session"}},
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-1"}},
+        {"type": "turn_context", "payload": {"model": "gpt-6-sol", "effort": "high"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": f"Seat startup receipt: {launch_id}."}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": completion_turn,
+                "last_agent_message": "Seat first turn completed.",
+            },
+        },
+    ]
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+
+
+def test_exact_current_binding_admitted(binding):
+    home, environment = binding
+    evidence = seat.verify_codex_binding(home, environment)
+    assert evidence["seat_home"] == str(home / ".codex-seat")
+    assert (
+        evidence["shared_sha256"]
+        == hashlib.sha256(
+            (home / ".config/hapax/agent-instructions/AGENTS.md").read_bytes()
+        ).hexdigest()
+    )
+
+
+def test_missing_binding_refused(binding):
+    home, environment = binding
+    (home / ".codex-seat/AGENTS.md").unlink()
+    with pytest.raises(seat.SeatBindingError, match="missing_seat_agents_symlink"):
+        seat.verify_codex_binding(home, environment)
+
+
+def test_wrong_codex_home_refused(binding):
+    home, environment = binding
+    environment["CODEX_HOME"] = str(home / ".codex")
+    with pytest.raises(seat.SeatBindingError, match="wrong_home"):
+        seat.verify_codex_binding(home, environment)
+
+
+def test_wrong_binding_target_refused_even_when_bytes_match(binding):
+    home, environment = binding
+    other = home / "other/AGENTS.md"
+    other.parent.mkdir()
+    other.write_bytes((home / ".codex/AGENTS.md").read_bytes())
+    link = home / ".codex-seat/AGENTS.md"
+    link.unlink()
+    link.symlink_to(other)
+    with pytest.raises(seat.SeatBindingError, match="wrong_home_seat_agents_target"):
+        seat.verify_codex_binding(home, environment)
+
+
+def test_stale_body_refused(binding):
+    home, environment = binding
+    (home / ".codex/AGENTS.md").write_bytes(PREFIX + b"# Old body\n")
+    with pytest.raises(seat.SeatBindingError, match="stale_codex_body"):
+        seat.verify_codex_binding(home, environment)
+
+
+def test_stale_shared_body_refused(binding):
+    home, environment = binding
+    (home / ".config/hapax/agent-instructions/AGENTS.md").write_text("old")
+    with pytest.raises(seat.SeatBindingError, match="stale_shared_body"):
+        seat.verify_codex_binding(home, environment)
+
+
+def test_coherently_stale_install_refused_against_active_source(binding):
+    home, environment = binding
+    old = b"# Prior shared body\n"
+    state = home / ".config/hapax/agent-instructions"
+    (state / "AGENTS.md").write_bytes(old)
+    (home / ".codex/AGENTS.md").write_bytes(PREFIX + old)
+    receipt_path = state / "current.json"
+    receipt = json.loads(receipt_path.read_text())
+    for item in receipt["files"]:
+        body = old if item["binding"] == "shared" else PREFIX + old
+        item["sha256"] = hashlib.sha256(body).hexdigest()
+        item["bytes"] = len(body)
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(seat.SeatBindingError, match="stale_shared_vs_active_source"):
+        seat.verify_codex_binding(home, environment)
+
+
+def test_shadow_override_refused(binding):
+    home, environment = binding
+    (home / ".codex-seat/AGENTS.override.md").write_text("Replace instructions")
+    with pytest.raises(seat.SeatBindingError, match="seat_global_override_shadows_binding"):
+        seat.verify_codex_binding(home, environment)
+
+
+def test_pending_instruction_install_refused(binding):
+    home, environment = binding
+    (home / ".config/hapax/agent-instructions/pending.json").write_text("{}")
+    with pytest.raises(seat.SeatBindingError, match="instruction_install_pending"):
+        seat.verify_codex_binding(home, environment)
+
+
+def test_missing_binding_refuses_before_tmux(binding, monkeypatch):
+    home, environment = binding
+    (home / ".codex-seat/AGENTS.md").unlink()
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
+
+    def unexpected_tmux(*_args, **_kwargs):
+        pytest.fail("tmux was called after a refused binding")
+
+    monkeypatch.setattr(seat.subprocess, "run", unexpected_tmux)
+    assert seat.main() == 2
+
+
+def test_direct_inner_invocation_refuses_before_scope(binding, monkeypatch):
+    home, environment = binding
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex", "--inner-codex"])
+    monkeypatch.setattr(seat, "_raise_nofile", lambda: None)
+    monkeypatch.setattr(seat.os, "chdir", lambda *_args: None)
+
+    def unexpected_scope(*_args, **_kwargs):
+        pytest.fail("direct --inner-codex reached systemd-run")
+
+    monkeypatch.setattr(seat.os, "execvpe", unexpected_scope)
+    assert seat.main() == 2
+
+
+def test_outer_launch_sets_seat_home_and_inner_marker(binding, monkeypatch):
+    home, environment = binding
+    calls = []
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1 if len(calls) == 1 else 0)
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    monkeypatch.setattr(seat, "_wait_first_turn", lambda *args: calls.append(("ready", args)))
+    assert seat.main() == 0
+    assert calls[0] == ["tmux", "has-session", "-t", "hapax-codex-seat"]
+    launch = calls[1]
+    assert launch[:5] == ["tmux", "new-session", "-d", "-s", "hapax-codex-seat"]
+    assert launch[launch.index("env") + 1 : launch.index("env") + 3] == [
+        f"CODEX_HOME={home / '.codex-seat'}",
+        "HAPAX_SEAT_LAUNCH_INNER=hapax-codex-seat",  # pragma: allowlist secret
+    ]
+    assert launch[-2:] == ["codex", "--inner-codex"]
+    assert launch[launch.index("env") + 3].startswith("HAPAX_SEAT_LAUNCH_ID=")
+    assert calls[2][0] == "ready"
+
+
+def test_tmux_creation_without_first_turn_refuses_success(binding, monkeypatch):
+    home, environment = binding
+    environment["HAPAX_SEAT_STARTUP_TIMEOUT_SECONDS"] = "0.01"
+    calls = []
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1 if len(calls) == 1 else 0)
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    assert seat.main() == 2
+    assert any(command[:2] == ["tmux", "new-session"] for command in calls)
+
+
+def test_first_turn_receipt_required_from_this_launch(binding, monkeypatch):
+    home, environment = binding
+    environment["HAPAX_SEAT_STARTUP_TIMEOUT_SECONDS"] = "0.01"
+    calls = []
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command[:2] == ["tmux", "new-session"]:
+            launch_id = next(
+                item.split("=", 1)[1]
+                for item in command
+                if item.startswith("HAPAX_SEAT_LAUNCH_ID=")
+            )
+            write_first_turn(home / ".codex-seat/sessions/2026/09/29/rollout-new.jsonl", launch_id)
+        return subprocess.CompletedProcess(command, 1 if len(calls) == 1 else 0)
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    assert seat.main() == 0
+    assert len(calls) == 3  # pre-start check, creation, post-start live check
+
+
+def test_first_turn_receipt_rejects_wrong_turn_and_old_rollout(binding, monkeypatch):
+    home, _environment = binding
+    path = home / ".codex-seat/sessions/2026/09/29/rollout-old.jsonl"
+    write_first_turn(path, "a" * 32, completion_turn="different-turn")
+    assert seat._first_turn_state(path, "a" * 32) == "pending"
+    write_first_turn(path, "a" * 32)
+    assert seat._first_turn_state(path, "b" * 32) == "pending"
+    monkeypatch.setattr(
+        seat.subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 0)
+    )
+    with pytest.raises(seat.SeatBindingError, match="seat_first_turn_timeout"):
+        seat._wait_first_turn(home / ".codex-seat", "a" * 32, {path}, 0.01)
+
+
+def test_first_turn_abort_and_empty_answer_are_not_ready(binding, monkeypatch):
+    home, _environment = binding
+    path = home / ".codex-seat/sessions/2026/09/29/rollout-new.jsonl"
+    write_first_turn(path, "a" * 32)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records[-1]["payload"]["last_agent_message"] = ""
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    assert seat._first_turn_state(path, "a" * 32) == "pending"
+    records[-1]["payload"]["type"] = "turn_aborted"
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    monkeypatch.setattr(
+        seat.subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 0)
+    )
+    with pytest.raises(seat.SeatBindingError, match="seat_first_turn_aborted"):
+        seat._wait_first_turn(home / ".codex-seat", "a" * 32, set(), 0.01)
+
+
+def test_first_turn_wrong_observed_route_refused(binding, monkeypatch):
+    home, _environment = binding
+    path = home / ".codex-seat/sessions/2026/09/29/rollout-new.jsonl"
+    write_first_turn(path, "a" * 32)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records[2]["payload"]["model"] = "another-model"
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    monkeypatch.setattr(
+        seat.subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 0)
+    )
+    with pytest.raises(seat.SeatBindingError, match="seat_first_turn_wrong_route"):
+        seat._wait_first_turn(home / ".codex-seat", "a" * 32, set(), 0.01)
+
+
+def test_early_seat_exit_refuses_startup_success(binding, monkeypatch):
+    home, environment = binding
+    calls = []
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0 if len(calls) == 2 else 1)
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    assert seat.main() == 2
+    assert len(calls) == 3
+
+
+def test_live_session_refuses_before_tmux_creation(binding, monkeypatch):
+    home, environment = binding
+    calls = []
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    assert seat.main() == 2
+    assert calls == [["tmux", "has-session", "-t", "hapax-codex-seat"]]
+
+
+def test_version_drift_refuses_before_creating_session(binding, monkeypatch):
+    home, environment = binding
+    binary = home / PINNED_BINARY_RELATIVE
+    binary.parent.mkdir(parents=True)
+    body = b"pinned fixture executable"
+    binary.write_bytes(body)
+    binary.chmod(0o755)
+    calls = []
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
+    monkeypatch.setattr(seat, "PINNED_CODEX_CLI_SHA256", hashlib.sha256(body).hexdigest())
+    monkeypatch.setattr(seat, "_verified_codex_binary", VERIFY_BINARY)
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(command, 0, stdout="codex-cli 0.156.1\n")
+        return subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    assert seat.main() == 2
+    assert not any(command[:2] == ["tmux", "new-session"] for command in calls)
+
+
+def test_verified_absolute_pin_ignores_stale_path(binding, monkeypatch):
+    home, _environment = binding
+    binary = home / PINNED_BINARY_RELATIVE
+    binary.parent.mkdir(parents=True)
+    body = b"pinned fixture executable"
+    binary.write_bytes(body)
+    binary.chmod(0o755)
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        seat, "PINNED_CODEX_CLI_SHA256", hashlib.sha256(body).hexdigest(), raising=False
+    )
+    calls = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="codex-cli 0.160.0\n")
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/stale/path/codex")
+    assert VERIFY_BINARY() == str(binary)
+    assert calls == [[str(binary), "--version"]]
+
+
+def test_missing_absolute_pin_refuses_before_version_probe(binding, monkeypatch):
+    home, _environment = binding
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        seat.subprocess, "run", lambda *_a, **_k: pytest.fail("version probe reached")
+    )
+    with pytest.raises(seat.SeatBindingError, match="codex_cli_missing"):
+        VERIFY_BINARY()
+
+
+def test_absolute_pin_hash_drift_refuses_before_version_probe(binding, monkeypatch):
+    home, _environment = binding
+    binary = home / PINNED_BINARY_RELATIVE
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"drifted executable")
+    binary.chmod(0o755)
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        seat.subprocess, "run", lambda *_a, **_k: pytest.fail("version probe reached")
+    )
+    with pytest.raises(seat.SeatBindingError, match="codex_cli_hash_drift"):
+        VERIFY_BINARY()
+
+
+def test_inner_wrong_tmux_session_refuses_before_scope(binding, monkeypatch):
+    home, environment = binding
+    environment.update(
+        HAPAX_SEAT_LAUNCH_INNER="hapax-codex-seat", HAPAX_SEAT_LAUNCH_ID="a" * 32, TMUX="socket"
+    )
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex", "--inner-codex"])
+    monkeypatch.setattr(
+        seat.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout="other\n"),
+    )
+    monkeypatch.setattr(seat.os, "execvpe", lambda *_args: pytest.fail("scope reached"))
+    assert seat.main() == 2
+
+
+def test_inner_launch_checks_nofile_scope_and_identity(binding, monkeypatch):
+    home, environment = binding
+    environment.update(
+        HAPAX_SEAT_LAUNCH_INNER="hapax-codex-seat", HAPAX_SEAT_LAUNCH_ID="a" * 32, TMUX="socket"
+    )
+    events = []
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex", "--inner-codex"])
+
+    def fake_run(command, **_kwargs):
+        events.append(("tmux", command))
+        return subprocess.CompletedProcess(command, 0, stdout="hapax-codex-seat\n")
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    monkeypatch.setattr(seat.resource, "getrlimit", lambda *_args: (1024, 131072))
+    monkeypatch.setattr(
+        seat.resource, "setrlimit", lambda kind, limits: events.append(("nofile", kind, limits))
+    )
+    monkeypatch.setattr(seat.os, "chdir", lambda path: events.append(("chdir", path)))
+    monkeypatch.setattr(
+        seat.os,
+        "execvpe",
+        lambda binary, command, env: events.append(("exec", binary, command, env)),
+    )
+    assert seat.main() == 0
+    assert events[0] == ("tmux", ["tmux", "display-message", "-p", "#{session_name}"])
+    assert events[1] == ("nofile", seat.resource.RLIMIT_NOFILE, (65536, 131072))
+    assert events[2] == ("chdir", home / "projects")
+    _, binary, command, child_env = events[3]
+    assert binary == "systemd-run"
+    assert command[:4] == ["systemd-run", "--user", "--scope", "--collect"]
+    assert command[4:8] == ["-p", "MemoryHigh=5G", "-p", "MemoryMax=7G"]
+    assert command[8:16] == [
+        "codex",
+        "-s",
+        "danger-full-access",
+        "-a",
+        "never",
+        "-m",
+        "gpt-6-sol",
+        "-c",
+    ]
+    assert command[16] == "model_reasoning_effort=high"
+    assert command[17:19] == ["-c", "check_for_update_on_startup=false"]
+    assert "HANDOFF-seat-claude-to-codex-20260929.md" in command[19]
+    assert "Seat startup receipt: " + "a" * 32 in command[19]
+    assert child_env["CODEX_HOME"] == str(home / ".codex-seat")
+    assert child_env["HAPAX_AGENT_ROLE"] == "dev1-seat-codex"
+    assert "HAPAX_SEAT_LAUNCH_INNER" not in child_env
+    assert "HAPAX_SEAT_LAUNCH_ID" not in child_env
+
+
+def test_inner_refuses_insufficient_nofile_hard_limit(binding, monkeypatch):
+    home, environment = binding
+    environment.update(
+        HAPAX_SEAT_LAUNCH_INNER="hapax-codex-seat", HAPAX_SEAT_LAUNCH_ID="a" * 32, TMUX="socket"
+    )
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex", "--inner-codex"])
+    monkeypatch.setattr(
+        seat.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="hapax-codex-seat\n"
+        ),
+    )
+    monkeypatch.setattr(seat.resource, "getrlimit", lambda *_args: (1024, 4096))
+    monkeypatch.setattr(seat.resource, "setrlimit", lambda *_args: pytest.fail("limit changed"))
+    monkeypatch.setattr(seat.os, "execvpe", lambda *_args: pytest.fail("scope reached"))
+    assert seat.main() == 2
