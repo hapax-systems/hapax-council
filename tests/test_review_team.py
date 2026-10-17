@@ -5413,6 +5413,7 @@ class TestTwoFamilyUnanimous:
             "codex",
             reg,
             pr_number=99,
+            pr_review=True,
             available_families=["codex", "muse"],
             size_excluded_families=excluded if cause == "size" else set(),
             route_blocked_families={f: ("route_state_blocked",) for f in excluded}
@@ -5435,6 +5436,7 @@ class TestTwoFamilyUnanimous:
                 "codex",
                 reg,
                 pr_number=99,
+                pr_review=True,
                 available_families=available,
                 size_excluded_families=excluded if cause == "one" else excluded - {"claude"},
                 outage_families={"claude"} if cause == "outage" else set(),
@@ -5447,6 +5449,7 @@ class TestTwoFamilyUnanimous:
             "codex",
             rt.load_lens_registry(),
             pr_number=99,
+            pr_review=True,
             available_families=["codex", "muse", "local"],
             size_excluded_families={"claude", "gemini", "glm", "vibe"},
         )
@@ -5542,7 +5545,12 @@ class TestTwoFamilyUnanimous:
             for f in roster - {"codex", "muse"}
         }
         team = rt.constitute_team(
-            "t1_critical", "codex", reg, pr_number=99, route_blocked_families=blocked
+            "t1_critical",
+            "codex",
+            reg,
+            pr_number=99,
+            pr_review=True,
+            route_blocked_families=blocked,
         )
         d = _synth(
             rt,

@@ -1255,6 +1255,7 @@ def constitute_team(
     registry: Mapping[str, Any],
     *,
     pr_number: int,
+    pr_review: bool = False,
     available_families: Sequence[str] | None = None,
     outage_families: frozenset[str] | set[str] = frozenset(),
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
@@ -1273,7 +1274,7 @@ def constitute_team(
     writer's family, then declared substitute families (``substitute: true``); if
     fewer distinct families are available than the class seats, this raises
     ``same_family_reseat`` rather than repeat one. The 2026-10-16 ruling permits
-    exactly two unanimous seats when every other family is size/route blocked;
+    exactly two unanimous seats for PR reviews when every other family is size/route blocked;
     unrelated absence never qualifies, and a third fitting family retires it.
 
     DEGRADATION RULE (n-tier symmetry principal; postmortem 2026-06-12,
@@ -1351,8 +1352,12 @@ def constitute_team(
                     route_ids=route_ids,
                 )
             )
-    if size > 2 and _two_family_eligible(
-        roster, available, size_excluded_families, route_blocked, outage_families
+    if (
+        pr_review
+        and size > 2
+        and _two_family_eligible(
+            roster, available, size_excluded_families, route_blocked, outage_families
+        )
     ):
         sizing = TWO_FAMILY_SIZING
         size = 2
@@ -2503,7 +2508,8 @@ def review_dossier_path(note_path: Path, task_id: str) -> Path:
 
 def _capacity_refusal_blockers(task_id, pr_number, head_sha) -> tuple[str, ...]:
     """Read the existing lane wake; a refusal is not a reviewer verdict."""
-    wake = _note_frontmatter(REVIEW_WAKE_DIR / f"{task_id}-{str(head_sha)[:8]}.md") or {}
+    sha8 = str(head_sha).removeprefix("artifact-sha256:")[:8]
+    wake = _note_frontmatter(REVIEW_WAKE_DIR / f"{task_id}-{sha8}.md") or {}
     if (
         wake.get("status") == "prompt_capacity_exceeded"
         and wake.get("task_id") == task_id

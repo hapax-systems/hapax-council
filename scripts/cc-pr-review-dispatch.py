@@ -1525,6 +1525,7 @@ def constitute_with_substitution(
     route_blocked_families: dict[str, tuple[str, ...]],
     *,
     pr_number: int,
+    pr_review: bool = False,
     diff_bytes: int | None = None,
     prompt_bytes_by_seat: dict[str, int] | None = None,
 ) -> tuple[review_team.Constitution | None, dict[str, Any], str | None]:
@@ -1594,6 +1595,7 @@ def constitute_with_substitution(
                 writer_family,
                 registry,
                 pr_number=pr_number,
+                pr_review=pr_review,
                 outage_families=outage_families,
                 route_blocked_families=route_blocked_families,
             )
@@ -1605,6 +1607,7 @@ def constitute_with_substitution(
             writer_family,
             registry,
             pr_number=pr_number,
+            pr_review=pr_review,
             outage_families=outage_families,
             route_blocked_families=route_blocked_families,
             available_families=[f for f in roster if f not in excluded_for_capacity],
@@ -3940,7 +3943,7 @@ def auto_wake(
             if already_exists
             else (
                 "# Review dispatch capacity refusal\n\nNo reviewer ran. "
-                "Split the PR or restore an admitted fitting route.\n"
+                "Reduce the review subject or restore an admitted fitting route.\n"
             )
         )
         if already_exists and review_team._note_frontmatter(wake_path):
@@ -4275,6 +4278,7 @@ def review_pr(
         inputs,
         effective_route_blocked_families,
         pr_number=pr_number,
+        pr_review=True,
     )
     if constitution is None:
         return {
@@ -4492,6 +4496,7 @@ def _apply_review(
             inputs,
             effective_route_blocked_families,
             pr_number=pr_number,
+            pr_review=True,
             diff_bytes=len(pr_diff.encode("utf-8")),
             prompt_bytes_by_seat={
                 seat_id: len(prompt.encode("utf-8"))
@@ -5014,7 +5019,24 @@ def review_artifact(
     if constitution is None:
         plan["outage_families"] = sorted(inputs.outage_families)
         plan["constitution_error"] = constitution_error
-        return {"status": "constitution_blocked", "plan": plan}
+        if not apply:
+            return {"status": "constitution_blocked", "plan": plan}
+        refusal = {
+            "status": "prompt_capacity_exceeded",
+            "pr": None,
+            "task_id": task_id,
+            "head_sha": head_sha,
+            "capacity_error": constitution_error,
+            "artifact_review": {"manifest": manifest},
+        }
+        LOG.warning(
+            "artifact %s head=%s prompt_capacity_exceeded: %s",
+            task_id,
+            head_sha,
+            constitution_error,
+        )
+        auto_wake(frontmatter, registry, refusal, wake_dir=wake_dir, send_runner=send_runner)
+        return {**refusal, "reason": constitution_error, "plan": plan}
     plan["quorum_required"] = constitution.quorum_required
     plan["seats"] = [{"id": seat.id, "family": seat.family} for seat in constitution.seats]
     plan["constitution_notes"] = list(constitution.notes)
@@ -5130,20 +5152,14 @@ def review_artifact(
         dossier["no_quorum_cause"] = (
             f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"
         )
-    if dossier["review_team_verdict"] == review_team.QUORUM_ACCEPT and (
-        dossier.get("degraded_family_outage")
-        or review_team.TWO_FAMILY_UNANIMOUS in dossier.get("constitution_notes", [])
+    if dossier["review_team_verdict"] == review_team.QUORUM_ACCEPT and dossier.get(
+        "degraded_family_outage"
     ):
         append_degraded_merge_record(
             task_id=task_id,
             pr_number=0,
             head_sha=head_sha,
             degraded_families=list(dossier["degraded_family_outage"]),
-            degraded_rule=(
-                "two_family_unanimous"
-                if review_team.TWO_FAMILY_UNANIMOUS in dossier.get("constitution_notes", [])
-                else None
-            ),
             now_iso=now_iso,
             outage_witness=inputs.outage_witness,
         )

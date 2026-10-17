@@ -7538,6 +7538,57 @@ class TestVaultArtifactAcceptance:
         "30-areas/hapax/frame/CENSUS.md",
     ]
 
+    @pytest.mark.parametrize("risk", ["T1", "T2"])
+    def test_two_families_refuse_before_spend_and_wake_once(
+        self, tmp_path, caplog, risk, monkeypatch
+    ):
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _write_vault_only_task(vault, risk_tier=risk)
+        monkeypatch.setattr(dispatch.review_team, "REVIEW_WAKE_DIR", tmp_path / "wake")
+        reviewers, sends = RecordingReviewers(), []
+        routes = dispatch.review_team.review_family_route_ids(
+            dispatch.review_team.load_lens_registry()
+        )
+        blocked = {
+            f: (f"{routes.get(f, 'unknown')}:route_state_blocked",)
+            for f in ("claude", "gemini", "glm", "vibe", "local")
+        }
+        kwargs = _artifact_kwargs(
+            tmp_path,
+            vault,
+            root,
+            reviewer_runner=reviewers,
+            send_runner=sends.append,
+            route_blocked_families=blocked,
+        )
+        for _ in range(2):
+            result = dispatch.review_artifact("vault-row", files, **kwargs)
+            assert reviewers.invocations == [], "artifact refusal must precede every reviewer call"
+            assert result["status"] == "prompt_capacity_exceeded"
+            assert "same_family_reseat" in result["reason"]
+            assert result["head_sha"] in caplog.text and result["reason"] in caplog.text
+        assert len(sends) == 1
+        wake = next((tmp_path / "wake").glob("vault-row-*.md"))
+        refusal = dispatch.review_team._note_frontmatter(wake)
+        assert refusal["pr"] is None and refusal["head_sha"] == result["head_sha"]
+        assert refusal["capacity_error"] == result["reason"]
+        assert "review_dispatch_prompt_capacity_exceeded:" + result["reason"] in (
+            dispatch.review_team.review_dossier_validity_blockers(
+                dispatch.review_team._note_frontmatter(note), note, pr_head_sha=result["head_sha"]
+            )
+        )
+        assert not (note.parent / "vault-row.review-dossier.yaml").exists()
+        assert not (note.parent / "vault-row.acceptance.yaml").exists()
+        # Recovery uses the ordinary three-family artifact path and its valid receipt.
+        del blocked["local"]
+        del blocked["vibe"]
+        recovered = dispatch.review_artifact("vault-row", files, **kwargs)
+        assert len(recovered["dossier"]["reviewers"]) == 3
+        assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root) == ()
+        count = len(reviewers.invocations)
+        assert dispatch.review_artifact("vault-row", files, **kwargs)["status"] == "skipped_fresh"
+        assert len(reviewers.invocations) == count
+
     def test_dry_run_plans_an_artifact_constitution_and_writes_nothing(
         self, tmp_path: Path
     ) -> None:
