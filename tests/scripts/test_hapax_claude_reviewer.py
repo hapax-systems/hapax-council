@@ -1244,15 +1244,29 @@ def test_review_refuses_when_the_declared_pool_config_dir_is_missing(tmp_path: P
     assert not argv_path.exists()
 
 
-def test_review_refuses_an_unreadable_pool_declaration(tmp_path: Path) -> None:
-    config = tmp_path / "registry.json"
-    config.write_text("{not json")
-
-    result, argv_path = _run_pool_wrapper(tmp_path, HAPAX_PLATFORM_CAPABILITY_REGISTRY=str(config))
-
-    assert result.returncode == 9
-    assert "refusing undeclared invocation" in result.stderr
-    assert not argv_path.exists()
+@pytest.mark.parametrize(
+    "code,stdout,stderr,error",
+    [
+        (1, "{}", "resolver exploded", "resolver exploded"),
+        (1, "{}", "", "resolver failed"),
+        (0, "{", "", "malformed"),
+        (0, "{}", "", "malformed"),
+        (0, '{"effective": {}, "release": {}}', "", "malformed"),
+        (0, '{"effective": null, "release": null}', "", "declares no"),
+    ],
+)
+def test_pool_resolver_refusals(monkeypatch, capsys, code, stdout, stderr, error) -> None:
+    module = _load_wrapper("reviewer_pool_refusals")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, code, stdout, stderr),
+    )
+    with pytest.raises(ValueError, match=f"{error}.*next action:"):
+        module._pool_binding(REPO_ROOT)
+    monkeypatch.setattr(module, "_execution_binding", lambda _root: {})
+    assert module.main([]) == 9
+    assert "next action:" in capsys.readouterr().err
 
 
 def test_pool_binding_refuses_a_missing_runtime(tmp_path: Path) -> None:

@@ -204,15 +204,16 @@ def _pool_binding(root: Path) -> dict:
         text=True,
         timeout=15,
     )
+    repair = "; next action: restore the selected release pool resolver"
     if result.returncode:
         raise ValueError(
-            result.stderr.strip() or "pool-binding resolver failed without a diagnostic"
+            (result.stderr.strip() or "pool-binding resolver failed without a diagnostic") + repair
         )
     try:
         resolved = json.loads(result.stdout)
         binding, release = resolved["effective"], resolved["release"]
     except (ValueError, TypeError, KeyError) as exc:
-        raise ValueError("malformed pool binding from the selected release resolver") from exc
+        raise ValueError("malformed pool binding" + repair) from exc
     if binding != release:
         # HAPAX_PLATFORM_CAPABILITY_REGISTRY points at a declaration that binds, unbinds or
         # rebinds the route against the release's own: never run on a pool the release did not
@@ -234,7 +235,7 @@ def _pool_binding(root: Path) -> dict:
         or not isinstance(binding["config_dir"], str)
         or not Path(binding["config_dir"]).is_absolute()
     ):
-        raise ValueError("malformed pool binding from the selected release resolver")
+        raise ValueError("malformed pool binding" + repair)
     return binding
 
 
@@ -388,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
             "next action: repair the selected release descriptor/runtime and retry the review",
             file=sys.stderr,
         )
+        # Declaration refusal is 9; 64 below is only a conflicting --model assertion.
         return 9
     if args.model is not None and args.model != binding["descriptor"]["model_id"]:
         print(
