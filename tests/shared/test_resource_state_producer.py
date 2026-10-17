@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from shared import resource_state_producer as rsp
 
 NOW = datetime(2026, 10, 4, 6, 0, 0, tzinfo=UTC)
@@ -201,3 +203,157 @@ def test_claim_must_cite_a_fresh_resource_fact() -> None:
 def test_boundary_summary_names_lost_and_unexplained() -> None:
     s = rsp.resource_summary_for_boundary(rsp.build_bundle(observation=_observation(), now=NOW))
     assert "LOST" in s and "UNEXPLAINED" in s and "Cite a fact id" in s
+
+
+def _metadata_observation() -> dict:
+    obs = _observation()
+    obs["model_metadata"] = {
+        "11434": {
+            "observed_at": _iso(NOW),
+            "data": [
+                {
+                    "id": "nomic-embed-text:latest",
+                    "owned_by": "llamacpp",
+                    "meta": {
+                        "n_ctx": 1024,
+                        "n_ctx_train": 2048,
+                        "ftype": "F16",
+                        "n_embd": 768,
+                        "n_params": 136727040,
+                        "size": 273533952,
+                    },
+                }
+            ],
+        }
+    }
+    # Configuration is not evidence of per-sequence effective context or model identity.
+    obs["serving_procs"] = ["42 llama-server --ctx-size 8192 --model other-Q4.gguf"]
+    return obs
+
+
+def _metadata_facts(obs: dict) -> dict:
+    bundle = rsp.build_bundle(observation=obs, now=NOW)
+    return {
+        f["value"]["field"]: f for f in bundle["facts"]["loaded_model"] if "field" in f["value"]
+    }
+
+
+@pytest.mark.parametrize("age", [0, 300, 301, 901, -1])
+@pytest.mark.parametrize("suffix", ["", "/unknown"])
+def test_metadata_citation_uses_exact_field_and_own_window(age, suffix) -> None:
+    obs = _metadata_observation()
+    obs["model_metadata"]["11434"]["observed_at"] = _iso(NOW - timedelta(seconds=age))
+    bundle = rsp.build_bundle(observation=obs, now=NOW)
+    field = next(
+        f for f in bundle["facts"]["loaded_model"] if f["value"].get("field") == "context_tokens"
+    )
+    # The enclosing model is fresh: it cannot stand in for this field or an unknown child.
+    claim = f"Context from `{field['fact_id']}{suffix}`"
+    assert rsp.claim_cites_fresh_resource_fact(claim, bundle, now=NOW, window_s=600) is (
+        not suffix and 0 <= age <= 300
+    )
+
+
+def test_model_metadata_preserves_effective_context_and_quant_without_process_inference() -> None:
+    facts = _metadata_facts(_metadata_observation())
+    expected = {
+        "context_tokens": 1024,
+        "training_context_tokens": 2048,
+        "quantization": "F16",
+        "serving_owner": "llamacpp",
+        "embedding_dimensions": 768,
+        "parameter_count": 136727040,
+        "model_bytes": 273533952,
+    }
+    assert {k: f["value"]["value"] for k, f in facts.items()} == expected
+    for f in facts.values():
+        assert f["state"]["value_state"] == "lit"
+        assert f["provenance"]["observed_at"] == _iso(NOW)
+        assert f["air"]["public_or_air"] == "deny"
+    assert facts["context_tokens"]["provenance"]["source"] == "/v1/models data[].meta.n_ctx"
+
+
+def test_model_metadata_missing_is_absent_never_inferred_from_name_or_process() -> None:
+    facts = _metadata_facts(_observation())
+    assert len(facts) == 7
+    assert all(f["state"]["value_state"] == "absent" for f in facts.values())
+    assert all(f["value"]["value"] is None for f in facts.values())
+    assert all(f["freshness_state"] == "absent" for f in facts.values())
+
+
+@pytest.mark.parametrize("stamp", [None, "invalid", "2026-10-04T06:00:00", "2026-10-04T06:00:01Z"])
+def test_model_metadata_requires_its_own_valid_observation_time(stamp) -> None:
+    obs = _metadata_observation()
+    obs["model_metadata"]["11434"]["observed_at"] = stamp
+    fact = _metadata_facts(obs)["context_tokens"]
+    assert fact["state"]["value_state"] == "hold"
+    assert fact["freshness_state"] == "absent"
+
+
+def test_model_metadata_stales_at_its_window_even_with_fresh_outer_snapshot() -> None:
+    obs = _metadata_observation()
+    obs["model_metadata"]["11434"]["observed_at"] = _iso(NOW - timedelta(seconds=301))
+    fact = _metadata_facts(obs)["context_tokens"]
+    assert fact["freshness_state"] == "stale"
+    assert fact["state"]["value_state"] == "stale"
+
+
+def test_model_metadata_conflicting_context_is_held_and_training_context_is_separate() -> None:
+    obs = _metadata_observation()
+    obs["model_metadata"]["11434"]["data"][0]["max_model_len"] = 8192
+    fact = _metadata_facts(obs)["context_tokens"]
+    assert fact["state"]["value_state"] == "hold"
+    assert "conflicting_model_metadata" in fact["state"]["reason_codes"]
+    assert fact["value"]["value"] is None
+    assert _metadata_facts(obs)["training_context_tokens"]["value"]["value"] == 2048
+
+
+@pytest.mark.parametrize("bad", [True, -1, 0, "1024", {}, []])
+def test_model_metadata_unsupported_value_is_refused(bad) -> None:
+    obs = _metadata_observation()
+    obs["model_metadata"]["11434"]["data"][0]["meta"]["n_ctx"] = bad
+    fact = _metadata_facts(obs)["context_tokens"]
+    assert fact["state"]["value_state"] == "refused"
+    assert "unsupported_model_metadata" in fact["state"]["reason_codes"]
+    assert fact["value"]["value"] is None
+
+
+def test_model_metadata_join_is_by_endpoint_and_exact_model() -> None:
+    obs = _metadata_observation()
+    obs["model_metadata"]["11434"]["data"][0]["id"] = "another-model"
+    assert _metadata_facts(obs)["context_tokens"]["state"]["value_state"] == "absent"
+
+    obs = _metadata_observation()
+    obs["model_metadata"]["8000"] = obs["model_metadata"].pop("11434")
+    assert _metadata_facts(obs)["context_tokens"]["state"]["value_state"] == "absent"
+
+
+def test_model_metadata_duplicate_rows_do_not_choose_one_conflicting_value() -> None:
+    from copy import deepcopy
+
+    obs = _metadata_observation()
+    data = obs["model_metadata"]["11434"]["data"]
+    data.append(deepcopy(data[0]))
+    assert _metadata_facts(obs)["context_tokens"]["value"]["value"] == 1024
+    data[1]["meta"]["n_ctx"] = 8192
+    fact = _metadata_facts(obs)["context_tokens"]
+    assert fact["state"]["value_state"] == "hold"
+    assert fact["value"]["value"] is None
+
+
+@pytest.mark.parametrize("metadata", [["invalid"], {"11434": {"data": "invalid"}}])
+def test_model_metadata_malformed_envelope_is_refused(metadata) -> None:
+    obs = _metadata_observation()
+    obs["model_metadata"] = metadata
+    assert _metadata_facts(obs)["context_tokens"]["state"]["value_state"] == "refused"
+
+
+def test_unsupported_endpoint_response_is_refused_not_lost() -> None:
+    obs = _observation()
+    obs["local_endpoints"]["5000"] = None
+    b = rsp.build_bundle(observation=obs, now=NOW)
+    endpoint = next(f for f in b["facts"]["declared_endpoint"] if f["value"]["port"] == "5000")
+    assert endpoint["state"] == {
+        "value_state": "refused",
+        "reason_codes": ["unsupported_endpoint_response"],
+    }

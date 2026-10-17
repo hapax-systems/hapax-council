@@ -8,10 +8,10 @@
 #   source:         ~/projects/reins/api/reins_context.py
 #   reins commit:   ff2b1a227d269cb2c04f8c0e6d5bc59303eea130
 #   sha256(source): d5e9e9dd2974d08d1dd732fae3e26ba70df766fee7dbe4f7d61ab34809f9879a
-# The drift guard in test_resource_state_scripts_and_contract.py verifies, when HAPAX_REINS_ROOT is set,
-# that the governed file still hashes to this pin AND that the FULL per-audience projection matches this
-# copy. In CI (HAPAX_REINS_ROOT unset) that guard SKIPS with a reason; governed parity is carried by the
-# parent row estate-resource-state-determinative-projection-20261004.
+# The drift guard in test_resource_state_scripts_and_contract.py requires HAPAX_REINS_ROOT to name the
+# governed API directory; missing/unreadable bindings FAIL. It checks the source hash above and FULL
+# per-audience projections. Both pytest CI jobs materialize the pinned Reins checkout and bind its API
+# directory. Governed parity remains carried by estate-resource-state-determinative-projection-20261004.
 
 """reins_context — the tri-audience context-fact-bundle projection engine (convergence major-system #1).
 

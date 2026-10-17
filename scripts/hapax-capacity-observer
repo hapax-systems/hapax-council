@@ -89,16 +89,75 @@ rec["fleet_memory"] = fleet
 
 # local serving endpoints: alive flag + loaded model ids (the WHY join reads these)
 endpoints = {}
+http_statuses = {}
 loaded = {}
+metadata = {}
+
+
+def scalar(value):
+    # Malformed composite values may contain unrelated bodies. Retain an unsupported-type marker
+    # rather than persist those bodies; the producer refuses that field instead of guessing.
+    return value if value is None or isinstance(value, (str, int, float, bool)) else []
+
+
 for p in ENDPOINTS:
-    body = sh(f"curl -s -m 4 http://localhost:{p}/v1/models 2>/dev/null", 8)
-    endpoints[str(p)] = bool(body)
+    # Keep HTTP refusal distinct from transport failure. Never retain error bodies or stderr.
+    # A completed 2xx transfer still needs a valid model listing before it is called alive.
+    status = None
+    body = ""
+    complete = False
+    endpoints[str(p)] = None
     try:
-        loaded[str(p)] = [m.get("id") for m in (json.loads(body).get("data") or [])][:8] if body else []
-    except Exception:
-        loaded[str(p)] = []
+        response = subprocess.run(
+            ["curl", "--silent", "--max-time", "4", "--write-out", "\n%{http_code}",
+             f"http://localhost:{p}/v1/models"],
+            capture_output=True, timeout=8,
+        )
+        # Decode only inside JSON validation below, so invalid encoding is a refused listing.
+        body, _, code = response.stdout.rpartition(b"\n")
+        status = int(code) if code.isdigit() and 100 <= int(code) <= 599 else None
+        complete = response.returncode == 0 and status is not None and 200 <= status < 300
+        if response.returncode != 0 and status is None:
+            endpoints[str(p)] = False
+    except subprocess.TimeoutExpired:
+        endpoints[str(p)] = False
+    except OSError:
+        pass  # unavailable local probe is unknown, not evidence of a dead endpoint
+    http_statuses[str(p)] = status
+    observed_at = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+    loaded[str(p)] = []
+    if not complete:
+        continue
+    try:
+        payload = json.loads(body) if body else None
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list) or any(
+            not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"].strip()
+            for m in data
+        ):
+            continue
+        endpoints[str(p)] = True
+        loaded[str(p)] = list(dict.fromkeys(m["id"] for m in data))
+        # Preserve only resource metadata, never arbitrary endpoint response bodies. Keep duplicate
+        # model records here so the producer can surface conflicting fields rather than choose one.
+        records = []
+        for model in data:
+            record = {k: scalar(model[k]) for k in ("id", "owned_by", "max_model_len") if k in model}
+            meta = model.get("meta")
+            if isinstance(meta, dict):
+                record["meta"] = {k: scalar(meta[k]) for k in (
+                    "n_ctx", "n_ctx_train", "ftype", "n_embd", "n_params", "size"
+                ) if k in meta}
+            elif meta is not None:
+                record["meta"] = []  # unsupported format remains explicit, without arbitrary bodies
+            records.append(record)
+        metadata[str(p)] = {"observed_at": observed_at, "data": records}
+    except (ValueError, TypeError):
+        pass
 rec["local_endpoints"] = endpoints
+rec["endpoint_http_status"] = http_statuses
 rec["loaded_models"] = loaded
+rec["model_metadata"] = metadata
 
 # process inspection: serving stacks actually running (the producer pairs these with /v1/models ids
 # so "loaded" is an observed model + process, never a RAM-occupancy inference).

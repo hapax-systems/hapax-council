@@ -639,8 +639,17 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
         shard_count: [4]
+    env:
+      HAPAX_REINS_ROOT: ${{ github.workspace }}/.ci-reins/api
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Check out governed Reins parity source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: hapax-systems/reins
+          ref: ff2b1a227d269cb2c04f8c0e6d5bc59303eea130 # pragma: allowlist secret
+          path: .ci-reins
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           enable-cache: true
@@ -929,6 +938,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      HAPAX_REINS_ROOT: ${{ github.workspace }}/.ci-reins/api
     steps:
       - name: Post-merge duplicate required-check sentinel
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
@@ -938,6 +949,14 @@ jobs:
         run: echo "Docs-only change set; test reports success without running pytest."
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+      - name: Check out governed Reins parity source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+        with:
+          repository: hapax-systems/reins
+          ref: ff2b1a227d269cb2c04f8c0e6d5bc59303eea130 # pragma: allowlist secret
+          path: .ci-reins
+          persist-credentials: false
       - name: Determine Python test mode
         id: test_mode
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'

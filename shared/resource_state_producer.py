@@ -15,6 +15,7 @@ not a separate alarm system.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -114,6 +115,96 @@ def _fact(
         "value": value,
         "affordance_inputs": {"can_explain": True},
     }
+
+
+def _model_field_facts(
+    subject: str, model: str, metadata: Any, *, now: datetime
+) -> list[dict[str, Any]]:
+    """Project allowlisted /v1/models metadata, never process flags or model-name guesses.
+
+    Each field has its own fact envelope. Endpoint-reported values describe the listing,
+    not benchmarked fit, admitted capability, or the executable's verified identity.
+    """
+    fields = {
+        "context_tokens": ("meta.n_ctx", "max_model_len"),
+        "training_context_tokens": ("meta.n_ctx_train",),
+        "quantization": ("meta.ftype",),
+        "serving_owner": ("owned_by",),
+        "embedding_dimensions": ("meta.n_embd",),
+        "parameter_count": ("meta.n_params",),
+        "model_bytes": ("meta.size",),
+    }
+    malformed = metadata is not None and not isinstance(metadata, dict)
+    envelope = metadata if isinstance(metadata, dict) else {}
+    data = envelope.get("data", [])
+    malformed |= not isinstance(data, list)
+    rows = (
+        [r for r in data if isinstance(r, dict) and r.get("id") == model]
+        if isinstance(data, list)
+        else []
+    )
+    observed_at = envelope.get("observed_at")
+    instant = _parse_iso(observed_at) if isinstance(observed_at, str) else None
+    valid_time = instant is not None and instant.tzinfo is not None and instant <= now
+    facts = []
+    for field, paths in fields.items():
+        candidates = []
+        sources = []
+        invalid = malformed
+        for row in rows:
+            for path in paths:
+                value: Any = row
+                for part in path.split("."):
+                    if not isinstance(value, dict):
+                        invalid = True
+                        break
+                    value = value.get(part)
+                    if value is None:
+                        break
+                if value is None:
+                    continue
+                valid = (
+                    isinstance(value, str) and bool(value.strip())
+                    if field in {"quantization", "serving_owner"}
+                    else type(value) is int and value > 0
+                )
+                if not valid:
+                    invalid = True
+                    continue
+                candidates.append(value)
+                sources.append(path)
+        state, reasons, result = "absent", ["model_metadata_absent"], None
+        if invalid:
+            state, reasons = "refused", ["unsupported_model_metadata"]
+        elif candidates:
+            if any(v != candidates[0] for v in candidates[1:]):
+                state, reasons = "hold", ["conflicting_model_metadata"]
+            else:
+                state, reasons, result = "lit", [], candidates[0]
+                if not valid_time:
+                    state, reasons = "hold", ["model_metadata_observation_time_invalid"]
+        fact = _fact(
+            "loaded_model",
+            f"{subject}/field:{field}",
+            now=now,
+            observed_at=observed_at if valid_time and (candidates or invalid) else None,
+            value={"model": model, "field": field, "value": result},
+            value_state=state,
+            reason_codes=reasons,
+            confidence_word="absent" if state in {"absent", "refused"} else "medium",
+            source="/v1/models " + ",".join(f"data[].{p}" for p in dict.fromkeys(sources or paths)),
+        )
+        # Metadata expires at its own window, not the enclosing snapshot's collection time.
+        if (
+            valid_time
+            and candidates
+            and (now - instant).total_seconds() > FRESHNESS_WINDOWS_S["loaded_model"]
+        ):
+            fact["freshness_state"] = "stale"
+            if state == "lit":
+                fact["state"]["value_state"] = "stale"
+        facts.append(fact)
+    return facts
 
 
 def build_bundle(
@@ -249,8 +340,14 @@ def build_bundle(
     for port, alive in (observation.get("local_endpoints") or {}).items():
         if str(port) not in DECLARED_PORTS:
             continue  # probed-but-not-declared: feeds loaded_model, not a declared_endpoint/LOST claim
-        vs, reasons = classify_declared_endpoint(declared=True, alive=bool(alive))
-        value: dict[str, Any] = {"port": port, "alive": bool(alive)}
+        http_status = (observation.get("endpoint_http_status") or {}).get(port)
+        if type(http_status) is int and 300 <= http_status <= 599:
+            vs, reasons = "refused", ["endpoint_http_refused"]
+        elif not isinstance(alive, bool):
+            vs, reasons = "refused", ["unsupported_endpoint_response"]
+        else:
+            vs, reasons = classify_declared_endpoint(declared=True, alive=bool(alive))
+        value: dict[str, Any] = {"port": port, "alive": alive, "http_status": http_status}
         if appendix_backing:
             value["backing"] = appendix_backing
         facts["declared_endpoint"].append(
@@ -272,6 +369,7 @@ def build_bundle(
     #     model with no admitting row is UNEXPLAINED. A host with no /v1/models probe makes NO loaded
     #     claim here (its memory is reported as a VRAM value above, not as a loaded model).
     serving_procs = observation.get("serving_procs") or []
+    metadata = observation.get("model_metadata", {})
     for endpoint, model_ids in (observation.get("loaded_models") or {}).items():
         for model in model_ids or []:
             subj = f"host:{local_host}:{endpoint}/{model}"
@@ -293,6 +391,14 @@ def build_bundle(
                     reason_codes=reasons,
                     confidence_word="high",
                     source="/v1/models + process inspection",
+                )
+            )
+            facts["loaded_model"].extend(
+                _model_field_facts(
+                    subj,
+                    model,
+                    metadata.get(endpoint) if isinstance(metadata, dict) else metadata,
+                    now=now,
                 )
             )
 
@@ -399,13 +505,18 @@ def claim_cites_fresh_resource_fact(
     claim_text: str, bundle: dict[str, Any], *, now: datetime | None = None, window_s: int = 300
 ) -> bool:
     """First enforced obligation (D-011/OFP): a capacity/host/routing claim must cite a resource
-    ``fact_id`` that is present in the bundle and fresher than ``window_s``. Mechanically decidable."""
+    ``fact_id`` as a complete whitespace-delimited or backticked token. A citation uses that fact's
+    own observation time and cannot extend its declared freshness window. Mechanically decidable."""
     now = now or datetime.now(UTC)
     by_id = {f["fact_id"]: f for lst in (bundle.get("facts") or {}).values() for f in lst}
-    for fid, f in by_id.items():
-        if fid in claim_text:
-            return freshness_state(f["provenance"].get("observed_at"), now, window_s) in (
-                "fresh",
-                "aging",
-            )
+    for token in re.findall(r"[^\s`<>\[\](){};,!?\"']+", claim_text):
+        f = by_id.get(token)
+        if f is None:
+            continue
+        observed = _parse_iso(f["provenance"].get("observed_at"))
+        if observed is None or observed.tzinfo is None:
+            continue
+        window = min(window_s, FRESHNESS_WINDOWS_S.get(f["fact_type"], 300))
+        if 0 <= (now - observed).total_seconds() <= window:
+            return True
     return False

@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from shared import resource_state_producer as rsp
 
@@ -197,29 +198,20 @@ def _drift_probe_bundle() -> dict:
 
 
 def test_vendored_reins_matches_governed_full_projection() -> None:
-    """Drift guard (seat #5029 round): when the governed reins is importable (HAPAX_REINS_ROOT), the
-    governed and vendored FULL per-audience projections must be deep-equal — every surviving fact's
-    fields, redaction, reason codes, sealed fields and affordances, not just fact_count — AND the governed
-    file must still hash to the pinned sha. This guard runs ONLY when the governed tree is present; in CI
-    it SKIPS (below). It does not by itself prevent silent drift in CI: the pin + the parent row carry
-    governed parity there."""
+    """Require the declared governed carrier and compare its exact file and full projections.
+
+    Missing/unreadable bindings fail: vendored AIR tests alone are not governed parity.
+    Import the hashed path directly so sys.path or a cached module cannot replace it.
+    """
     root = os.environ.get("HAPAX_REINS_ROOT", "").strip()
     if not root:
-        pytest.skip(
-            "HAPAX_REINS_ROOT unset: the governed reins tree is absent (e.g. CI), so this guard cannot "
-            "run. The CI AIR contract is witnessed against the vendored carrier "
-            "tests/fixtures/reins_context_vendored.py, pinned to reins commit "
-            f"{_PINNED_REINS_COMMIT} (sha {_PINNED_REINS_SHA256}); governed parity is carried by the "
-            "parent row estate-resource-state-determinative-projection-20261004. This is a SKIP, not a pass."
-        )
-    root_path = Path(root).expanduser()
-    if str(root_path) not in sys.path:
-        sys.path.insert(0, str(root_path))
-    try:
-        import reins_context as governed  # noqa: PLC0415
-    except ImportError:
-        pytest.skip(f"governed reins_context not importable at HAPAX_REINS_ROOT={root}")
+        pytest.fail("HAPAX_REINS_ROOT required: bind the governed reins api directory for parity")
+    root_path = Path(root).expanduser().resolve()
     governed_file = root_path / "reins_context.py"
+    if not governed_file.is_file():
+        pytest.fail(
+            f"governed reins_context.py unavailable at {root_path}; repair the declared binding"
+        )
     actual_sha = hashlib.sha256(governed_file.read_bytes()).hexdigest()
     assert actual_sha == _PINNED_REINS_SHA256, (
         f"governed reins_context.py has drifted from the pin: {actual_sha} != {_PINNED_REINS_SHA256}. "
@@ -264,6 +256,7 @@ def test_vendored_reins_matches_governed_full_projection() -> None:
             f"reins_context.py at pinned commit {_PINNED_REINS_COMMIT} hashes {blob_sha}, not the pinned "
             f"{_PINNED_REINS_SHA256}"
         )
+    governed = _load_module(governed_file, "resource_parity_governed_reins")
     b = _drift_probe_bundle()
     for aud in VENDORED_REINS.AUDIENCES:
         assert governed.project(b, aud) == VENDORED_REINS.project(b, aud), (
@@ -330,16 +323,318 @@ def test_script_hapax_resources_json_projects_through_governed_reins(tmp_path: P
 
 
 def test_script_hapax_capacity_observer_appends_valid_json(tmp_path: Path) -> None:
-    """The observer runs read-only and appends one valid JSON observation with the producer's input
-    keys, even where probes find nothing (no GPU/ssh/tmux in CI)."""
-    obs = tmp_path / "cap.jsonl"
-    r = _run(
-        ["bash", str(REPO / "scripts" / "hapax-capacity-observer")],
-        {"HAPAX_CAPACITY_OBS": str(obs)},
-    )
-    assert r.returncode == 0, r.stderr
-    lines = [line for line in obs.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) == 1
-    rec = json.loads(lines[0])
+    """Exercise the real observer with empty, isolated probe responses; no estate scan."""
+    rec = _observer_fixture(tmp_path, {"data": []})
     for key in ("ts", "loaded_models", "local_endpoints", "serving_procs", "fleet_memory", "gpus"):
         assert key in rec
+
+
+@pytest.mark.parametrize("root", ["", "/nonexistent/resource-parity-root"])
+def test_governed_parity_missing_binding_fails_instead_of_skipping(monkeypatch, root) -> None:
+    monkeypatch.setenv("HAPAX_REINS_ROOT", root)
+    try:
+        with pytest.raises(pytest.fail.Exception):
+            test_vendored_reins_matches_governed_full_projection()
+    except pytest.skip.Exception:
+        pytest.fail("missing governed binding was skipped instead of failed")
+
+
+def test_governed_parity_loads_the_hashed_file_not_a_cached_module(monkeypatch) -> None:
+    import types
+
+    monkeypatch.setitem(sys.modules, "reins_context", types.SimpleNamespace(project=lambda *_: {}))
+    test_vendored_reins_matches_governed_full_projection()
+
+
+def test_governed_parity_rejects_hash_drift_before_import(tmp_path, monkeypatch) -> None:
+    (tmp_path / "reins_context.py").write_text(
+        "raise RuntimeError('must not import drifted file')\n"
+    )
+    monkeypatch.setenv("HAPAX_REINS_ROOT", str(tmp_path))
+    with pytest.raises(AssertionError, match="has drifted from the pin"):
+        test_vendored_reins_matches_governed_full_projection()
+
+
+def test_governed_parity_compares_full_projection(monkeypatch) -> None:
+    original = VENDORED_REINS.project
+
+    def changed_reason(*args):
+        result = original(*args)
+        result["changed_reason"] = "fixture drift beyond counts"
+        return result
+
+    monkeypatch.setattr(VENDORED_REINS, "project", changed_reason)
+    with pytest.raises(AssertionError, match="FULL projection drift"):
+        test_vendored_reins_matches_governed_full_projection()
+
+
+def _observer_fixture(
+    tmp_path: Path, body: dict | str | bytes, *, http_status: int = 200, curl_exit: int = 0
+) -> dict:
+    """Run the shipped shell/Python script with every external probe replaced by a local fixture."""
+    probes = tmp_path / "bin"
+    probes.mkdir()
+    response = tmp_path / "models.json"
+    if isinstance(body, bytes):
+        response.write_bytes(body)
+    else:
+        response.write_text(body if isinstance(body, str) else json.dumps(body))
+    for name in ("ssh", "timeout", "tmux", "pgrep", "nvidia-smi", "hostname", "curl"):
+        path = probes / name
+        command = (
+            # Model curl's --fail and --write-out behavior, so a denied response cannot
+            # accidentally pass by serving the fixture as a successful model listing.
+            'case " $* " in *" --fail "*) [ "$HTTP_STATUS" -lt 400 ] || exit 22;; esac\n'
+            'cat "$MODEL_RESPONSE"\n'
+            'case " $* " in *" --write-out "*) printf "\\n%03d" "$HTTP_STATUS";; esac\n'
+            'exit "$CURL_EXIT"'
+            if name == "curl"
+            else ("echo fixture-host" if name == "hostname" else "exit 0")
+        )
+        path.write_text("#!/bin/sh\n" + command + "\n")
+        path.chmod(0o755)
+    obs = tmp_path / "cap.jsonl"
+    run = _run(
+        ["bash", str(REPO / "scripts/hapax-capacity-observer")],
+        {
+            "PATH": str(probes) + os.pathsep + os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "MODEL_RESPONSE": str(response),
+            "HTTP_STATUS": str(http_status),
+            "CURL_EXIT": str(curl_exit),
+            "HAPAX_CAPACITY_OBS": str(obs),
+        },
+    )
+    assert run.returncode == 0, run.stderr
+    return json.loads(obs.read_text())
+
+
+def _reader_projection(tmp_path: Path) -> dict:
+    run = _run(
+        [sys.executable, str(REPO / "scripts/hapax-resources"), "--json"],
+        {
+            "HAPAX_CAPACITY_OBS": str(tmp_path / "cap.jsonl"),
+            "HAPAX_REINS_ROOT": os.environ["HAPAX_REINS_ROOT"],
+            "HAPAX_ENTITLEMENT_SURFACE": str(tmp_path / "absent"),
+            "HAPAX_KIMI_BENCH_LEDGER": str(tmp_path / "absent"),
+        },
+    )
+    assert run.returncode == 0, run.stderr
+    projection = json.loads(run.stdout)
+    assert projection["audience"] == "operator_private"
+    return projection
+
+
+@pytest.mark.parametrize("context_key", ["n_ctx", "max_model_len"])
+def test_observer_metadata_reaches_the_real_reader_projection(tmp_path: Path, context_key) -> None:
+    model = {
+        "id": "embedding",
+        "owned_by": "llamacpp",
+        "meta": {
+            "n_ctx_train": 2048,
+            "ftype": "F16",
+            "n_embd": 768,
+            "n_params": 137000000,
+            "size": 274000000,
+        },
+        "private_unrelated_field": "MUST-NOT-CARRY",
+    }
+    if context_key == "n_ctx":
+        model["meta"]["n_ctx"] = 1024
+    else:
+        model["max_model_len"] = 1024
+    rec = _observer_fixture(tmp_path, {"data": [model]})
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    projection = _reader_projection(tmp_path)
+    fields = {
+        f["value"]["field"]: f
+        for f in projection["facts"]
+        if f["subject_ref"].startswith("host:fixture-host:8000/embedding/field:")
+    }
+    expected = {
+        "context_tokens": 1024,
+        "training_context_tokens": 2048,
+        "quantization": "F16",
+        "serving_owner": "llamacpp",
+        "embedding_dimensions": 768,
+        "parameter_count": 137000000,
+        "model_bytes": 274000000,
+    }
+    assert fields.keys() == expected.keys()
+    for field, value in expected.items():
+        fact = fields[field]
+        assert fact["value"]["value"] == value, field
+        assert fact["state"]["value_state"] == "lit", field
+        assert fact["freshness_state"] == "fresh", field
+        assert fact["provenance"]["observed_at"] == rec["model_metadata"]["8000"]["observed_at"]
+
+
+@pytest.mark.parametrize(
+    ("status", "curl_exit", "body", "alive", "state", "reason"),
+    [
+        (401, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (403, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (403, 0, b"\xff", None, "refused", "endpoint_http_refused"),
+        (404, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (500, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (
+            403,
+            0,
+            '{"data":[{"id":"not-a-loaded-model"}]}',
+            None,
+            "refused",
+            "endpoint_http_refused",
+        ),
+        (200, 0, "", None, "refused", "unsupported_endpoint_response"),
+        (200, 18, '{"data":[]}', None, "refused", "unsupported_endpoint_response"),
+        (0, 7, "", False, "absent", "LOST"),
+        (0, 28, "", False, "absent", "LOST"),
+    ],
+)
+def test_observer_http_refusal_is_distinct_from_transport_failure(
+    tmp_path: Path, status, curl_exit, body, alive, state, reason
+) -> None:
+    rec = _observer_fixture(tmp_path, body, http_status=status, curl_exit=curl_exit)
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    assert all(value is alive for value in rec["local_endpoints"].values())
+    assert all(value == (status or None) for value in rec["endpoint_http_status"].values())
+    assert all(ids == [] for ids in rec["loaded_models"].values())
+    assert rec["model_metadata"] == {}
+    projection = _reader_projection(tmp_path)
+    endpoints = [f for f in projection["facts"] if f["fact_type"] == "declared_endpoint"]
+    assert len(endpoints) == 2
+    for fact in endpoints:
+        assert fact["value"]["alive"] is alive
+        assert fact["value"]["http_status"] == (status or None)
+        assert fact["state"]["value_state"] == state
+        assert reason in fact["state"]["reason_codes"]
+        assert ("LOST" in fact["state"]["reason_codes"]) is (alive is False)
+
+
+@pytest.mark.parametrize(
+    "body", [{"error": "not a model list"}, {"data": "bad"}, "{invalid", b"\xff"]
+)
+def test_observer_unsupported_model_listing_cannot_be_alive(tmp_path: Path, body) -> None:
+    rec = _observer_fixture(tmp_path, body)
+    assert rec["local_endpoints"]
+    assert all(value is None for value in rec["local_endpoints"].values())
+    assert all(not ids for ids in rec["loaded_models"].values())
+    endpoints = rsp.build_bundle(observation=rec)["facts"]["declared_endpoint"]
+    assert len(endpoints) == 2
+    for fact in endpoints:
+        assert fact["state"]["value_state"] == "refused"
+        assert "unsupported_endpoint_response" in fact["state"]["reason_codes"]
+        assert "LOST" not in fact["state"]["reason_codes"]
+
+
+def test_observer_loaded_ids_are_deduplicated_without_truncating_metadata(tmp_path: Path) -> None:
+    ids = [f"m{i}" for i in range(12)]
+    data = [{"id": model, "meta": {"n_ctx": 1024}} for model in ids]
+    data.append({"id": "m0", "meta": {"n_ctx": 2048}})
+    rec = _observer_fixture(tmp_path, {"data": data})
+    assert all(value is True for value in rec["local_endpoints"].values())
+    assert all(models == ids for models in rec["loaded_models"].values())
+    assert rec["model_metadata"]["8000"]["data"] == data
+    projection = _reader_projection(tmp_path)
+    contexts = {
+        f["value"]["model"]: f
+        for f in projection["facts"]
+        if f["subject_ref"].startswith("host:fixture-host:8000/")
+        and f["value"].get("field") == "context_tokens"
+    }
+    assert contexts.keys() == set(ids)
+    assert contexts["m0"]["state"]["value_state"] == "hold"
+    assert "conflicting_model_metadata" in contexts["m0"]["state"]["reason_codes"]
+    assert contexts["m11"]["value"]["value"] == 1024
+
+
+@pytest.mark.parametrize("meta", ["MUST-NOT-CARRY", ["MUST-NOT-CARRY"]])
+def test_observer_non_dict_metadata_is_refused_without_carrying_bodies(
+    tmp_path: Path, meta
+) -> None:
+    rec = _observer_fixture(tmp_path, {"data": [{"id": "m", "owned_by": "llamacpp", "meta": meta}]})
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    assert rec["model_metadata"]["8000"]["data"][0]["meta"] == []
+    projection = _reader_projection(tmp_path)
+    fields = {
+        f["value"]["field"]: f
+        for f in projection["facts"]
+        if f["subject_ref"].startswith("host:fixture-host:8000/m/field:")
+    }
+    for field in (
+        "context_tokens",
+        "training_context_tokens",
+        "quantization",
+        "embedding_dimensions",
+        "parameter_count",
+        "model_bytes",
+    ):
+        assert fields[field]["state"]["value_state"] == "refused"
+        assert "unsupported_model_metadata" in fields[field]["state"]["reason_codes"]
+    assert fields["serving_owner"]["value"]["value"] == "llamacpp"
+    assert fields["serving_owner"]["state"]["value_state"] == "lit"
+
+
+def test_observer_empty_success_is_a_live_listing(tmp_path: Path) -> None:
+    rec = _observer_fixture(tmp_path, {"data": []})
+    assert all(value is True for value in rec["local_endpoints"].values())
+    assert all(ids == [] for ids in rec["loaded_models"].values())
+    endpoints = [
+        f for f in _reader_projection(tmp_path)["facts"] if f["fact_type"] == "declared_endpoint"
+    ]
+    assert len(endpoints) == 2
+    assert all(f["state"]["value_state"] == "lit" for f in endpoints)
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError(), subprocess.TimeoutExpired("curl", 8)])
+def test_observer_subprocess_exceptions_preserve_snapshot(tmp_path, monkeypatch, failure) -> None:
+    def probe(command, **kwargs):
+        if isinstance(command, list):
+            raise failure
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    obs = tmp_path / "cap.jsonl"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["observer", str(obs)])
+    monkeypatch.setattr(subprocess, "run", probe)
+    source = (REPO / "scripts/hapax-capacity-observer").read_text().split("<<'PY'\n", 1)[1]
+    exec(compile(source.rsplit("\nPY", 1)[0], "observer", "exec"), {})
+    rec = json.loads(obs.read_text())
+    timed_out = isinstance(failure, subprocess.TimeoutExpired)
+    assert all(value is (False if timed_out else None) for value in rec["local_endpoints"].values())
+    facts = rsp.build_bundle(observation=rec)["facts"]["declared_endpoint"]
+    assert len(facts) == 2
+    for fact in facts:
+        assert fact["state"]["value_state"] == ("absent" if timed_out else "refused")
+        assert ("LOST" in fact["state"]["reason_codes"]) is timed_out
+
+
+def test_observer_composite_metadata_is_refused_without_carrying_bodies(tmp_path: Path) -> None:
+    rec = _observer_fixture(
+        tmp_path, {"data": [{"id": "m", "meta": {"n_ctx": {"private": "MUST-NOT-CARRY"}}}]}
+    )
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    bundle = rsp.build_bundle(observation=rec)
+    context = next(
+        f for f in bundle["facts"]["loaded_model"] if f["value"].get("field") == "context_tokens"
+    )
+    assert context["state"]["value_state"] == "refused"
+
+
+@pytest.mark.parametrize("job_name", ["test", "test-full-shard"])
+def test_ci_materializes_the_governed_parity_binding_in_both_pytest_jobs(job_name) -> None:
+    workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"][job_name]
+    assert job.get("env", {}).get("HAPAX_REINS_ROOT") == "${{ github.workspace }}/.ci-reins/api"
+    steps = job["steps"]
+    checkout = next(s for s in steps if s.get("uses", "").startswith("actions/checkout@"))
+    governed = next(s for s in steps if s.get("name") == "Check out governed Reins parity source")
+    assert governed["uses"] == checkout["uses"]
+    assert governed.get("if") == checkout.get("if")
+    assert governed["with"] == {
+        "repository": "hapax-systems/reins",
+        "ref": _PINNED_REINS_COMMIT,
+        "path": ".ci-reins",
+        "persist-credentials": False,
+    }
+    assert steps.index(checkout) < steps.index(governed)
