@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# v2 predecessor is preserved byte-for-byte in this file's first commit.
+# Source-only publication: install/start only through separately admitted release.
+# Kept in systemd/scripts/ so existing post-merge deployers skip installation.
+# Bindings: PERSONAL_VAULT_PATH / HAPAX_LANEBUS_DIR, XDG_CACHE_HOME,
+# HAPAX_MAILWAKE_HEARTBEAT, HAPAX_SESSION_PROTECTION_FILE. --cycles N bounds
+# offline probes; normal service operation has no cycle limit.
+set -uo pipefail
+L="${HAPAX_LANEBUS_DIR:-${PERSONAL_VAULT_PATH:-$HOME/Documents/Personal}/30-areas/hapax/lanebus}"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/hapax"
+HEARTBEAT="${HAPAX_MAILWAKE_HEARTBEAT:-$CACHE/lanes-mailwake-heartbeat.json}"
+PROTECTION="${HAPAX_SESSION_PROTECTION_FILE:-$CACHE/relay/session-protection.md}"
+TMUX_TIMEOUT="${HAPAX_MAILWAKE_TMUX_TIMEOUT_SECONDS:-2}"
+MAIL_RE='^[0-9]{8}T[0-9]{6}Z-[^/]+\.md$'
+declare -A SEEN PEND LAST FAM UNCERTAIN
+log(){ printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
+
+# timeout owns the child process group; even an ignored TERM gets a bounded KILL.
+# Never log the captured pane, command output, mail content or a credential.
+tm(){
+  local target=$1 rc; shift
+  timeout --kill-after=1 "$TMUX_TIMEOUT" tmux "$@" 2>/dev/null && return 0
+  rc=$?
+  log "tmux failed target=$target command=$1 status=$rc; skipped"
+  return "$rc"
+}
+family_of(){
+  case "$1" in
+    hapax-kimi-*) echo kimi ;;
+    hapax-glmcp-*) echo glmcp ;;
+    hapax-fugu-*) echo fugu ;;
+    *) return 1 ;;
+  esac
+}
+role_of(){
+  local f r
+  f=$(family_of "$1") || return 1
+  r=${1#hapax-$f-}
+  [ "$f" != fugu ] || r="fugu-$r"
+  printf '%s' "$r"
+}
+inbox_dirs(){ printf '%s\n' "$1"; }
+allowed(){
+  local role rc=0
+  [[ "$1" =~ ^hapax-(kimi|glmcp|fugu)-[a-z0-9][a-z0-9-]*$ ]] || return 1
+  case "$1" in *review*|*frozen*|*protected*) return 1 ;; esac
+  role=$(role_of "$1") || return 1
+  if [ -e "$PROTECTION" ] || [ -L "$PROTECTION" ]; then
+    # Non-regular files can be readable yet fail (directories) or block (FIFOs).
+    # A dangling symlink is a broken binding, not an absent optional registry.
+    if [ ! -f "$PROTECTION" ] || [ ! -r "$PROTECTION" ]; then
+      log 'protection registry unreadable; restore a readable regular protection registry at the declared binding'
+      return 2
+    fi
+    # Same authored protection registry as the existing launchers. Narrow on a
+    # role or full-session mention; never clear or override protection here.
+    grep -Fq -e "\`$role\`" -e "\`$1\`" -- "$PROTECTION" 2>/dev/null || rc=$?
+    case "$rc" in
+      0) return 1 ;; # Protected.
+      1) ;; # A completed read with no match.
+      *) log 'protection registry unreadable; restore a readable regular protection registry at the declared binding'; return 2 ;;
+    esac
+  fi
+}
+sessions(){
+  local names t rc
+  names=$(tm estate list-sessions -F '#{session_name}') || return 1
+  while IFS= read -r t; do
+    if allowed "$t"; then
+      printf '%s\n' "$t"
+    else
+      rc=$?
+      # Failure to classify protection is incomplete discovery, not idle health.
+      [ "$rc" != 2 ] || return 2
+    fi
+  done <<<"$names"
+  return 0
+}
+lsd(){
+  local d f b
+  for d in $(inbox_dirs "$1"); do
+    for f in "$L/$d"/*.md; do
+      [ -f "$f" ] || continue
+      b=${f##*/}
+      [[ "$b" =~ $MAIL_RE ]] || continue
+      case "$b" in *host-recovery*|*.tmp.*) continue ;; esac
+      printf '%s/%s\n' "$d" "$b"
+    done
+  done | LC_ALL=C sort -u
+}
+init_target(){
+  SEEN[$1]=$(lsd "$(role_of "$1")"); PEND[$1]=''; LAST[$1]=0
+  FAM[$1]=$(family_of "$1"); UNCERTAIN[$1]=0
+}
+
+# Each snapshot identifies one pane (not whichever pane becomes active later).
+# A shell, copy mode, a split session, unknown UI or unreadable pane is ineligible.
+snapshot(){
+  local t=$1 meta extra
+  meta=$(tm "$t" list-panes -s -t "=$t" -F '#{pane_id}|#{pane_current_command}|#{cursor_y}|#{cursor_x}|#{pane_in_mode}') || return 1
+  [[ "$meta" != *$'\n'* ]] || return 1
+  IFS='|' read -r PANE COMMAND ROW COL MODE extra <<<"$meta"
+  [[ "$PANE" =~ ^%[0-9]+$ && "$ROW" =~ ^[0-9]+$ && "$COL" =~ ^[0-9]+$ && "$MODE" = 0 && -z "$extra" ]] || return 1
+  case "${FAM[$t]}:$COMMAND" in kimi:kimi|kimi:kimi-code|glmcp:kimi|glmcp:kimi-code|fugu:codex) ;; *) return 1 ;; esac
+  FRAME=$(tm "$t" capture-pane -p -t "$PANE") || return 1
+  [ -n "$FRAME" ] || return 1
+  # Kimi's idle footer contains 'thinking: max'; that is not an active turn.
+  ! tail -8 <<<"$FRAME" | grep -qE 'Thinking|thinking(…|\.\.\.)|elapsed|Using |Running|Preparing|Ran a command|[Ii]nterrupt|[Cc]ancel'
+}
+input_matches(){
+  local expected=$1 actual prefix before after rest
+  actual=$(sed -n "$((ROW+1))p" <<<"$FRAME")
+  before=$(sed -n "${ROW}p" <<<"$FRAME")
+  after=$(sed -n "$((ROW+2))p" <<<"$FRAME")
+  if [[ "$COMMAND" = kimi* ]]; then
+    # Only an observed single-row box is admissible. Wrapping and multiline
+    # input are ambiguous; never join lines by deleting meaningful whitespace.
+    [[ "$before" =~ ^[\ ]*╭─+╮[\ ]*$ && "$after" =~ ^[\ ]*╰─+╯[\ ]*$ ]] || return 1
+    [[ "$actual" =~ ^([\ ]*│\ \>\ ) ]] || return 1
+    prefix=${BASH_REMATCH[1]}
+    [ "$COL" -eq $((${#prefix}+${#expected})) ] || return 1
+    rest=${actual:${#prefix}}
+    [ "${rest:0:${#expected}}" = "$expected" ] || return 1
+    # Spaces AFTER the end cursor are box padding. Before it, every space is
+    # input and must match; even an all-space draft moves the cursor and holds.
+    rest=${rest:${#expected}}
+    [[ "$rest" =~ ^[\ ]*│[\ ]*$ ]]
+  else
+    [[ "$actual" =~ ^([\ ]*›\ ) && -z "$after" ]] || return 1
+    prefix=${BASH_REMATCH[1]}
+    [ "$COL" -eq $((${#prefix}+${#expected})) ] || return 1
+    [ "$actual" = "$prefix$expected" ]
+  fi
+}
+idle(){
+  local t=$1 first pane
+  snapshot "$t" && input_matches '' || return 1
+  first=$FRAME; pane=$PANE
+  sleep 0.2
+  snapshot "$t" && input_matches '' || return 1
+  [ "$FRAME" = "$first" ] && [ "$PANE" = "$pane" ]
+}
+deliver(){
+  local t=$1 msg=$2 pane
+  allowed "$t" && idle "$t" || return 1
+  pane=$PANE
+  # Once paste is attempted its outcome may be ambiguous. Do not retry, clear
+  # the input, press C-s or send Enter to a different pane after any uncertainty.
+  UNCERTAIN[$t]=1
+  tm "$t" send-keys -t "$pane" -l "$msg" || {
+    log "delivery held target=$t: paste outcome uncertain; inspect receiving pane and reconcile uncertain submission before recovery"
+    return 1
+  }
+  sleep 1
+  allowed "$t" && snapshot "$t" && [ "$PANE" = "$pane" ] && input_matches "$msg" || {
+    log "delivery held target=$t: pane/input/protection changed after paste; inspect receiving pane and reconcile uncertain submission before recovery"
+    return 1
+  }
+  tm "$t" send-keys -t "$pane" Enter || {
+    log "delivery held target=$t: Enter outcome uncertain; inspect receiving pane and reconcile uncertain submission before recovery"
+    return 1
+  }
+  UNCERTAIN[$t]=0
+  log "submitted to $t fam=${FAM[$t]}; receiving-end uptake unobserved"
+}
+heartbeat(){
+  local cycle=$1 count=$2 discovery=$3 held=$4 status=ready tmp
+  [ "$held" = '[]' ] || status=held
+  [ "$discovery" = true ] || status=discovery_failed
+  mkdir -p "$(dirname "$HEARTBEAT")" || return 1
+  tmp=$(mktemp "${HEARTBEAT}.XXXXXX") || return 1
+  printf '{"observed_at":"%s","cycle":%s,"targets":%s,"discovery_complete":%s,"held_targets":%s,"status":"%s"}\n' "$(date -u +%FT%T.%NZ)" "$cycle" "$count" "$discovery" "$held" "$status" >"$tmp" && mv -f -- "$tmp" "$HEARTBEAT"
+}
+main(){
+  local limit=0 cycle=0 count targets t role now new name ts msg discovery held separator
+  if [ "$#" -gt 0 ]; then
+    if [ "$#" != 2 ] || [ "$1" != --cycles ] || ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+      log 'usage: hapax-lanes-mailwake [--cycles POSITIVE_INTEGER]'; return 2
+    fi
+    limit=$2
+  fi
+  if ! [[ "$TMUX_TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk -v n="$TMUX_TIMEOUT" 'BEGIN {exit !(n>0 && n<=10)}'; then
+    log 'HAPAX_MAILWAKE_TMUX_TIMEOUT_SECONDS must be >0 and <=10'; return 2
+  fi
+  targets=$(sessions) || targets=''
+  for t in $targets; do init_target "$t"; done
+  log 'mailwake up: families=kimi,glmcp,fugu; existing mail baselined'
+  while true; do
+    count=0
+    discovery=true
+    targets=$(sessions) || { targets=''; discovery=false; }
+    for t in $targets; do
+      count=$((count+1))
+      [ -n "${FAM[$t]:-}" ] || { init_target "$t"; log "target added: $t"; }
+      role=$(role_of "$t"); now=$(lsd "$role")
+      new=$(LC_ALL=C comm -13 <(printf '%s\n' "${SEEN[$t]}") <(printf '%s\n' "$now"))
+      SEEN[$t]=$now
+      while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        [[ "${name##*/}" =~ ^[0-9]{8}T[0-9]{6}Z-${role}- ]] && continue
+        PEND[$t]=1
+      done <<<"$new"
+      ts=$(date +%s)
+      if [ -n "${PEND[$t]}" ] && [ "${UNCERTAIN[$t]}" = 0 ] && [ $((ts-${LAST[$t]})) -ge 120 ]; then
+        msg="[mail-wake] Read new incoming mail in lanebus/$role/ to the end."
+        if deliver "$t" "$msg"; then PEND[$t]=''; LAST[$t]=$ts; fi
+      fi
+    done
+    cycle=$((cycle+1))
+    held='['; separator=''
+    # Include held receivers even after disappearance or new protection. The
+    # latch is never cleared by discovery; recovery requires reconciliation.
+    for t in $(printf '%s\n' "${!UNCERTAIN[@]}" | LC_ALL=C sort); do
+      [ "${UNCERTAIN[$t]}" = 1 ] || continue
+      log "still held target=$t: inspect receiving pane and reconcile uncertain submission before recovery"
+      held+="$separator\"$t\""; separator=,
+    done
+    held+=']'
+    heartbeat "$cycle" "$count" "$discovery" "$held" || { log 'heartbeat write failed; restore cache binding'; return 1; }
+    [ "$limit" = 0 ] || [ "$cycle" -lt "$limit" ] || break
+    sleep 20
+  done
+}
+main "$@"
