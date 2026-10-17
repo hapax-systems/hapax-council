@@ -173,6 +173,27 @@ from shared.egress_cadence_feasibility import (
 
 _assess_egress_cadence
 
+from shared.forge_app_identity import (
+    InstallationToken,
+    app_jwt,
+    create_commit_request,
+    installation_token_request,
+    load_app_key,
+    require_bot_authored,
+    require_usable,
+)
+
+# Forge machine identity (O2): the only caller is the extensionless entry point
+# scripts/hapax-forge-send (run inside the forge-send credential sandbox), which
+# vulture does not scan.
+InstallationToken.from_response
+app_jwt
+create_commit_request
+installation_token_request
+load_app_key
+require_bot_authored
+require_usable
+
 from shared.formal_governance_runtime import (
     FormalConstraint as _FormalGovernanceFormalConstraint,
 )

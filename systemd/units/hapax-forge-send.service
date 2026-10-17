@@ -1,0 +1,26 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Hapax forge-send: the only holder of the forge GitHub App key (operator act O2)
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/runbooks/forge-machine-identity.md
+# The App private key reaches this unit alone, as an encrypted credential, and it runs
+# under a dynamic user, so lane processes (uid 1000) cannot read /run/credentials/%N.
+# Against a lane that escalates this is class (b) until O5 removes passwordless sudo.
+# The entry point and its root installer land with the request intake (O2 PR 2).
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+LoadCredentialEncrypted=forge-app-key
+ExecStart=/usr/local/libexec/hapax/hapax-forge-send
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+SyslogIdentifier=hapax-forge-send
