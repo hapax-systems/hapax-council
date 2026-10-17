@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -57,6 +58,91 @@ _DURATION_LINE_RE = re.compile(
 _DURATION_SOURCE_MEASURED = "pytest --durations=0 --durations-min=0"
 _DURATION_SOURCE_SELECTED_UNITS_FALLBACK = "deterministic_selected_units_fallback"
 _NO_DURATION_LINES_REASON = "no_pytest_duration_lines"
+
+# These contracts consume changed paths outside the PR diff. Unknown runtime
+# paths use the full collected suite until their consumers are established.
+_AFFECTED_PATH_CONTRACTS: Mapping[str, tuple[str, ...]] = {
+    "scripts/hapax-methodology-dispatch": (
+        "tests/scripts/test_hapax_methodology_dispatch.py",
+        "tests/test_no_pass_invocations.py",
+    ),
+    "scripts/hapax-cachyos-restore.sh": ("tests/test_no_pass_invocations.py",),
+}
+
+
+def _plain_docs_path(path: str) -> bool:
+    if path.startswith(("docs/audio", "docs/architecture/system-dynamics-map")):
+        return False
+    return (
+        path.startswith(("docs/", "lab-journal/", "research/"))
+        or ("/" not in path and path.endswith(".md"))
+        or (path.startswith("axioms/") and path.endswith(".md"))
+    )
+
+
+def select_affected_test_files(
+    changed_paths: tuple[str, ...] | None,
+    full_suite_files: tuple[str, ...],
+    repo_root: Path | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Return selected full-suite files and the changed path causing each.
+
+    ``None`` means the pinned PR base or diff could not be established. A
+    deleted test or an unclassified runtime path requires the full suite.
+    """
+    all_tests = tuple(sorted(set(full_suite_files)))
+    if changed_paths is None or not changed_paths:
+        return {test: ("<unknown-base>",) for test in all_tests}
+    reasons: dict[str, set[str]] = {}
+    for path in changed_paths:
+        if path.startswith("tests/") and path.endswith(".py"):
+            if path not in all_tests:
+                return {test: (path,) for test in all_tests}
+            reasons.setdefault(path, set()).add(path)
+        elif path in _AFFECTED_PATH_CONTRACTS:
+            contracts = set(_AFFECTED_PATH_CONTRACTS[path])
+            if repo_root is not None:
+                try:
+                    for test in all_tests:
+                        body = (repo_root / test).read_text(encoding="utf-8")
+                        if path in body or Path(path).name in body:
+                            contracts.add(test)
+                except (OSError, UnicodeError):
+                    return {test: (path,) for test in all_tests}
+            if not all(test in all_tests for test in contracts):
+                return {test: (path,) for test in all_tests}
+            for test in contracts:
+                reasons.setdefault(test, set()).add(path)
+        elif _plain_docs_path(path):
+            continue
+        else:
+            return {test: (path,) for test in all_tests}
+    return {test: tuple(sorted(paths)) for test, paths in sorted(reasons.items())}
+
+
+def changed_paths_from_pr_base(repo_root: Path, base_sha: str) -> tuple[str, ...] | None:
+    """Read the complete pinned PR diff, matching CI's no-renames convention."""
+    if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+        return None
+    try:
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{base_sha}^{{commit}}"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+        )
+        diff = subprocess.run(
+            ["git", "diff", "--no-renames", "--name-only", "-z", f"{base_sha}...HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    try:
+        return tuple(sorted(set(part.decode("utf-8") for part in diff.stdout.split(b"\0") if part)))
+    except UnicodeDecodeError:
+        return None
 
 
 def parse_collect_output(collect_output: str) -> dict[str, int]:
@@ -330,6 +416,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Select pytest test units for one deterministic runtime-weighted shard."
     )
     parser.add_argument("--collect-output", type=Path)
+    parser.add_argument("--affected-base-sha")
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--weights", type=Path)
     parser.add_argument("--shard", type=int)
     parser.add_argument("--shards", type=int)
@@ -424,7 +512,26 @@ def main(argv: list[str] | None = None) -> int:
     plan = build_shard_plan_from_collect(collect_output, runtime_config, args.shards)
     write_plan(plan, sys.stderr)
 
+    affected: dict[str, tuple[str, ...]] | None = None
+    if args.affected_base_sha is not None:
+        changed = changed_paths_from_pr_base(args.repo_root, args.affected_base_sha)
+        affected = select_affected_test_files(
+            changed, tuple(parse_collect_output(collect_output)), args.repo_root
+        )
+        if not affected:
+            print("No full-suite tests selected by the pinned PR diff.", file=sys.stderr)
+
+    logged: set[str] = set()
     for path in selected_paths(plan, args.shard, runtime_config.execution_order_first):
+        test = path.split("::", 1)[0]
+        if affected is not None and test not in affected:
+            continue
+        if affected is not None and test not in logged:
+            print(
+                f"Affected full-suite test: {test} <= {', '.join(affected[test])}",
+                file=sys.stderr,
+            )
+            logged.add(test)
         print(path)
     return 0
 
