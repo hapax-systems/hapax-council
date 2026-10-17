@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import pty
+import select
 import shlex
 import shutil
 import subprocess
@@ -17,6 +20,77 @@ ROOT = Path(__file__).resolve().parents[2]
 SENDER = ROOT / "scripts/hapax-codex-send"
 COMPOSER = ROOT / "tests/fixtures/codex/extended_keys_composer.py"
 SESSION = "hapax-codex-cx-fixture"
+
+
+def require_distinct_control_m(wire: bytes) -> None:
+    if wire == b"\r":
+        pytest.skip(
+            "tmux emits CR for C-m despite the extended-keys request; "
+            "CSI-u distinguishing witness unavailable on this transport"
+        )
+    assert wire == b"\x1b[109;5u", f"unexpected C-m bytes: {wire!r}"
+
+
+def test_cr_only_transport_is_an_explicit_skip():
+    with pytest.raises(pytest.skip.Exception, match="emits CR for C-m.*CSI-u"):
+        require_distinct_control_m(b"\r")
+
+
+def test_csi_u_transport_is_not_skipped():
+    try:
+        require_distinct_control_m(b"\x1b[109;5u")
+    except pytest.skip.Exception as exc:
+        pytest.fail(f"observed CSI-u transport was skipped: {exc}")
+
+
+@pytest.mark.parametrize("wire", [b"", b"\n", b"\x1b[109;", b"\x1b[109;5u\r"])
+def test_missing_or_unexpected_key_is_not_a_capability_skip(wire):
+    try:
+        with pytest.raises(AssertionError, match="unexpected C-m bytes"):
+            require_distinct_control_m(wire)
+    except pytest.skip.Exception as exc:
+        pytest.fail(f"missing or unexpected key was skipped: {exc}")
+
+
+def test_fixture_csi_u_bytes_do_not_submit_but_cr_does(tmp_path):
+    """Pin the composer boundary without depending on a tmux version or installation."""
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [sys.executable, str(COMPOSER), str(tmp_path), "normal", "extended"],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+    )
+    os.close(slave)
+
+    def read_until(needle):
+        output = b""
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                output += os.read(master, 4096)
+                if needle in output:
+                    return output
+        pytest.fail(f"fixture did not emit {needle!r}: {output!r}")
+
+    try:
+        read_until(b"Idle (fixture)\r\n\xe2\x80\xba ")
+        os.write(master, b"byte-witness")
+        read_until(b"byte-witness")
+        os.write(master, b"\x1b[109;5u")
+        assert b"Working" not in read_until(b"byte-witness")
+        assert (tmp_path / "wire.bin").read_bytes() == b"byte-witness\x1b[109;5u"
+        assert not (tmp_path / "submitted.json").exists()
+        assert not (tmp_path / "ack").exists()
+        os.write(master, b"\r")
+        read_until(b"Working (fixture)\r\n\xe2\x80\xba ")
+        assert (tmp_path / "wire.bin").read_bytes() == b"byte-witness\x1b[109;5u\r"
+        assert json.loads((tmp_path / "submitted.json").read_text()) == "byte-witness"
+        assert (tmp_path / "ack").read_text() == "fixture-token\n"
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+        os.close(master)
 
 
 class Pane:
@@ -82,6 +156,16 @@ class Pane:
             time.sleep(0.025)
         pytest.fail(f"pane never showed {text!r}: {pane!r}")
 
+    def wait_for_key(self, offset: int) -> bytes:
+        deadline = time.monotonic() + 3
+        wire = b""
+        while time.monotonic() < deadline:
+            wire = (self.root / "wire.bin").read_bytes()[offset:]
+            if wire and (not wire.startswith(b"\x1b") or wire.endswith((b"u", b"~"))):
+                return wire
+            time.sleep(0.025)
+        pytest.fail(f"no complete C-m key observed: {wire!r}")
+
     def send(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [str(SENDER), "--session", "cx-fixture", "--transport", "tmux", *args],
@@ -132,12 +216,13 @@ def test_real_tmux_distinguishes_control_m_from_enter(pane_factory, extended):
     pane = pane_factory(extended=extended)
     pane.run("send-keys", "-t", SESSION, "-l", "wire-witness")
     pane.wait_for("wire-witness")
+    offset = (pane.root / "wire.bin").stat().st_size
     pane.run("send-keys", "-t", SESSION, "C-m")
+    wire = pane.wait_for_key(offset)
     if extended:
-        time.sleep(0.1)
+        require_distinct_control_m(wire)
         assert "wire-witness" in pane.capture()
         assert "Working" not in pane.capture()
-        assert b"\x1b[109;5u" in (pane.root / "wire.bin").read_bytes()
         pane.run("send-keys", "-t", SESSION, "Enter")
     pane.assert_submitted("wire-witness")
     assert b"\r" in (pane.root / "wire.bin").read_bytes()
