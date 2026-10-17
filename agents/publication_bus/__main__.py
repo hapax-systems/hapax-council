@@ -1,6 +1,10 @@
 """CLI entry: ``uv run python -m agents.publication_bus``.
 
-Surfaces the publication-bus wire-status registry as an operator-action
+The ``select`` subcommand delegates local event/candidate selection to
+``agents.publication_bus.selector`` and only creates unapproved drafts. Run
+``python -m agents.publication_bus select --help`` for its explicit bindings.
+
+Otherwise, surfaces the publication-bus wire-status registry as an operator-action
 queue. For every CRED_BLOCKED publisher, prints the secret name required to
 unblock wiring (put with ``hapax-secret``), alongside surface slug + rationale.
 
@@ -113,6 +117,12 @@ def render_live_cred_status() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "select":
+        from agents.publication_bus.selector import main as select_main
+
+        return select_main(argv[1:])
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--keys-only",
