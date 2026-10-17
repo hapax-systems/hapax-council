@@ -13,6 +13,49 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-oom-policy-audit"
+
+
+def test_host_policy_refuses_aggregate_overcommit(tmp_path: Path) -> None:
+    table = tmp_path / "profiles.tsv"
+    table.write_text(
+        "hapax-appendix\t59\t61\tappendix\t32G\t38G\t36G\t46G\t14G\t18G\t16384\t10\n"
+        "hapax-podium\t123\t125\tpodium\t72G\t80G\t76G\t96G\t32G\t40G\t32768\t10\n",
+        encoding="utf-8",
+    )
+    policy = runpy.run_path(str(SCRIPT))
+    with pytest.raises(policy["HostPolicyError"], match="aggregate ceiling"):
+        policy["load_host_policy"](table, "hapax-appendix", 63310084)
+
+
+def test_host_policy_selects_exact_host_and_ram_interval(tmp_path: Path) -> None:
+    table = tmp_path / "profiles.tsv"
+    table.write_text(
+        "hapax-appendix\t59\t61\tappendix\t32G\t37G\t33G\t39G\t14G\t18G\t16384\t10\n"
+        "hapax-podium\t123\t125\tpodium\t68G\t76G\t72G\t80G\t32G\t40G\t32768\t10\n",
+        encoding="utf-8",
+    )
+    policy = runpy.run_path(str(SCRIPT))
+    selected = policy["load_host_policy"](table, "hapax-appendix", 63310084)
+    assert selected.profile == "appendix"
+    assert selected.uid_max == 39 * 1024**3
+    assert selected.system_max == 18 * 1024**3
+    with pytest.raises(policy["HostPolicyError"], match="unsupported canonical hostname"):
+        policy["load_host_policy"](table, "appendix-alias", 63310084)
+    with pytest.raises(policy["HostPolicyError"], match="outside admitted interval"):
+        policy["load_host_policy"](table, "hapax-appendix", 90 * 1024**2)
+
+
+def test_appendix_profile_matches_observed_live_ceiling_handoff() -> None:
+    policy = runpy.run_path(str(SCRIPT))
+    selected = policy["load_host_policy"](
+        REPO_ROOT / "config/root-required/oom-host-profiles.tsv",
+        "hapax-appendix",
+        63310084,
+    )
+    assert (selected.uid_high, selected.uid_max) == (32 * 1024**3, 38 * 1024**3)
+    assert (selected.system_high, selected.system_max) == (16 * 1024**3, 20 * 1024**3)
+
+
 RECOVERY_SYSTEM_UNIT_SCORES = {
     "apcupsd.service": -900,
     "systemd-logind.service": -800,
