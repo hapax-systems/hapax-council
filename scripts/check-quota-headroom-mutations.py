@@ -1136,8 +1136,18 @@ def run_mutant(work: Path, logs: Path, mutant: tuple[str, str, str, str, str]) -
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--jobs", type=int, default=4, help="parallel overlays")
+    parser.add_argument("--trace-cache", action="store_true", help="verify trace cache mutations")
     parser.add_argument("names", nargs="*", help="run only these mutants (default: all)")
     args = parser.parse_args(argv)
+    if args.trace_cache:
+        if args.names:
+            parser.error(
+                "trace-cache mode does not take headroom mutant names. Next action: remove the names"
+            )
+        sys.path.insert(0, str(ROOT))
+        from scripts.quota_trace_cache_validation import main as verify_trace_cache
+
+        return verify_trace_cache()
     selected = [m for m in MUTANTS if not args.names or m[0] in args.names]
     unknown = set(args.names) - {m[0] for m in MUTANTS}
     if unknown or len({m[0] for m in MUTANTS}) != len(MUTANTS):
