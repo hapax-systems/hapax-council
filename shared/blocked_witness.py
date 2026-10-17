@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -13,7 +14,16 @@ from typing import Any, Literal
 import yaml
 
 BLOCKED_WITNESS_KINDS = frozenset({"path_exists", "ancestor_of_main", "receipt_fresh"})
+CLAIMANT_SCOPED_BLOCKED_RECOVERY = "claimant_scoped_cc_claim"
+BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
 BlockedWitnessVerdict = Literal["satisfied", "unsatisfied", "refuse"]
+
+
+@dataclass(frozen=True)
+class BlockedRecoveryEvaluation:
+    verdict: BlockedWitnessVerdict
+    reason_code: str
+    detail: str
 
 
 def evaluate_blocked_witness(
@@ -45,6 +55,127 @@ def evaluate_blocked_witness(
     if kind == "receipt_fresh":
         return _receipt_is_fresh(ref, now=now)
     return "refuse"
+
+
+def evaluate_claimant_blocked_recovery(
+    frontmatter: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
+    git_repo: Path | None = None,
+) -> BlockedRecoveryEvaluation:
+    """Evaluate the narrow same-claim blocked-row recovery witness.
+
+    Recovery needs a check of the original predicate, not just a matching label
+    and a generic witness. Unrecognized predicates remain blocked.
+    """
+
+    reason = _frontmatter_non_null_scalar(frontmatter.get("blocked_reason"))
+    if not reason:
+        return BlockedRecoveryEvaluation(
+            "refuse", "blocked_recovery_reason_missing", "blocked_reason is missing"
+        )
+    if reason.startswith(BLOCKED_DEPENDENCY_REASON_PREFIX):
+        return BlockedRecoveryEvaluation(
+            "refuse",
+            "blocked_recovery_dependency_block",
+            "dependency-managed blocked rows use cc-cascade-unblock",
+        )
+    raw = frontmatter.get("blocked_witness")
+    if not isinstance(raw, Mapping):
+        return BlockedRecoveryEvaluation(
+            "refuse", "blocked_recovery_witness_untyped", "blocked_witness is not typed"
+        )
+    recovery = _frontmatter_non_null_scalar(raw.get("recovery"))
+    if recovery != CLAIMANT_SCOPED_BLOCKED_RECOVERY:
+        return BlockedRecoveryEvaluation(
+            "refuse",
+            "blocked_recovery_not_declared",
+            f"blocked_witness.recovery={recovery or 'missing'}",
+        )
+    expected_reason = _frontmatter_non_null_scalar(raw.get("resolves_blocked_reason"))
+    if expected_reason != reason:
+        return BlockedRecoveryEvaluation(
+            "refuse",
+            "blocked_recovery_reason_mismatch",
+            f"resolves_blocked_reason={expected_reason or 'missing'} blocked_reason={reason}",
+        )
+    if reason != "codex_platform_capability_receipt_invalid":
+        return BlockedRecoveryEvaluation("refuse", "blocked_recovery_reason_unsupported", reason)
+    if raw.get("kind") != "receipt_fresh":
+        return BlockedRecoveryEvaluation(
+            "refuse",
+            "blocked_recovery_witness_unbound",
+            "receipt-invalid recovery requires the current producer's typed platform receipt",
+        )
+    verdict = _codex_receipt_invalid_resolved(raw, now=now)
+    if verdict != "satisfied":
+        return BlockedRecoveryEvaluation(
+            verdict,
+            f"blocked_recovery_witness_{verdict}",
+            "blocked_witness did not satisfy at use time",
+        )
+    return BlockedRecoveryEvaluation("satisfied", "blocked_recovery_satisfied", reason)
+
+
+def _codex_receipt_invalid_resolved(
+    witness: Mapping[str, Any], *, now: datetime | None
+) -> BlockedWitnessVerdict:
+    """Recheck the receipt loader that emits this blocker, at its declared root.
+
+    A valid receipt elsewhere, or one valid file beside an invalid producer
+    receipt, does not resolve a failure of the producer directory's loader.
+    The selected Codex receipt must also be current and report usable surfaces.
+    This does not certify route admission or authorize the blocked runtime act.
+    """
+    from shared.platform_capability_receipts import (
+        DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+        PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+        EvidenceStatus,
+        ensure_utc,
+        load_platform_capability_receipt,
+        load_platform_capability_receipts,
+        parse_duration_spec,
+    )
+
+    ref = witness.get("ref")
+    if not isinstance(ref, str) or not ref.strip():
+        return "refuse"
+    root = Path(
+        os.environ.get(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV)
+        or DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    ).expanduser()
+    path = Path(ref).expanduser()
+    if not root.is_absolute() or not path.is_absolute():
+        return "refuse"
+    moment = ensure_utc(now or datetime.now(UTC))
+    try:
+        if path.resolve().parent != root.resolve() or path.suffix != ".json":
+            return "refuse"
+        receipt = load_platform_capability_receipt(path)
+        selected = load_platform_capability_receipts(root, now=moment).get("codex")
+        if receipt.platform != "codex" or "codex.headless.full" not in receipt.routes:
+            return "refuse"
+        if selected is None or receipt != selected:
+            return "unsatisfied"
+        for surface in (receipt, receipt.capability, receipt.resource):
+            observed = ensure_utc(surface.observed_at)
+            if observed > moment or moment - observed > parse_duration_spec(surface.stale_after):
+                return "unsatisfied"
+        if any(
+            surface.status is not EvidenceStatus.OBSERVED or surface.reason_codes
+            for surface in (receipt.capability, receipt.resource)
+        ):
+            return "unsatisfied"
+    except (OSError, UnicodeError, ValueError, OverflowError):
+        return "refuse"
+    return "satisfied"
+
+
+def _frontmatter_non_null_scalar(value: object) -> str | None:
+    scalar = "" if value is None else str(value).strip().strip('"').strip("'")
+    if scalar.lower() in {"", "null", "none", "~", "[]"}:
+        return None
+    return scalar
 
 
 def _sha_is_ancestor_of_main(sha: str, *, git_repo: Path | None) -> BlockedWitnessVerdict:
