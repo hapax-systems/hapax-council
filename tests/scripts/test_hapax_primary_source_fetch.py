@@ -394,6 +394,33 @@ def test_auth_and_billing_challenges_stop(rig, status, headers, reason):
     assert len(rig.requests) == 1
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/%4Cogin",
+        "/%41uth",
+        "/%254Cogin",
+        "https://github.com/%2541uth",
+        "/%25254Cogin",
+        "/%4CoGiN",
+        "/%41uTh",
+        "/%53iGnIn",
+        "/sIgN-%49n",
+        "/%4Fauth",
+        "/LoGiN",
+        "/AuTh",
+    ],
+)
+def test_encoded_login_redirect_stops_before_second_connection(rig, target):
+    rig.responses["/paper"] = (302, {"Location": target}, b"must not read")
+    stopped(rig, "unexpected_authentication")
+    assert rig.connections == [(PUBLIC_IP, 443)]
+    assert [path for path, _ in rig.requests] == ["/paper"]
+    result, directory = failure_manifest(rig, "unexpected_authentication")
+    assert result["gets"] == 1 and result["downloaded_bytes"] == 0
+    assert result["documents"] == [] and list(directory.glob("*.body")) == []
+
+
 def test_document_bound_stops_before_next_document(rig):
     bound(rig, max_documents=1)
     stopped(rig, "bound_exhausted", urls=["https://arxiv.org/one", "https://arxiv.org/two"])

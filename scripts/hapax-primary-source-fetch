@@ -192,9 +192,10 @@ def check_next(binding, url, document_index, gets, downloaded):
 
 
 def login_redirect(url: str) -> bool:
-    path = urlsplit(url).path.lower()
+    path = urlsplit(url).path
     while (decoded := unquote(path)) != path:
         path = decoded
+    path = path.casefold()
     return any(token in path for token in ("login", "signin", "sign-in", "oauth", "/auth"))
 
 
