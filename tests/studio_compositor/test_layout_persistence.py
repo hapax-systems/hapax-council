@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import agents.studio_compositor.layout_persistence as layout_persistence
 from agents.studio_compositor.layout_persistence import (
@@ -19,6 +21,9 @@ from shared.compositor_model import (
     SurfaceGeometry,
     SurfaceSchema,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _minimal_layout(name: str = "default") -> Layout:
@@ -54,20 +59,50 @@ def _mutate_x(state: LayoutState, x_value: int) -> None:
     state.mutate(mutator)
 
 
-def test_autosave_debounces_rapid_mutations(tmp_path: Path) -> None:
+def test_autosave_debounces_rapid_mutations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     layout_file = tmp_path / "default.json"
     layout_file.write_text(json.dumps(_minimal_layout().model_dump()))
     state = LayoutState(_minimal_layout())
     saver = LayoutAutoSaver(state, layout_file, debounce_s=0.1)
-    saver.start()
-    try:
-        for i in range(5):
-            _mutate_x(state, i)
-        time.sleep(0.4)
-        on_disk = json.loads(layout_file.read_text())
-        assert on_disk["surfaces"][0]["geometry"]["x"] == 4
-    finally:
-        saver.stop()
+    now = [100.0]
+    monkeypatch.setattr(layout_persistence, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    class SteppedStop:
+        done = False
+        waits = 0
+
+        def is_set(self) -> bool:
+            return self.done
+
+        def wait(self, seconds: float) -> None:
+            self.waits += 1
+            assert self.waits <= 10, "autosave never flushed"
+            now[0] += seconds
+
+    stop = SteppedStop()
+    monkeypatch.setattr(saver, "_stop", stop)
+    writes: list[float] = []
+    original_write = saver._write
+
+    def record_write() -> None:
+        writes.append(now[0])
+        original_write()
+        stop.done = True
+
+    monkeypatch.setattr(saver, "_write", record_write)
+    state.subscribe(saver._on_mutation)
+    for i in range(5):
+        _mutate_x(state, i)
+        now[0] += 0.01
+
+    saver._loop()
+    assert stop.waits == 2
+    assert len(writes) == 1
+    assert writes[0] - saver._last_mutation_at >= 0.1
+    on_disk = json.loads(layout_file.read_text())
+    assert on_disk["surfaces"][0]["geometry"]["x"] == 4
 
 
 def test_autosave_flush_now_skips_debounce(tmp_path: Path) -> None:
