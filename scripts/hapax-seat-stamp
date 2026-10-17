@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""Seat-only, exact-head three-step task stamp with readback.
+
+The author supplies clean-HOME evidence; this command checks its identity and
+shape, then composes the existing review and acceptance validators. It never
+creates a review, acceptance receipt, or test evidence. A seat must inspect the
+underlying test artifacts and fresh challenge before invoking it.
+
+Usage: hapax-seat-stamp TASK_ID PR --clean-home-evidence PATH
+The task remains held on every refusal. This command has no --force mode.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts import review_team  # noqa: E402
+from shared.frontmatter import parse_frontmatter  # noqa: E402
+from shared.sdlc_lifecycle import acceptance_receipt_blockers  # noqa: E402
+from shared.task_note_lock import projected_path_lock  # noqa: E402
+
+REPO = "hapax-systems/hapax-council"
+HOLD_LABELS = frozenset({"hold", "needs-human", "do-not-merge"})
+NAMED_FILES = frozenset(
+    {
+        "tests/shared/test_projected_path_writer_lock_coverage.py",
+        "tests/scripts/test_github_pr_status.py",
+    }
+)
+STAMP_KEYS = (
+    "release_authorized",
+    "release_authorized_head_sha",
+    "release_authorized_head_ref",
+    "release_authorized_at",
+    "release_authorized_provenance",
+)
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+class StampRefusal(RuntimeError):
+    """A named unmet predicate; never override with a partial stamp."""
+
+
+@dataclass(frozen=True)
+class StampPlan:
+    note: Path
+    task_id: str
+    pr: int
+    head_sha: str
+    head_ref: str
+    evidence_sha256: str
+    repo: str = REPO
+
+
+def review_blockers(front: dict[str, Any], note: Path, head: str, pr: int) -> tuple[str, ...]:
+    # The non-bypass variant recomputes quorum, lenses, criticals and capacity.
+    return review_team.review_dossier_validity_blockers(front, note, pr_head_sha=head, pr_number=pr)
+
+
+def receipt_blockers(front: dict[str, Any], note: Path) -> tuple[str, ...]:
+    return acceptance_receipt_blockers(front, note)
+
+
+def _front(note: Path) -> dict[str, Any]:
+    try:
+        text = note.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise StampRefusal(f"note_unreadable:{exc}") from exc
+    if not text.startswith("---\n") or "\n---" not in text[4:]:
+        raise StampRefusal("note_frontmatter_missing")
+    raw = text[4 : text.find("\n---", 4)]
+    for key in (*STAMP_KEYS, "task_id", "pr", "pr_repo", "stage", "type"):
+        if len(re.findall(rf"(?m)^{re.escape(key)}\s*:", raw)) > 1:
+            raise StampRefusal(f"duplicate_frontmatter_key:{key}")
+    front, _body = parse_frontmatter(note)
+    if not front:
+        raise StampRefusal("note_frontmatter_invalid")
+    return front
+
+
+def _labels(pr: dict[str, Any]) -> set[str]:
+    raw = pr.get("labels")
+    if not isinstance(raw, list):
+        raise StampRefusal("pr_labels_unreadable")
+    labels: set[str] = set()
+    for item in raw:
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            labels.add(item["name"])
+        elif isinstance(item, str):
+            labels.add(item)
+        else:
+            raise StampRefusal("pr_labels_unreadable")
+    return labels
+
+
+def _pr_identity(
+    pr: dict[str, Any], number: int, expected_head: str | None = None
+) -> tuple[str, str]:
+    if type(pr.get("number")) is not int or pr["number"] != number:
+        raise StampRefusal("pr_number_mismatch")
+    head, ref = pr.get("headRefOid"), pr.get("headRefName")
+    if not isinstance(head, str) or not SHA_RE.fullmatch(head):
+        raise StampRefusal("pr_head_unreadable")
+    if expected_head and head != expected_head:
+        raise StampRefusal("pr_head_moved")
+    if not isinstance(ref, str) or not ref.strip():
+        raise StampRefusal("pr_head_ref_unreadable")
+    if pr.get("state") != "OPEN" or pr.get("isDraft") is not False:
+        raise StampRefusal("pr_not_open_ready")
+    if pr.get("autoMergeRequest") is not None:
+        raise StampRefusal("pr_auto_merge_already_armed")
+    return head, ref
+
+
+def _all_green(pr: dict[str, Any]) -> None:
+    checks = pr.get("statusCheckRollup")
+    if not isinstance(checks, list) or not checks:
+        raise StampRefusal("checks_missing")
+    green = 0
+    for check in checks:
+        if not isinstance(check, dict):
+            raise StampRefusal("checks_malformed")
+        name = check.get("name") or check.get("context")
+        result = check.get("conclusion") or check.get("state")
+        if not isinstance(name, str) or not isinstance(result, str):
+            raise StampRefusal("checks_malformed")
+        if name == "all-green" and result.upper() == "SUCCESS":
+            green += 1
+        elif result.upper() not in {"SUCCESS", "PASS", "PASSED", "NEUTRAL", "SKIPPED"}:
+            raise StampRefusal(f"check_not_green:{name}:{result}")
+    if green != 1:
+        raise StampRefusal("all_green_not_success_once")
+
+
+def _clean_home(evidence_path: Path, pr: int, head: str) -> str:
+    try:
+        raw = evidence_path.read_bytes()
+        data = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        raise StampRefusal(f"clean_home_evidence_unreadable:{exc}") from exc
+    if not isinstance(data, dict) or data.get("pr") != pr or data.get("head_sha") != head:
+        raise StampRefusal("clean_home_identity_mismatch")
+    try:
+        observed = datetime.fromisoformat(str(data["observed_at"]).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            raise ValueError("timezone missing")
+        age = datetime.now(UTC) - observed.astimezone(UTC)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StampRefusal(f"clean_home_time_invalid:{exc}") from exc
+    if not timedelta(0) <= age <= timedelta(hours=24):
+        raise StampRefusal("clean_home_evidence_stale_or_future")
+    home = data.get("home")
+    if (
+        not isinstance(home, str)
+        or not Path(home).is_absolute()
+        or Path(home) == Path.home()
+        or not Path(home).is_dir()
+    ):
+        raise StampRefusal("clean_home_not_isolated")
+    cache = data.get("uv_cache_dir")
+    if not isinstance(cache, str) or not Path(cache).is_absolute():
+        raise StampRefusal("clean_home_cache_unrecorded")
+    failures: list[str] = []
+    observed_passed_ids: set[str] = set()
+    for section in ("importers", "inventory"):
+        result = data.get(section)
+        if (
+            not isinstance(result, dict)
+            or type(result.get("passed")) is not int
+            or result["passed"] < 1
+        ):
+            raise StampRefusal(f"clean_home_{section}_missing")
+        ids = result.get("failed_test_ids")
+        if not isinstance(ids, list) or any(
+            not isinstance(item, str) or "::" not in item for item in ids
+        ):
+            raise StampRefusal(f"clean_home_{section}_failure_ids_invalid")
+        measured_passed, measured_failed = _junit_ids(result, Path(home))
+        if result["passed"] != len(measured_passed) or sorted(ids) != sorted(measured_failed):
+            raise StampRefusal(f"clean_home_{section}_junit_mismatch")
+        observed_passed_ids.update(measured_passed)
+        failures.extend(ids)
+    parent = data.get("parent_failed_test_ids")
+    if not isinstance(parent, list) or not isinstance(data.get("parent"), dict):
+        raise StampRefusal("clean_home_parent_missing")
+    _parent_passed, measured_parent_failed = _junit_ids(data["parent"], Path(home))
+    if sorted(parent) != sorted(measured_parent_failed) or sorted(failures) != sorted(parent):
+        raise StampRefusal("clean_home_parent_test_id_mismatch")
+    named = data.get("named_test_files")
+    measured_files = {test_id.split("::", 1)[0] for test_id in observed_passed_ids}
+    if (
+        not isinstance(named, list)
+        or not NAMED_FILES.issubset(named)
+        or not NAMED_FILES.issubset(measured_files)
+    ):
+        raise StampRefusal("clean_home_named_tests_missing")
+    consumer = data.get("new_module_consumer_check")
+    if (
+        not isinstance(consumer, dict)
+        or consumer.get("name") not in observed_passed_ids
+        or consumer.get("passed") is not True
+    ):
+        raise StampRefusal("clean_home_consumer_check_missing")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _junit_ids(run: dict[str, Any], home: Path) -> tuple[list[str], list[str]]:
+    path_raw, expected_hash = run.get("junit_xml"), run.get("sha256")
+    if not isinstance(path_raw, str) or not isinstance(expected_hash, str):
+        raise StampRefusal("clean_home_junit_unpinned")
+    path = Path(path_raw)
+    if (
+        not path.is_absolute()
+        or not path.resolve().is_relative_to(home.resolve())
+        or path.is_symlink()
+    ):
+        raise StampRefusal("clean_home_junit_outside_home")
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise StampRefusal(f"clean_home_junit_unreadable:{exc}") from exc
+    if len(raw) > 20_000_000 or hashlib.sha256(raw).hexdigest() != expected_hash:
+        raise StampRefusal("clean_home_junit_hash_mismatch")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise StampRefusal(f"clean_home_junit_invalid:{exc}") from exc
+    passed: list[str] = []
+    failed: list[str] = []
+    for case in root.iter("testcase"):
+        classname, name = case.get("classname"), case.get("name")
+        if not classname or not name or not classname.startswith("tests."):
+            raise StampRefusal("clean_home_junit_case_unkeyable")
+        test_id = classname.replace(".", "/") + ".py::" + name
+        if case.find("failure") is not None or case.find("error") is not None:
+            failed.append(test_id)
+        elif case.find("skipped") is None:
+            passed.append(test_id)
+    if not passed and not failed:
+        raise StampRefusal("clean_home_junit_empty")
+    return passed, failed
+
+
+def preflight(note: Path, number: int, pr: dict[str, Any], evidence: Path) -> StampPlan:
+    front = _front(note)
+    task_id = front.get("task_id")
+    if not isinstance(task_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", task_id):
+        raise StampRefusal("task_id_invalid")
+    if front.get("type") != "cc-task" or front.get("pr") != number or front.get("pr_repo") != REPO:
+        raise StampRefusal("task_pr_link_mismatch")
+    if front.get("stage") != "S6_IMPLEMENTATION" or front.get("release_authorized") is not False:
+        raise StampRefusal("task_not_held_at_S6")
+    head, ref = _pr_identity(pr, number)
+    if "hold" not in _labels(pr):
+        raise StampRefusal("hold_label_missing")
+    _all_green(pr)
+    blockers = review_blockers(front, note, head, number)
+    if blockers:
+        raise StampRefusal("review:" + ",".join(blockers))
+    blockers = receipt_blockers(front, note)
+    if blockers:
+        raise StampRefusal("acceptance:" + ",".join(blockers))
+    receipt_path = note.parent / f"{task_id}.acceptance.yaml"
+    if receipt_path.exists():
+        try:
+            receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise StampRefusal(f"acceptance_unreadable:{exc}") from exc
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("head_sha") != head
+            or receipt.get("pr") != number
+        ):
+            raise StampRefusal("acceptance_exact_head_mismatch")
+    evidence_hash = _clean_home(evidence, number, head)
+    return StampPlan(note, task_id, number, head, ref, evidence_hash)
+
+
+def _replace_stamp(note: Path, plan: StampPlan) -> None:
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    values = {
+        "release_authorized": "true",
+        "release_authorized_head_sha": plan.head_sha,
+        "release_authorized_head_ref": plan.head_ref,
+        "release_authorized_at": now,
+        "release_authorized_provenance": f"seat-stamp:pr={plan.pr}:evidence_sha256={plan.evidence_sha256}",
+    }
+    with projected_path_lock(plan.task_id, (note,)):
+        front = _front(note)
+        if (
+            front.get("task_id") != plan.task_id
+            or front.get("pr") != plan.pr
+            or front.get("stage") != "S6_IMPLEMENTATION"
+            or front.get("release_authorized") is not False
+        ):
+            raise StampRefusal("task_changed_before_write")
+        text = note.read_text(encoding="utf-8")
+        end = text.find("\n---", 4)
+        if end < 0:
+            raise StampRefusal("note_frontmatter_missing")
+        lines = text[4:end].splitlines()
+        for key, value in values.items():
+            positions = [
+                i for i, line in enumerate(lines) if re.match(rf"^{re.escape(key)}\s*:", line)
+            ]
+            if len(positions) > 1:
+                raise StampRefusal(f"duplicate_frontmatter_key:{key}")
+            if positions:
+                lines[positions[0]] = f"{key}: {value}"
+            else:
+                lines.append(f"{key}: {value}")
+        updated = "---\n" + "\n".join(lines) + text[end:]
+        fd, temp = tempfile.mkstemp(prefix=f".{note.name}.", dir=note.parent)
+        try:
+            os.fchmod(fd, note.stat().st_mode)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(updated)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, note)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
+
+
+def perform(
+    plan: StampPlan,
+    fetch_pr: Callable[[], dict[str, Any]],
+    run: Callable[..., None],
+) -> None:
+    before = fetch_pr()
+    _pr_identity(before, plan.pr, plan.head_sha)
+    _all_green(before)
+    if "hold" not in _labels(before):
+        raise StampRefusal("hold_lost_before_write")
+    _replace_stamp(plan.note, plan)
+    front = _front(plan.note)
+    if (
+        any(front.get(key) in (None, False, "", "null") for key in STAMP_KEYS)
+        or front["release_authorized_head_sha"] != plan.head_sha
+    ):
+        raise StampRefusal("stamp_frontmatter_readback_failed")
+    current = fetch_pr()
+    _pr_identity(current, plan.pr, plan.head_sha)
+    _all_green(current)
+    run("cc-stage-advance", plan.task_id, "S7_RELEASE")
+    if _front(plan.note).get("stage") != "S7_RELEASE":
+        raise StampRefusal("stage_readback_failed")
+    current = fetch_pr()
+    _pr_identity(current, plan.pr, plan.head_sha)
+    _all_green(current)
+    held = sorted(_labels(current) & HOLD_LABELS)
+    if "hold" not in held:
+        raise StampRefusal("hold_lost_before_label_removal")
+    run("gh", "pr", "edit", str(plan.pr), "--repo", plan.repo, "--remove-label", ",".join(held))
+    after = fetch_pr()
+    _pr_identity(after, plan.pr, plan.head_sha)
+    if _labels(after) & HOLD_LABELS:
+        raise StampRefusal("label_readback_failed")
+    front = _front(plan.note)
+    if (
+        front.get("stage") != "S7_RELEASE"
+        or front.get("release_authorized_head_sha") != plan.head_sha
+        or front.get("release_authorized") is not True
+    ):
+        raise StampRefusal("final_task_readback_failed")
+
+
+def _run(*args: str) -> None:
+    proc = subprocess.run(args, capture_output=True, text=True, check=False)
+    if proc.returncode:
+        raise StampRefusal(f"command_failed:{args[0]}:rc={proc.returncode}:{proc.stderr.strip()}")
+
+
+def _fetch_pr(number: int) -> dict[str, Any]:
+    fields = "number,headRefOid,headRefName,state,isDraft,labels,autoMergeRequest,statusCheckRollup"
+    proc = subprocess.run(
+        ("gh", "pr", "view", str(number), "--repo", REPO, "--json", fields),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode:
+        raise StampRefusal(f"pr_read_failed:rc={proc.returncode}:{proc.stderr.strip()}")
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise StampRefusal("pr_read_invalid_json") from exc
+    if not isinstance(payload, dict):
+        raise StampRefusal("pr_read_invalid_shape")
+    return payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("task_id")
+    parser.add_argument("pr", type=int)
+    parser.add_argument("--clean-home-evidence", required=True, type=Path)
+    args = parser.parse_args(argv)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args.task_id):
+        parser.error("task_id must be a simple task slug")
+    note = (
+        Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active" / f"{args.task_id}.md"
+    )
+    try:
+        plan = preflight(note, args.pr, _fetch_pr(args.pr), args.clean_home_evidence)
+        perform(plan, lambda: _fetch_pr(args.pr), _run)
+    except StampRefusal as exc:
+        print(f"hapax-seat-stamp: REFUSED — {exc}", file=sys.stderr)
+        return 2
+    print(f"hapax-seat-stamp: stamped {args.task_id} PR #{args.pr} at {plan.head_sha}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
