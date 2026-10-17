@@ -31,6 +31,8 @@ transport prefers a tmux session named hapax-claude-ROLE and falls
 back to a visible foot window with class hapax-claude-ROLE. Foot
 delivery targets the window address directly when Hyprland supports
 it, avoiding focus-follow-mouse paste/Return races.
+ACK-gated tmux sends type the ACK request outside the pasted message.
+They exit 14 for busy status, or 15 when status cannot be determined.
 
 Tunables (env vars):
   HAPAX_CLAUDE_SEND_ACK_TIMEOUT          ack wait, seconds (default 60)
@@ -61,6 +63,8 @@ ACK_NUDGE_SECONDS="${HAPAX_CLAUDE_SEND_ACK_NUDGE_SECONDS:-5}"
 ACK_NUDGE_LIMIT="${HAPAX_CLAUDE_SEND_ACK_NUDGE_LIMIT:-3}"
 ACK_FILE=""
 ACK_TOKEN=""
+ACK_TYPED_PREFIX=""
+RELAY_MESSAGE=""
 ALLOW_LEGACY_ACK=0
 JSON_OUTPUT=0
 USED_TRANSPORT=""
@@ -76,11 +80,9 @@ is_retired_send_target_role() {
   [[ "$role" == "agy" || "$role" == agy-* || "$role" == "antigrav" || "$role" == antigrav-* || "$role" == "antigravity" || "$role" == antigravity-* || "$role" == "gemini-cli" || "$role" == gemini-cli-* ]]
 }
 
-# Default busy regex covers Claude Code's animated activity verbs and
-# the "Messages to be submitted after next tool call" queue indicator.
-# The verbs change over Claude Code releases; tune via the env var
-# rather than editing the script. Pattern is grep -E.
-DEFAULT_BUSY_REGEX='(Working|Pondering|Thinking|Investigating|Cogitating|Synthesizing|Considering|Reasoning|Generating|Analyzing|Crystallizing|Refining|Reflecting|Deliberating|Deciding|Exploring|Computing)\.\.\.|Messages to be submitted after next tool call|esc to interrupt'
+# Current status glyph + changing verb + ellipsis + elapsed/hook clause,
+# plus the older activity, queue and interrupt indicators. Pattern is grep -E.
+DEFAULT_BUSY_REGEX='^[[:space:]]*(✢|✳|✶|✻|✽|·|\*)[[:space:]]+[A-Z][[:alpha:]-]*(…|\.\.\.)[[:space:]]+\(([0-9]|running )|^[[:space:]]*((✢|✳|✶|✻|✽|·|\*)[[:space:]]+)?(Working|Pondering|Thinking|Investigating|Cogitating|Synthesizing|Considering|Reasoning|Generating|Analyzing|Crystallizing|Refining|Reflecting|Deliberating|Deciding|Exploring|Computing)\.\.\.|^[[:space:]]*Messages to be submitted after next tool call|^[[:space:]]*esc to interrupt'
 BUSY_REGEX="${HAPAX_CLAUDE_SEND_BUSY_REGEX:-$DEFAULT_BUSY_REGEX}"
 
 cleanup_tmp_files() {
@@ -308,6 +310,12 @@ ack_setup() {
   export HAPAX_CLAUDE_SEND_ACK_FILE="$ACK_FILE"
   export HAPAX_CLAUDE_SEND_ACK_TOKEN="$ACK_TOKEN"
   if [ "$ACK_INSTRUCTION" -eq 1 ]; then
+    RELAY_MESSAGE="$MESSAGE"
+    local ack_command
+    printf -v ack_command 'mkdir -p %q && printf '\''%%s\\n'\'' %q > %q' "$(dirname "$ACK_FILE")" "$ACK_TOKEN" "$ACK_FILE"
+    # Claude can collapse a long paste into a quoted pasted-content block.
+    # Keep the request to follow it, and the ACK, in literal typed input.
+    ACK_TYPED_PREFIX="Follow the relayed instruction in the paste. ACK REQUIRED before substantial work: $ack_command; "
     MESSAGE="$MESSAGE
 
 ACK REQUIRED: before substantial work, write this exact token to this exact path:
@@ -438,29 +446,87 @@ foot_window_center() {
       '
 }
 
+tmux_live_status() {
+  local target="$1" visible
+  # -S 0 excludes history. Locate the bottom composer in the visible screen;
+  # its immediately preceding paragraph is the current status (possibly with
+  # a wrapped tip), and its footer may carry the legacy interrupt indicator.
+  # -J rejoins terminal soft wraps; the paragraph pass also joins explicit UI
+  # line breaks, stopping before the tip so prose cannot become busy status.
+  visible="$(tmux capture-pane -J -pt "$target" -S 0 2>/dev/null)" || return 1
+  printf '%s\n' "$visible" | awk '
+    function rule(s) { gsub(/─/, "", s); return s ~ /^[[:space:]]*$/ }
+    { lines[NR] = $0 }
+    END {
+      for (i = 2; i <= NR; i++)
+        if (lines[i] ~ /^[[:space:]]*❯/ && lines[i-1] ~ /─/ && rule(lines[i-1]))
+          prompt = i
+      if (!prompt) exit 1
+      for (i = prompt + 1; i <= NR; i++)
+        if (lines[i] ~ /─/ && rule(lines[i])) { bottom = i; break }
+      if (!bottom) exit 1
+      start = prompt - 2
+      # The status ends at the single spacer before the composer. An empty
+      # paragraph is no status, not permission to search older answer blocks.
+      if (start > 0 && lines[start] ~ /^[[:space:]]*$/) start--
+      if (start > 0 && lines[start] ~ /^[[:space:]]*$/) start = 0
+      last = start
+      while (start > 1 && lines[start-1] !~ /^[[:space:]]*$/) start--
+      if (start > 0) {
+        status = lines[start]
+        for (i = start + 1; i <= last; i++) {
+          if (lines[i] ~ /^[[:space:]]*⎿/) break
+          status = status " " lines[i]
+        }
+        print status
+      }
+      for (i = bottom + 1; i <= NR; i++) print lines[i]
+    }'
+}
+
 send_tmux() {
   local target="hapax-claude-$SESSION"
-  local tmp buffer
+  local tmp buffer status busy_result
   if [ "$REQUIRE_ACK" -eq 1 ] && [ "${HAPAX_CLAUDE_SEND_ALLOW_BUSY:-0}" != "1" ]; then
-    if tmux capture-pane -pt "$target" -S -30 2>/dev/null \
-      | grep -Eq "$BUSY_REGEX"; then
+    if ! status="$(tmux_live_status "$target")"; then
+      echo "hapax-claude-send: $SESSION live status unavailable; refusing ACK-gated message" >&2
+      echo "  inspect tmux pane hapax-claude-$SESSION and restore the visible Claude composer, then retry" >&2
+      exit 15
+    fi
+    busy_result=0
+    grep -Eq "$BUSY_REGEX" <<<"$status" || busy_result=$?
+    if [ "$busy_result" -eq 0 ]; then
       echo "hapax-claude-send: $SESSION appears busy; refusing to queue ACK-gated message" >&2
       echo "  override with HAPAX_CLAUDE_SEND_ALLOW_BUSY=1, or wait for the pane to idle" >&2
       exit 14
+    fi
+    if [ "$busy_result" -ne 1 ]; then
+      echo "hapax-claude-send: invalid busy status regex; refusing ACK-gated message" >&2
+      echo "  correct or unset HAPAX_CLAUDE_SEND_BUSY_REGEX, then retry" >&2
+      exit 15
     fi
   fi
 
   tmp="$(mktemp)"
   buffer="hapax-claude-send-$SESSION-$$-$RANDOM"
   TMP_FILES+=("$tmp")
-  printf '%s' "$MESSAGE" >"$tmp"
+  if [ -n "$ACK_TYPED_PREFIX" ]; then
+    printf '%s' "$RELAY_MESSAGE" >"$tmp"
+  else
+    printf '%s' "$MESSAGE" >"$tmp"
+  fi
 
   tmux load-buffer -b "$buffer" "$tmp"
   if [ "$CLEAR_INPUT" -eq 1 ]; then
     tmux send-keys -t "$target" C-u
     sleep "${HAPAX_CLAUDE_SEND_CLEAR_DELAY:-0.05}"
   fi
-  tmux paste-buffer -b "$buffer" -t "$target"
+  if [ -n "$ACK_TYPED_PREFIX" ]; then
+    tmux send-keys -t "$target" -l "$ACK_TYPED_PREFIX"
+    tmux paste-buffer -p -b "$buffer" -t "$target"
+  else
+    tmux paste-buffer -b "$buffer" -t "$target"
+  fi
   tmux delete-buffer -b "$buffer" 2>/dev/null || true
   if [ "$SUBMIT" -eq 1 ]; then
     sleep "${HAPAX_CLAUDE_SEND_SUBMIT_DELAY:-1.10}"
