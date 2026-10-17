@@ -620,6 +620,7 @@ class TestVaultDocsFreshness:
         assert note.read_bytes() == before
         assert "VAULT_DOCS_FRESH" in result.stdout
         assert "UNKNOWN" not in result.stdout and "RELEASED" not in result.stdout
+        assert "INCOMPLETE" not in result.stdout
 
     @pytest.mark.parametrize("channel", ["relay", "heartbeat", "artifact"])
     def test_blocked_first_record_cannot_hide_later_fresh_evidence(
@@ -691,6 +692,7 @@ class TestVaultDocsFreshness:
         expected = "artifact=" if channel == "artifact" else "heartbeat="
         assert "VAULT_DOCS_FRESH" in result.stdout and expected in result.stdout
         assert "UNKNOWN" not in result.stdout and "RELEASED" not in result.stdout
+        assert "INCOMPLETE" not in result.stdout
 
     @pytest.mark.parametrize("age_hours", [8, 13])
     def test_blocked_record_reports_individual_timeout(
@@ -708,12 +710,9 @@ class TestVaultDocsFreshness:
         assert result.returncode == 10, result.stdout + result.stderr
         assert "relay:TimeoutError" in result.stdout
         assert "freshness reader failed or exceeded its time bound" not in result.stdout
-        if age_hours == 8:
-            assert claim.exists() and note.read_bytes() == before, result.stdout
-            assert "VAULT_DOCS_UNKNOWN:" in result.stdout
-        else:
-            assert not claim.exists() and "status: offered" in note.read_text(), result.stdout
-            assert "VAULT_DOCS_UNKNOWN_EXPIRED:" in result.stdout
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_INCOMPLETE:" in result.stdout
+        assert "VAULT_DOCS_UNKNOWN_EXPIRED:" not in result.stdout
 
     def test_record_deadline_does_not_leak_into_directory_walk(self, tmp_path: Path) -> None:
         vault, cache, note, claim, artifact = self._claim(tmp_path)
@@ -927,7 +926,7 @@ class TestVaultDocsFreshness:
         assert "VAULT_DOCS_UNKNOWN_EXPIRED" not in result.stdout
 
     @pytest.mark.parametrize("age_hours", [8, 13])
-    def test_blocked_reader_times_out_with_reported_grace(
+    def test_blocked_reader_times_out_without_expiring_coverage(
         self, tmp_path: Path, age_hours: int
     ) -> None:
         vault, cache, note, claim, artifact = self._claim(tmp_path)
@@ -956,15 +955,95 @@ class TestVaultDocsFreshness:
         assert time.monotonic() - started < 10
         assert result.returncode == 10, result.stdout + result.stderr
         assert "freshness reader failed or exceeded its time bound" in result.stdout
-        if age_hours == 8:
-            assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_INCOMPLETE" in result.stdout
+        assert "VAULT_DOCS_UNKNOWN_EXPIRED" not in result.stdout
+        reported_note = re.search(r" note=(\S+)", result.stdout)
+        assert reported_note and Path(reported_note[1]).samefile(note)
+        assert "retained: unobservable" in result.stdout
+        assert "1 claim coherence issue(s) found" in result.stdout
+
+    @pytest.mark.parametrize("operation", ["scandir", "lstat"])
+    def test_blocked_artifact_walk_cannot_release_unread_fresh_heartbeat(
+        self, tmp_path: Path, operation: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        self._heartbeat(tmp_path, last_heartbeat=datetime.now(UTC).isoformat())
+        site = tmp_path / "blocked_walk_before_heartbeat"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import os
+            import time
+            from pathlib import Path
+            owner = os if {operation!r} == 'scandir' else Path
+            original = getattr(owner, {operation!r})
+            def blocked(path, *args, **kwargs):
+                if str(path) == {str(artifact.parent)!r}:
+                    time.sleep(60)
+                return original(path, *args, **kwargs)
+            setattr(owner, {operation!r}, blocked)
+            """)
+        )
+        before, marker = note.read_bytes(), claim.read_bytes()
+        started = time.monotonic()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+        assert time.monotonic() - started < 10
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert claim.exists(), result.stdout
+        assert note.read_bytes() == before and claim.read_bytes() == marker
+        assert "VAULT_DOCS_INCOMPLETE" in result.stdout
+        assert "RELEASED" not in result.stdout and "next action:" in result.stdout
+
+    @pytest.mark.parametrize("channel", ["artifacts", "relay", "heartbeat"])
+    def test_unreadable_channel_cannot_establish_expired_staleness(
+        self, tmp_path: Path, channel: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        if channel == "artifacts":
+            target = artifact.parent
+        elif channel == "relay":
+            target = self._relay(tmp_path, updated=datetime.now(UTC).isoformat())
         else:
-            assert not claim.exists() and "status: offered" in note.read_text(), result.stdout
-            assert "VAULT_DOCS_UNKNOWN_EXPIRED" in result.stdout
+            target = self._heartbeat(tmp_path, last_heartbeat=datetime.now(UTC).isoformat())
+        site = tmp_path / "unreadable_channel"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import os
+            from pathlib import Path
+            owner = os if {channel!r} == 'artifacts' else Path
+            method = 'scandir' if {channel!r} == 'artifacts' else 'open'
+            original = getattr(owner, method)
+            def unreadable(path, *args, **kwargs):
+                if str(path) == {str(target)!r}:
+                    raise PermissionError('fixture evidence is unreadable')
+                return original(path, *args, **kwargs)
+            setattr(owner, method, unreadable)
+            """)
+        )
+        before, marker = note.read_bytes(), claim.read_bytes()
+
+        # A persistent read failure must remain visible on every audit.
+        for _ in range(2):
+            result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+            assert result.returncode == 10, result.stdout + result.stderr
+            assert claim.exists(), result.stdout
+            assert note.read_bytes() == before and claim.read_bytes() == marker
+            assert "VAULT_DOCS_INCOMPLETE" in result.stdout
+            assert f"{channel}:PermissionError" in result.stdout
+            assert "retained: unobservable" in result.stdout and str(target) in result.stdout
+            assert "1 claim coherence issue(s) found" in result.stdout
+            assert "RELEASED" not in result.stdout
 
     @pytest.mark.parametrize("channel", ["artifacts", "heartbeat"])
     @pytest.mark.parametrize("age_hours", [8, 13])
-    def test_entry_limit_uses_reported_unknown_grace(
+    def test_entry_limit_cannot_establish_expired_staleness(
         self, tmp_path: Path, channel: str, age_hours: int
     ) -> None:
         vault, cache, note, claim, artifact = self._claim(tmp_path)
@@ -1013,12 +1092,9 @@ class TestVaultDocsFreshness:
 
         assert result.returncode == 10, result.stdout + result.stderr
         assert f"{channel}:" in result.stdout
-        if age_hours == 8:
-            assert claim.exists() and note.read_bytes() == before, result.stdout
-            assert "VAULT_DOCS_UNKNOWN:" in result.stdout
-        else:
-            assert not claim.exists() and "status: offered" in note.read_text(), result.stdout
-            assert "VAULT_DOCS_UNKNOWN_EXPIRED:" in result.stdout
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_INCOMPLETE:" in result.stdout
+        assert "VAULT_DOCS_UNKNOWN_EXPIRED:" not in result.stdout
 
     @pytest.mark.parametrize("broken", ["scope", "unreadable", "symlink", "relay", "heartbeat"])
     def test_unreadable_freshness_reports_and_retains(self, tmp_path: Path, broken: str) -> None:
@@ -1043,7 +1119,8 @@ class TestVaultDocsFreshness:
         assert result.returncode == 10, result.stdout + result.stderr
         assert claim.exists(), result.stdout
         assert note.read_bytes() == before
-        assert "VAULT_DOCS_UNKNOWN" in result.stdout
+        expected = "VAULT_DOCS_INCOMPLETE" if broken == "unreadable" else "VAULT_DOCS_UNKNOWN"
+        assert expected in result.stdout
         assert "next action:" in result.stdout.lower()
 
 
