@@ -17,11 +17,13 @@ Also tests:
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -57,6 +59,8 @@ def _write_task_note(
     claimed_at: str = "2026-06-12T08:00:00Z",
     subdir: str = "active",
     pr_repo: str = "null",
+    mutation_surface: str = "source",
+    mutation_scope_refs: list[str] | None = None,
 ) -> Path:
     note = vault / subdir / f"{task_id}.md"
     note.write_text(
@@ -71,6 +75,8 @@ def _write_task_note(
         pr_repo: {pr_repo}
         branch: {branch}
         claimed_at: {claimed_at}
+        mutation_surface: {mutation_surface}
+        mutation_scope_refs: {json.dumps(mutation_scope_refs or [])}
         ---
         ## Session log
         """),
@@ -287,6 +293,882 @@ def _run_audit(
         env=env,
         cwd=str(tmp_path),
     )
+
+
+def _sigterm_ignoring_reader_stub(tmp_path: Path, argument_suffix: str) -> Path:
+    """Stall only the selected reader; the test-owned alarm bounds a broken audit."""
+    stub = tmp_path / "bin" / "python3"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    observed = tmp_path / "ignoring-reader-started"
+    stub.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import os
+        import signal
+        import sys
+        import time
+        from pathlib import Path
+        if len(sys.argv) > 2 and sys.argv[1] == "-" and sys.argv[2].endswith({argument_suffix!r}):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.alarm(11)
+            Path({str(observed)!r}).write_text("SIGTERM ignored; test cleanup alarm armed\\n")
+            time.sleep(30)
+        os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+        """)
+    )
+    stub.chmod(0o755)
+    # Keep the reader deadline independent of the audit's notification transport.
+    notify = stub.parent / "curl"
+    notify.write_text("#!/bin/sh\nexit 0\n")
+    notify.chmod(0o755)
+    return observed
+
+
+class TestVaultDocsFreshness:
+    """Exercise the real release path against isolated notes, artifacts and lane state."""
+
+    def _claim(self, tmp_path: Path, *, surface: str = "vault_docs"):
+        vault = _make_vault(tmp_path)
+        cache = tmp_path / "cache"
+        root = tmp_path / "fakehome" / "Documents" / "Personal"
+        artifact = root / "30-areas" / "research" / "research-task.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("retained research\n")
+        old = datetime.now(UTC) - timedelta(hours=8)
+        os.utime(artifact, (old.timestamp(), old.timestamp()))
+        note = _write_task_note(
+            vault,
+            "research-task",
+            claimed_at=old.isoformat(),
+            mutation_surface=surface,
+            mutation_scope_refs=["30-areas/research/"],
+        )
+        claim = _write_claim_cache(cache, "cx-alpha", "research-task")
+        return vault, cache, note, claim, artifact
+
+    @staticmethod
+    def _relay(tmp_path: Path, **fields: object) -> Path:
+        relay = tmp_path / "fakehome" / ".cache" / "hapax" / "relay" / "cx-alpha.yaml"
+        relay.parent.mkdir(parents=True, exist_ok=True)
+        relay.write_text(json.dumps({"task_id": "research-task", **fields}))
+        return relay
+
+    @staticmethod
+    def _heartbeat(tmp_path: Path, **fields: object) -> Path:
+        record = tmp_path / "fakehome" / ".cache" / "hapax" / "worktree-registry" / "lane.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"role": "cx-alpha", "task_id": "research-task", **fields}))
+        return record
+
+    @pytest.mark.parametrize("scope_kind", ["directory", "file", "absolute"])
+    def test_recent_scoped_artifact_retains_claim(self, tmp_path: Path, scope_kind: str) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        if scope_kind != "directory":
+            scope = (
+                str(artifact) if scope_kind == "absolute" else "30-areas/research/research-task.md"
+            )
+            note.write_text(note.read_text().replace('["30-areas/research/"]', json.dumps([scope])))
+        recent = (datetime.now(UTC) - timedelta(hours=1)).timestamp()
+        os.utime(artifact, (recent, recent))
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists(), result.stdout
+        assert note.read_bytes() == before
+        assert "VAULT_DOCS_FRESH" in result.stdout and "artifact" in result.stdout
+
+    @pytest.mark.parametrize("signal", ["relay", "heartbeat"])
+    def test_fresh_bound_lane_signal_retains_claim(self, tmp_path: Path, signal: str) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        fresh = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        if signal == "relay":
+            record = self._relay(tmp_path, updated=fresh)
+        else:
+            record = self._heartbeat(tmp_path, last_heartbeat=fresh)
+        old = (datetime.now(UTC) - timedelta(hours=8)).timestamp()
+        os.utime(record, (old, old))  # freshness is the declared signal, not file touch time
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists(), result.stdout
+        assert note.read_bytes() == before
+        assert "VAULT_DOCS_FRESH" in result.stdout and signal in result.stdout
+
+    @pytest.mark.parametrize("signal", ["none", "stale", "other_task", "other_role", "unscoped"])
+    def test_idle_claim_is_still_released(self, tmp_path: Path, signal: str) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        old = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        fresh = datetime.now(UTC).isoformat()
+        if signal == "stale":
+            self._relay(tmp_path, updated=old)
+            self._heartbeat(tmp_path, last_heartbeat=old)
+        elif signal == "other_task":
+            self._relay(tmp_path, task_id="another-task", updated=fresh)
+            self._heartbeat(tmp_path, task_id="another-task", last_heartbeat=fresh)
+        elif signal == "other_role":
+            self._heartbeat(tmp_path, role="cx-other", last_heartbeat=fresh)
+        elif signal == "unscoped":
+            (artifact.parent.parent / "research-task.md").write_text("another row's new artifact")
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not claim.exists(), result.stdout
+        assert "status: offered" in note.read_text()
+        assert "RELEASED back to offered" in result.stdout
+
+    def test_source_claim_keeps_existing_pr_predicate(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path, surface="source")
+        artifact.touch()
+        self._relay(tmp_path, updated=datetime.now(UTC).isoformat())
+        self._heartbeat(tmp_path, last_heartbeat=datetime.now(UTC).isoformat())
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not claim.exists()
+        assert "status: offered" in note.read_text()
+
+    def test_idle_vault_docs_claim_with_closed_pr_is_released(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        note.write_text(note.read_text().replace("pr: null", "pr: 123"))
+
+        result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not claim.exists()
+        assert "status: offered" in note.read_text()
+
+    # Shapes measured in dev32's independent review at 20261015T152440Z:
+    # 39 task-bound relays use updated_at only, 30 timestamp only, seven both;
+    # 54 relay records do not parse. Keep these as literal YAML, not generated
+    # from the reader's expected representation.
+    @pytest.mark.parametrize("key", ["updated", "updated_at", "timestamp"])
+    @pytest.mark.parametrize("hours", [1, 3])
+    def test_real_relay_timestamp_shapes(self, tmp_path: Path, key: str, hours: int) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        when = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        self._relay(tmp_path).write_text(f"task_id: research-task\n{key}: '{when}'\n")
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        if hours == 1:
+            assert claim.exists() and note.read_bytes() == before
+            assert "VAULT_DOCS_FRESH" in result.stdout and "relay=" in result.stdout
+        else:
+            assert not claim.exists() and "status: offered" in note.read_text()
+
+    @pytest.mark.parametrize("newest", ["updated", "updated_at", "timestamp"])
+    def test_relay_uses_newest_valid_timestamp(self, tmp_path: Path, newest: str) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        old = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        fresh = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        keys = ["updated", "updated_at", "timestamp"]
+        fields = dict.fromkeys(keys, old)
+        fields[newest] = fresh
+        fields[keys[(keys.index(newest) + 1) % len(keys)]] = "invalid"
+        self._relay(tmp_path).write_text(
+            "current_task: research-task\n" + "".join(f"{k}: '{v}'\n" for k, v in fields.items())
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before
+        assert "VAULT_DOCS_FRESH" in result.stdout and "relay=" in result.stdout
+
+    @pytest.mark.parametrize("shape", ["non_parsing", "unknown_timestamp"])
+    @pytest.mark.parametrize("age_hours", [11, 13])
+    def test_unknown_relay_has_bounded_grace(
+        self, tmp_path: Path, shape: str, age_hours: int
+    ) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        old = (datetime.now(UTC) - timedelta(hours=age_hours)).isoformat()
+        note.write_text(re.sub(r"claimed_at: .*", f"claimed_at: {old}", note.read_text()))
+        self._relay(tmp_path).write_text(
+            "task_id: research-task\nupdated_at: [unfinished\n"
+            if shape == "non_parsing"
+            else "task_id: research-task\nupdated_at: unknown\n"
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 10, result.stdout + result.stderr
+        if age_hours == 11:
+            assert claim.exists() and note.read_bytes() == before
+            assert "VAULT_DOCS_UNKNOWN:" in result.stdout
+            assert "unknown_grace=6h" in result.stdout
+        else:
+            assert not claim.exists() and "status: offered" in note.read_text()
+            assert "VAULT_DOCS_UNKNOWN_EXPIRED:" in result.stdout
+            assert "RELEASED back to offered" in result.stdout
+
+    def test_fresh_evidence_wins_after_unknown_grace(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        old = (datetime.now(UTC) - timedelta(hours=13)).isoformat()
+        note.write_text(re.sub(r"claimed_at: .*", f"claimed_at: {old}", note.read_text()))
+        self._relay(tmp_path).write_text("task_id: [unfinished\n")
+        artifact.touch()
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before
+        assert "VAULT_DOCS_FRESH" in result.stdout
+
+    @pytest.mark.parametrize("binding", ["folder", "filename", "frontmatter"])
+    def test_artifact_must_bind_this_task(self, tmp_path: Path, binding: str) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        artifact.unlink()
+        if binding == "folder":
+            artifact = artifact.parent / "research-task" / "report.md"
+            artifact.parent.mkdir()
+        elif binding == "frontmatter":
+            artifact = artifact.parent / "report.md"
+        artifact.write_text(
+            "---\ntask_id: research-task\n---\nResearch\n"
+            if binding == "frontmatter"
+            else "Research\n"
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before
+        assert "VAULT_DOCS_FRESH" in result.stdout and "artifact=" in result.stdout
+
+    @pytest.mark.parametrize(
+        "writer", ["other_lane", "other_frontmatter", "similar_folder", "numbered_prefix"]
+    )
+    def test_shared_scope_other_task_write_does_not_retain(
+        self, tmp_path: Path, writer: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        other = artifact.parent / "another-task.md"
+        if writer in ("similar_folder", "numbered_prefix"):
+            folder = "research-task-other" if writer == "similar_folder" else "research-task-2"
+            other = artifact.parent / folder / "report.md"
+            other.parent.mkdir()
+        other.write_text(
+            "---\ntask_id: another-task\n---\nresearch-task mentioned in body only\n"
+            if writer == "other_frontmatter"
+            else "Another lane's new delivery\n"
+        )
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not claim.exists(), result.stdout
+        assert "status: offered" in note.read_text()
+
+    @pytest.mark.parametrize(
+        ("status", "pr"),
+        [("claimed", "123"), ("pr_open", "123"), ("merged_awaiting_runtime_witness", "null")],
+    )
+    def test_awaiting_activation_preserves_note_and_cache(
+        self, tmp_path: Path, status: str, pr: str
+    ) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        note.write_text(
+            note.read_text()
+            .replace("status: claimed", f"status: {status}")
+            .replace("pr: null", f"pr: {pr}")
+        )
+        before = note.read_bytes()
+        marker = claim.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache, gh_state="MERGED")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists(), result.stdout
+        assert claim.read_bytes() == marker and note.read_bytes() == before
+        assert "ACTIVATION_OR_PR_PROTECTED" in result.stdout
+
+    @pytest.mark.parametrize(
+        "order",
+        [
+            "artifact_then_relay",
+            "artifact_then_heartbeat",
+            "relay_then_heartbeat",
+            "heartbeat_then_neighbor",
+        ],
+    )
+    def test_fresh_evidence_survives_later_blocked_reader(self, tmp_path: Path, order: str) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        fresh = datetime.now(UTC).isoformat()
+        if order.startswith("artifact"):
+            artifact.touch()
+        if order == "artifact_then_relay":
+            blocked = self._relay(tmp_path)
+        elif order in ("artifact_then_heartbeat", "relay_then_heartbeat"):
+            if order.startswith("relay"):
+                self._relay(tmp_path, updated=fresh)
+            blocked = self._heartbeat(tmp_path)
+        else:
+            first = self._heartbeat(tmp_path, last_heartbeat=fresh)
+            blocked = first.with_name("neighbor.json")
+            blocked.touch()
+        blocked.unlink()
+        os.mkfifo(blocked)
+        extra_env = None
+        if order == "heartbeat_then_neighbor":
+            # Fix only this fixture's directory enumeration order. Replacing a
+            # regular file with a FIFO can reorder real directory entries.
+            site = tmp_path / "ordered_registry"
+            site.mkdir()
+            (site / "sitecustomize.py").write_text(
+                textwrap.dedent(f"""\
+                from pathlib import Path
+                original = Path.iterdir
+                def ordered(path):
+                    if str(path) == {str(blocked.parent)!r}:
+                        return iter([Path({str(first)!r}), Path({str(blocked)!r})])
+                    return original(path)
+                Path.iterdir = ordered
+                """)
+            )
+            extra_env = {"PYTHONPATH": str(site)}
+        before = note.read_bytes()
+        marker = claim.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env=extra_env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and claim.read_bytes() == marker, result.stdout
+        assert note.read_bytes() == before
+        assert "VAULT_DOCS_FRESH" in result.stdout
+        assert "UNKNOWN" not in result.stdout and "RELEASED" not in result.stdout
+        assert "INCOMPLETE" not in result.stdout
+
+    @pytest.mark.parametrize("channel", ["relay", "heartbeat", "artifact"])
+    def test_blocked_first_record_cannot_hide_later_fresh_evidence(
+        self, tmp_path: Path, channel: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        fresh = datetime.now(UTC).isoformat()
+        site = tmp_path / "blocked_first"
+        site.mkdir()
+        setup = ""
+        if channel == "relay":
+            blocked = self._relay(tmp_path)
+            self._heartbeat(tmp_path, last_heartbeat=fresh)
+        elif channel == "heartbeat":
+            good = self._heartbeat(tmp_path, last_heartbeat=fresh)
+            blocked = good.with_name("neighbor.json")
+            blocked.touch()
+            setup = textwrap.dedent(f"""\
+                from pathlib import Path
+                original = Path.iterdir
+                def ordered(path):
+                    if str(path) == {str(good.parent)!r}:
+                        return iter([Path({str(blocked)!r}), Path({str(good)!r})])
+                    return original(path)
+                Path.iterdir = ordered
+                """)
+        else:
+            artifact.touch()
+            blocked = artifact.with_name("neighbor.md")
+            blocked.write_text("unrelated report\n")
+            # Match the walker's stack order, then swap the first regular file
+            # for a real FIFO at open: the lstat/open race must also be bounded.
+            good = artifact
+            setup = textwrap.dedent(f"""\
+                import os
+                from pathlib import Path
+                from types import SimpleNamespace
+                real_scandir = os.scandir
+                real_open = Path.open
+                class Entries:
+                    def __enter__(self):
+                        return iter([SimpleNamespace(path={str(good)!r}),
+                                     SimpleNamespace(path={str(blocked)!r})])
+                    def __exit__(self, *args):
+                        pass
+                def ordered(path):
+                    return Entries() if str(path) == {str(good.parent)!r} else real_scandir(path)
+                def swap_before_open(path, *args, **kwargs):
+                    if str(path) == {str(blocked)!r}:
+                        path.unlink()
+                        os.mkfifo(path)
+                    return real_open(path, *args, **kwargs)
+                os.scandir = ordered
+                Path.open = swap_before_open
+                """)
+        if channel != "artifact":
+            blocked.unlink()
+            os.mkfifo(blocked)
+        (site / "sitecustomize.py").write_text(setup)
+        before = note.read_bytes()
+        marker = claim.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and claim.read_bytes() == marker, result.stdout
+        assert note.read_bytes() == before
+        expected = "artifact=" if channel == "artifact" else "heartbeat="
+        assert "VAULT_DOCS_FRESH" in result.stdout and expected in result.stdout
+        assert "UNKNOWN" not in result.stdout and "RELEASED" not in result.stdout
+        assert "INCOMPLETE" not in result.stdout
+
+    @pytest.mark.parametrize("age_hours", [8, 13])
+    def test_blocked_record_reports_individual_timeout(
+        self, tmp_path: Path, age_hours: int
+    ) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        self._claim_age(note, age_hours)
+        relay = self._relay(tmp_path)
+        relay.unlink()
+        os.mkfifo(relay)
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "relay:TimeoutError" in result.stdout
+        assert "freshness reader failed or exceeded its time bound" not in result.stdout
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_INCOMPLETE:" in result.stdout
+        assert "VAULT_DOCS_UNKNOWN_EXPIRED:" not in result.stdout
+
+    def test_record_deadline_does_not_leak_into_directory_walk(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        artifact.touch()
+        site = tmp_path / "delayed_walk"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import os
+            import time
+            original = os.scandir
+            def delayed(path):
+                if str(path) == {str(artifact.parent)!r}:
+                    time.sleep(0.5)
+                return original(path)
+            os.scandir = delayed
+            """)
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_FRESH" in result.stdout and "artifact=" in result.stdout
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "research-task-2-result.md",
+            "research-task-other-result.md",
+            "research-task-result.md",
+            "other-research-task.md",
+        ],
+    )
+    @pytest.mark.parametrize("frontmatter", [False, True])
+    def test_filename_collision_does_not_retain_another_task(
+        self, tmp_path: Path, filename: str, frontmatter: bool
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        other = artifact.with_name(filename)
+        other.write_text(
+            "---\ntask_id: research-task-other\n---\nOther work\n"
+            if frontmatter
+            else "Other work without explicit task identity\n"
+        )
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not claim.exists(), result.stdout
+        assert "status: offered" in note.read_text()
+        assert "VAULT_DOCS_FRESH" not in result.stdout
+
+    @pytest.mark.parametrize("path_binding", ["filename", "folder"])
+    def test_conflicting_frontmatter_overrides_path_binding(
+        self, tmp_path: Path, path_binding: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        if path_binding == "folder":
+            artifact = artifact.parent / "research-task" / "report.md"
+            artifact.parent.mkdir()
+        artifact.write_text("---\ntask_id: research-task-other\n---\nOther work\n")
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not claim.exists(), result.stdout
+        assert "status: offered" in note.read_text()
+
+    def test_ambiguous_filename_with_exact_frontmatter_retains(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        artifact.with_name("research-task-2-result.md").write_text(
+            "---\ntask_id: research-task\n---\nThis task's explicitly bound result\n"
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_FRESH" in result.stdout
+
+    @staticmethod
+    def _claim_age(note: Path, hours: int) -> None:
+        when = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        note.write_text(re.sub(r"claimed_at: .*", f"claimed_at: {when}", note.read_text()))
+
+    @pytest.mark.parametrize("bad_first", [True, False])
+    def test_corrupt_registry_neighbor_cannot_hide_fresh_heartbeat(
+        self, tmp_path: Path, bad_first: bool
+    ) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        record = self._heartbeat(tmp_path)
+        record.with_name("neighbor.json").touch()
+        # Populate in observed directory order so neither filesystem order nor
+        # filename sorting is an oracle for which record the reader sees first.
+        records = list(record.parent.iterdir())
+        bad, good = records if bad_first else records[::-1]
+        bad.write_text("{corrupt unrelated record")
+        good.write_text(
+            json.dumps(
+                {
+                    "role": "cx-alpha",
+                    "task_id": "research-task",
+                    "last_heartbeat": datetime.now(UTC).isoformat(),
+                }
+            )
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_FRESH" in result.stdout and "heartbeat=" in result.stdout
+
+    @pytest.mark.parametrize("bad_first", [True, False])
+    @pytest.mark.parametrize("fault", ["unreadable_scope", "invalid_scope", "same_scope_entry"])
+    def test_bad_artifact_neighbor_cannot_hide_fresh_artifact(
+        self, tmp_path: Path, bad_first: bool, fault: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        artifact.touch()
+        unreadable = None
+        if fault == "same_scope_entry":
+            artifact.with_name("research-task.txt").touch()
+            # The artifact walker uses a stack, the reverse of scandir order.
+            order = list(artifact.parent.iterdir())[::-1]
+            bad, good = order if bad_first else order[::-1]
+            future = (datetime.now(UTC) + timedelta(hours=1)).timestamp()
+            os.utime(bad, (future, future))
+            good.touch()
+        else:
+            if fault == "unreadable_scope":
+                unreadable = artifact.parent / "unreadable"
+                unreadable.mkdir()
+                unreadable.chmod(0)
+                bad_scope = str(unreadable)
+            else:
+                bad_scope = 42
+            scopes = [bad_scope, str(artifact)]
+            if not bad_first:
+                scopes.reverse()
+            note.write_text(note.read_text().replace('["30-areas/research/"]', json.dumps(scopes)))
+        before = note.read_bytes()
+        try:
+            result = _run_audit(tmp_path, vault, cache)
+        finally:
+            if unreadable is not None:
+                unreadable.chmod(0o755)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_FRESH" in result.stdout and "artifact=" in result.stdout
+
+    @pytest.mark.parametrize("age_hours", [8, 13])
+    @pytest.mark.parametrize(
+        "fault",
+        ["future_artifact", "future_relay", "future_heartbeat", "conflicting_relay", "non_file"],
+    )
+    def test_invalid_evidence_uses_reported_unknown_grace(
+        self, tmp_path: Path, age_hours: int, fault: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, age_hours)
+        future = datetime.now(UTC) + timedelta(hours=1)
+        if fault == "future_artifact":
+            os.utime(artifact, (future.timestamp(), future.timestamp()))
+        elif fault == "future_relay":
+            self._relay(tmp_path, updated=future.isoformat())
+        elif fault == "future_heartbeat":
+            self._heartbeat(tmp_path, last_heartbeat=future.isoformat())
+        elif fault == "conflicting_relay":
+            self._relay(
+                tmp_path, current_task="another-task", updated=datetime.now(UTC).isoformat()
+            )
+        else:
+            artifact.unlink()
+            os.mkfifo(artifact)
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 10, result.stdout + result.stderr
+        if age_hours == 8:
+            assert claim.exists() and note.read_bytes() == before, result.stdout
+            assert "VAULT_DOCS_UNKNOWN:" in result.stdout
+        else:
+            assert not claim.exists() and "status: offered" in note.read_text(), result.stdout
+            assert "VAULT_DOCS_UNKNOWN_EXPIRED:" in result.stdout
+
+    @pytest.mark.parametrize("claimed_at", ["null", "not-a-date", "missing"])
+    def test_unknown_cannot_expire_without_valid_claim_timestamp(
+        self, tmp_path: Path, claimed_at: str
+    ) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        replacement = "" if claimed_at == "missing" else f"claimed_at: {claimed_at}"
+        note.write_text(re.sub(r"claimed_at: .*", replacement, note.read_text()))
+        self._relay(tmp_path).write_text("{corrupt")
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_UNKNOWN:" in result.stdout
+        assert "VAULT_DOCS_UNKNOWN_EXPIRED" not in result.stdout
+
+    @pytest.mark.parametrize("age_hours", [8, 13])
+    def test_blocked_reader_times_out_without_expiring_coverage(
+        self, tmp_path: Path, age_hours: int
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, age_hours)
+        # The outer budget still bounds directory traversal, independently of
+        # the new per-record deadline. Stall only this isolated fixture's walk.
+        site = tmp_path / "blocked_walk"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import os
+            import time
+            original = os.scandir
+            def blocked(path):
+                if str(path) == {str(artifact.parent)!r}:
+                    time.sleep(60)
+                return original(path)
+            os.scandir = blocked
+            """)
+        )
+        before = note.read_bytes()
+        started = time.monotonic()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+        assert time.monotonic() - started < 10
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "freshness reader failed or exceeded its time bound" in result.stdout
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_INCOMPLETE" in result.stdout
+        assert "VAULT_DOCS_UNKNOWN_EXPIRED" not in result.stdout
+        reported_note = re.search(r" note=(\S+)", result.stdout)
+        assert reported_note and Path(reported_note[1]).samefile(note)
+        assert "retained: unobservable" in result.stdout
+        assert "1 claim coherence issue(s) found" in result.stdout
+
+    def test_sigterm_ignoring_freshness_reader_has_kill_bound(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        observed = _sigterm_ignoring_reader_stub(tmp_path, "/research-task.md")
+        before = note.read_bytes()
+        started = time.monotonic()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        elapsed = time.monotonic() - started
+        assert observed.exists(), result.stdout + result.stderr
+        assert elapsed < 10, f"reader exceeded kill deadline: {elapsed:.2f}s"
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_INCOMPLETE" in result.stdout
+        assert "retained: unobservable" in result.stdout
+        assert "1 claim coherence issue(s) found" in result.stdout
+
+    @pytest.mark.parametrize("operation", ["scandir", "lstat"])
+    def test_blocked_artifact_walk_cannot_release_unread_fresh_heartbeat(
+        self, tmp_path: Path, operation: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        self._heartbeat(tmp_path, last_heartbeat=datetime.now(UTC).isoformat())
+        site = tmp_path / "blocked_walk_before_heartbeat"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import os
+            import time
+            from pathlib import Path
+            owner = os if {operation!r} == 'scandir' else Path
+            original = getattr(owner, {operation!r})
+            def blocked(path, *args, **kwargs):
+                if str(path) == {str(artifact.parent)!r}:
+                    time.sleep(60)
+                return original(path, *args, **kwargs)
+            setattr(owner, {operation!r}, blocked)
+            """)
+        )
+        before, marker = note.read_bytes(), claim.read_bytes()
+        started = time.monotonic()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+        assert time.monotonic() - started < 10
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert claim.exists(), result.stdout
+        assert note.read_bytes() == before and claim.read_bytes() == marker
+        assert "VAULT_DOCS_INCOMPLETE" in result.stdout
+        assert "RELEASED" not in result.stdout and "next action:" in result.stdout
+
+    @pytest.mark.parametrize("channel", ["artifacts", "relay", "heartbeat"])
+    def test_unreadable_channel_cannot_establish_expired_staleness(
+        self, tmp_path: Path, channel: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        if channel == "artifacts":
+            target = artifact.parent
+        elif channel == "relay":
+            target = self._relay(tmp_path, updated=datetime.now(UTC).isoformat())
+        else:
+            target = self._heartbeat(tmp_path, last_heartbeat=datetime.now(UTC).isoformat())
+        site = tmp_path / "unreadable_channel"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import os
+            from pathlib import Path
+            owner = os if {channel!r} == 'artifacts' else Path
+            method = 'scandir' if {channel!r} == 'artifacts' else 'open'
+            original = getattr(owner, method)
+            def unreadable(path, *args, **kwargs):
+                if str(path) == {str(target)!r}:
+                    raise PermissionError('fixture evidence is unreadable')
+                return original(path, *args, **kwargs)
+            setattr(owner, method, unreadable)
+            """)
+        )
+        before, marker = note.read_bytes(), claim.read_bytes()
+
+        # A persistent read failure must remain visible on every audit.
+        for _ in range(2):
+            result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+            assert result.returncode == 10, result.stdout + result.stderr
+            assert claim.exists(), result.stdout
+            assert note.read_bytes() == before and claim.read_bytes() == marker
+            assert "VAULT_DOCS_INCOMPLETE" in result.stdout
+            assert f"{channel}:PermissionError" in result.stdout
+            assert "retained: unobservable" in result.stdout and str(target) in result.stdout
+            assert "1 claim coherence issue(s) found" in result.stdout
+            assert "RELEASED" not in result.stdout
+
+    @pytest.mark.parametrize("channel", ["artifacts", "heartbeat"])
+    @pytest.mark.parametrize("age_hours", [8, 13])
+    def test_entry_limit_cannot_establish_expired_staleness(
+        self, tmp_path: Path, channel: str, age_hours: int
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, age_hours)
+        stale = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        registry = self._heartbeat(tmp_path, last_heartbeat=stale).parent
+        target = artifact.parent if channel == "artifacts" else registry
+        # Virtualize only directory entries under this test's isolated HOME.
+        # This exercises the real 10,000-entry boundary without creating tens
+        # of thousands of files on the shared host. No production code is patched.
+        site = tmp_path / "site"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import io
+            import os
+            from pathlib import Path
+            from types import SimpleNamespace
+            target = {str(target)!r}
+            real_scandir = os.scandir
+            real_iterdir = Path.iterdir
+            real_open = Path.open
+            class Entries:
+                def __enter__(self):
+                    return (SimpleNamespace(path=target + '/virtual-' + str(i)) for i in range(10001))
+                def __exit__(self, *args):
+                    pass
+            def scandir(path):
+                return Entries() if str(path) == target else real_scandir(path)
+            def iterdir(path):
+                if str(path) == target:
+                    return (path / ('virtual-' + str(i) + '.json') for i in range(10001))
+                return real_iterdir(path)
+            def open_record(path, *args, **kwargs):
+                if str(path.parent) == target and path.name.startswith('virtual-'):
+                    return io.StringIO('{{}}')
+                return real_open(path, *args, **kwargs)
+            os.scandir = scandir
+            Path.iterdir = iterdir
+            Path.open = open_record
+            """)
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert f"{channel}:" in result.stdout
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_INCOMPLETE:" in result.stdout
+        assert "VAULT_DOCS_UNKNOWN_EXPIRED:" not in result.stdout
+
+    @pytest.mark.parametrize("broken", ["scope", "unreadable", "symlink", "relay", "heartbeat"])
+    def test_unreadable_freshness_reports_and_retains(self, tmp_path: Path, broken: str) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        if broken == "scope":
+            note.write_text(note.read_text().replace('["30-areas/research/"]', '"not a list"'))
+        elif broken == "unreadable":
+            artifact.parent.chmod(0)
+        elif broken == "symlink":
+            artifact.unlink()
+            artifact.symlink_to(tmp_path / "outside-scope")
+        elif broken == "relay":
+            self._relay(tmp_path, updated="not-a-date")
+        else:
+            self._heartbeat(tmp_path).write_text("{broken")
+        before = note.read_bytes()
+        try:
+            result = _run_audit(tmp_path, vault, cache)
+        finally:
+            artifact.parent.chmod(0o755)
+
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert claim.exists(), result.stdout
+        assert note.read_bytes() == before
+        expected = "VAULT_DOCS_INCOMPLETE" if broken == "unreadable" else "VAULT_DOCS_UNKNOWN"
+        assert expected in result.stdout
+        assert "next action:" in result.stdout.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1803,9 +2685,13 @@ class TestLiveHeldStatusCache:
             result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
         assert marker.exists(), result.stdout + result.stderr
         assert marker.read_bytes() == claim and note.read_bytes() == original
-        assert "HELD_STATUS_PROTECTED" in result.stdout
-        assert f"live_executor_pid_{proc.pid}" in result.stdout
-        assert "codex-claim-audit[v2]: PROTECT " in result.stdout
+        if status == "merged_awaiting_runtime_witness":
+            # The activation hold is unconditional and precedes the holder probe.
+            assert "ACTIVATION_OR_PR_PROTECTED" in result.stdout
+        else:
+            assert "HELD_STATUS_PROTECTED" in result.stdout
+            assert f"live_executor_pid_{proc.pid}" in result.stdout
+            assert "codex-claim-audit[v2]: PROTECT " in result.stdout
 
     def test_dispatch_binding_session_protects_plain_marker(self, tmp_path):
         vault, cache, note, marker = self._held(tmp_path, "blocked")
@@ -1890,6 +2776,23 @@ class TestLiveHeldStatusCache:
         original = note.read_bytes()
         result = _run_audit(tmp_path, vault, cache, gh_stub_path=gh)
         assert marker.exists() and note.read_bytes() == original, result.stdout + result.stderr
+        assert "unknown_holder_probe_failed" in result.stdout
+
+    def test_sigterm_ignoring_holder_reader_has_kill_bound(self, tmp_path: Path) -> None:
+        vault, cache, note, marker = self._held(tmp_path, "blocked")
+        observed = _sigterm_ignoring_reader_stub(tmp_path, self.ROLE)
+        original, claim = note.read_bytes(), marker.read_bytes()
+        started = time.monotonic()
+
+        result = _run_audit(tmp_path, vault, cache, gh_state="CLOSED")
+
+        elapsed = time.monotonic() - started
+        assert observed.exists(), result.stdout + result.stderr
+        assert elapsed < 10, f"reader exceeded kill deadline: {elapsed:.2f}s"
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert marker.exists(), result.stdout
+        assert marker.read_bytes() == claim and note.read_bytes() == original
+        assert "HELD_STATUS_PROTECTED" in result.stdout
         assert "unknown_holder_probe_failed" in result.stdout
 
     @pytest.mark.parametrize("claimed_at", ["null", "invalid", "2999-01-01T00:00:00Z"])
