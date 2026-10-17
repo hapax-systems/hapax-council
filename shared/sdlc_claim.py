@@ -8183,6 +8183,407 @@ def return_claim(
     )
 
 
+# The authorized standing ruling is deliberately a narrow basis, not an arbitrary
+# operator-looking quote. Its canonical request is re-read at the effect boundary.
+_REBIND_RULING_SHA256 = "45761131d8c70d158749512c046d60f24205f5cf91a10b9cc17d0abb0bdc2b76"  # pragma: allowlist secret — public ruling content hash
+_REBIND_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+
+
+def _rebind_hold(reason: str, detail: str) -> ClaimPublicationError:
+    return ClaimPublicationError(
+        f"claim_rebind_{reason}",
+        "preserve the holder and evidence; reconcile the named condition through the "
+        "governed path, then retry; live-holder transfer needs a separate disposition",
+        detail,
+    )
+
+
+def _rebind_basis(vault_root: Path, path: Path, expected_sha256: str) -> dict:
+    path = _normalized(path)
+    requests = _normalized(vault_root).parent / "hapax-requests"
+    if path.parent not in {requests / "active", requests / "closed"} or path.is_symlink():
+        raise _rebind_hold("ruling_invalid", "name a canonical request, not an external note")
+    try:
+        raw, mode = _file_state(path)
+        if raw is None or mode is None:
+            raise ValueError("request missing")
+        text = raw.decode("utf-8")
+        fields = _release_fields(text)
+        quotes = re.findall(r"^> (.*)$", text, re.MULTILINE)
+        if (
+            fields is None
+            or fields.get("type") != "hapax-request"
+            or fields.get("requester") != "operator"
+            or fields.get("status") not in {"captured", "accepted"}
+            or fields.get("request_id") != path.stem
+            or len(quotes) != 1
+            or _sha256(quotes[0].encode("utf-8")) != expected_sha256
+            or expected_sha256 != _REBIND_RULING_SHA256
+        ):
+            raise ValueError("request provenance or verbatim ruling hash does not match")
+    except (OSError, UnicodeError, ValueError, LifecycleTransitionError) as exc:
+        raise _rebind_hold("ruling_invalid", str(path)) from exc
+    return {
+        "req": str(path),
+        "req_sha256": _sha256(raw),
+        "verbatim": quotes[0],
+        "verbatim_sha256": expected_sha256,
+    }
+
+
+def _rebind_process_absence(*, role: str, session_id: str, cache_dir: Path) -> dict:
+    """Observe this host's launcher PIDs, tmux control plane and native processes.
+
+    Unknown platforms, unreadable probes and discovered remote execution are holds.
+    No signal other than kill(0) is sent, and process environments are never retained.
+    """
+    import socket
+    import subprocess
+
+    if role.startswith("cx-"):
+        platform, env = "codex", "HAPAX_CODEX_HEADLESS_PID_DIR"
+    elif re.fullmatch(r"dev[0-9]+|alpha|beta|gamma|delta|epsilon|zeta|eta|theta", role):
+        platform, env = "claude", "HAPAX_LANE_PID_DIR"
+    else:
+        raise _rebind_hold("process_unobserved", f"no declared process binding for {role}")
+    host = socket.gethostname()
+    proof_root = Path(
+        os.environ.get(
+            "HAPAX_DISPATCH_PROOF_DIR", str(cache_dir / "orchestration" / "dispatch-host-proofs")
+        )
+    )
+    try:
+        for proof in proof_root.glob(f"*-{role}-*.json"):
+            record = json.loads(proof.read_text())
+            remote = record.get("actual_host") or record.get("requested_host")
+            if remote and remote not in {host, host.removeprefix("hapax-")}:
+                raise _rebind_hold(
+                    "process_unobserved",
+                    f"execution binding {proof} names {remote}; observe on that host",
+                )
+        pid_root = Path(os.environ.get(env, f"/run/user/{os.getuid()}/hapax-{platform}"))
+        pid_paths = [
+            pid_root / f"{role}.pid",
+            cache_dir / f"{platform}-headless" / role / f"{role}.pid",
+        ]
+        pids = {}
+        for path in pid_paths:
+            if not path.exists() and not path.is_symlink():
+                pids[str(path)] = "absent"
+                continue
+            raw, _mode = _file_state(path)
+            if raw is None or not raw.strip().isdigit() or int(raw) <= 0:
+                raise _rebind_hold("process_unobserved", f"malformed PID: {path}")
+            try:
+                os.kill(int(raw), 0)
+            except ProcessLookupError:
+                pids[str(path)] = f"dead:{int(raw)}"
+            else:
+                raise _rebind_hold("holder_live", f"live PID in {path}")
+        probe = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if probe.returncode != 0 and not (
+            probe.returncode == 1
+            and ("no server running" in probe.stderr or "No such file or directory" in probe.stderr)
+        ):
+            raise _rebind_hold("process_unobserved", "tmux census failed")
+        if f"hapax-{platform}-{role}" in probe.stdout.splitlines():
+            raise _rebind_hold("holder_live", f"tmux session for {role}")
+        identity = {role.encode(), f"{platform}/{role}".encode(), session_id.encode()}
+        keys = {
+            b"HAPAX_AGENT_ROLE",
+            b"HAPAX_AGENT_NAME",
+            b"CODEX_ROLE",
+            b"CLAUDE_ROLE",
+            b"HAPAX_SESSION_ID",
+            b"CODEX_THREAD_ID",
+        }
+        examined = 0
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                if proc.stat().st_uid != os.geteuid():
+                    continue
+                command = (proc / "cmdline").read_bytes()
+                executable = command.split(b"\0", 1)[0]
+                name = executable.rsplit(b"/", 1)[-1]
+                native = (
+                    name in {b"codex", b"claude", b"node", b"bash", b"sh", b"ssh", b"foot"}
+                    or name.startswith(b"python")
+                    or b"/claude/" in executable
+                    or b"/codex/" in executable
+                )
+                # Service daemons are outside the declared native launcher binding.
+                # An unreadable native process still refuses; its environment is never logged.
+                environment = (proc / "environ").read_bytes() if native else b""
+            except FileNotFoundError:
+                continue  # disappeared during the census
+            examined += 1
+            values = [item.partition(b"=") for item in environment.split(b"\0")]
+            if any(key in keys and value in identity for key, _, value in values) or re.search(
+                rb"(?:hapax-"
+                + platform.encode()
+                + b"-"
+                + re.escape(role.encode())
+                + rb"(?:\x00|\s|$)|run-[0-9TZ]+-"
+                + re.escape(role.encode())
+                + rb"\.sh)",
+                command,
+            ):
+                raise _rebind_hold("holder_live", f"native/launcher process {proc.name}")
+        if not examined:
+            raise _rebind_hold("process_unobserved", "empty process census")
+    except (OSError, ValueError, LifecycleTransitionError, subprocess.SubprocessError) as exc:
+        raise _rebind_hold("process_unobserved", type(exc).__name__) from exc
+    return {
+        "host": host,
+        "pid_files": pids,
+        "tmux": "absent",
+        "processes": "absent",
+        "examined": examined,
+    }
+
+
+def _rebind_death(*, cache_dir: Path, role: str, session_id: str, task_id: str) -> dict:
+    from shared.relay_lifecycle import (
+        _candidate_paths,
+        parse_relay_document,
+        relay_status_values,
+        relay_values_are_retired,
+    )
+
+    # Any marker is a hold, however old. Retirement is not a lease-release permission.
+    # Exact role/session names avoid confusing a neighbouring hyphenated lane with this one.
+    prefix = f"cc-active-task-{role}"
+    try:
+        for marker in cache_dir.glob("cc-active-task-*"):
+            suffix = marker.name.removeprefix(prefix + "-")
+            own = marker.name == prefix or (
+                marker.name.startswith(prefix + "-")
+                and (suffix == session_id or re.fullmatch(r"[0-9a-fA-F-]{36}", suffix))
+            )
+            raw, _mode = _file_state(marker)
+            if own or (raw is not None and task_id.encode() in raw.split()):
+                raise _rebind_hold("holder_live", f"claim marker {marker}")
+        relay_root = Path(os.environ.get("HAPAX_RELAY_DIR", str(cache_dir / "relay")))
+        candidates = []
+        for path in _candidate_paths(role, session_id, relay_root):
+            if path.exists() or path.is_symlink():
+                raw, _mode = _file_state(path)
+                if raw is None:
+                    raise _rebind_hold("holder_live", f"unreadable relay {path}")
+                candidates.append((path.stat().st_mtime_ns, path, raw))
+        if not candidates:
+            raise _rebind_hold("holder_live", f"no retirement relay for {role}")
+        # Use the estate's freshest-candidate and multi-document retirement semantics.
+        _mtime, path, raw = max(candidates, key=lambda item: item[0])
+        relay = parse_relay_document(raw.decode("utf-8"))
+        values = relay_status_values(relay)
+        active = {"working", "running", "live", "active", "in_progress", "busy"}
+        if not relay_values_are_retired(values) or any(value.lower() in active for value in values):
+            raise _rebind_hold("holder_live", f"relay is not retired: {path}")
+        process = _rebind_process_absence(role=role, session_id=session_id, cache_dir=cache_dir)
+    except (OSError, UnicodeError, LifecycleTransitionError) as exc:
+        raise _rebind_hold("holder_live", "liveness evidence is unreadable") from exc
+    return {
+        "markers": "absent",
+        "relay": {"path": str(path), "sha256": _sha256(raw)},
+        "process": process,
+    }
+
+
+def rebind_dead_claim(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    old_role: str,
+    new_role: str,
+    new_session: str,
+    task_id: str,
+    ruling_path: Path,
+    ruling_sha256: str,
+    receipt_root: Path | None = None,
+) -> Path:
+    """Reserve started work for a successor, then let ordinary cc-claim publish it.
+
+    This is a governed assignment transition, not a claim receipt. The old role lock
+    and task projection lock exclude publishers while the ruling and all three death
+    surfaces are read. It never manufactures successor markers or clears a live marker.
+    Branch/PR/status and all other note bytes survive. Before the first effect, a
+    create-once intent in existing task lineage records the basis, observed death,
+    exact note images and both holders. Interrupted archive work uses the existing
+    residue recovery path; an assigned note is resumed through plain cc-claim.
+    """
+    if (
+        any(
+            _REBIND_NAME_RE.fullmatch(value) is None
+            for value in (task_id, old_role, new_role, new_session)
+        )
+        or old_role == new_role
+    ):
+        raise _rebind_hold("identity_invalid", "name distinct holders and the successor's session")
+    vault_root, cache_dir = _normalized(vault_root), _normalized(cache_dir)
+    journals = _role_task_journals(transaction_root, role=old_role, task_id=task_id)
+    if not journals:
+        raise _rebind_hold("publication_missing", "the old holder has no recorded publication")
+    lock_intent = journals[0].intent
+    with _claim_publication_lock(lock_intent, lock_root=lock_root):
+        snapshot = resolve_task_note_through_churn(vault_root, task_id)
+        if snapshot.path != lock_intent.note_path or snapshot.state != "active":
+            raise _rebind_hold("note_moved", "the active note is not the locked note")
+        text = snapshot.content.decode("utf-8")
+        fields = _release_fields(text)
+        if fields is None or fields.get("assigned_to") != old_role:
+            raise _rebind_hold("not_holder", "the note does not name one unambiguous old holder")
+        if fields.get("status") not in _OWN_RESUMABLE_STATUSES:
+            raise _rebind_hold("status_invalid", "only owned resumable work can be rebound")
+        assignment = _frontmatter_key_lines(text, "assigned_to")
+        if len(assignment) != 1 or assignment[0].group("quote"):
+            raise _rebind_hold("note_malformed", "assigned_to must be stated once plainly")
+        basis = _rebind_basis(vault_root, ruling_path, ruling_sha256)
+        inspections = inspect_claim_publications(
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            receipt_root=receipt_root,
+            task_id=task_id,
+        )
+        if any(item.disposition == "hold" for item in inspections):
+            raise _rebind_hold(
+                "publication_pending",
+                "reconcile the task's unfinished or invalid publication evidence",
+            )
+        journals = _role_task_journals(transaction_root, role=old_role, task_id=task_id)
+        if any(item.state not in {"applied", "aborted"} for item in journals):
+            raise _rebind_hold(
+                "publication_pending", "recover the old holder's unfinished publication"
+            )
+        candidates = []
+        for journal in journals:
+            if journal.state != "applied":
+                continue
+            residue = _journal_residue(journal, cache_dir)
+            if all(
+                _residue_state(p) == "after"
+                or (
+                    _residue_state(p) == "absent"
+                    and (
+                        _is_claim_activation_projection(p)
+                        or _previously_archived(p, journal, vault_root)
+                        or _staged_original(p, journal) is not None
+                    )
+                )
+                for p in residue
+            ):
+                candidates.append((journal, residue))
+        if len(candidates) != 1:
+            raise _rebind_hold(
+                "publication_ambiguous", "need one intact or archived predecessor's sidecars"
+            )
+        journal, residue = candidates[0]
+        death = _rebind_death(
+            cache_dir=cache_dir,
+            role=old_role,
+            session_id=journal.intent.session_id,
+            task_id=task_id,
+        )
+        match = assignment[0]
+        after = (text[: match.start()] + f"assigned_to: {new_role}" + text[match.end() :]).encode(
+            "utf-8"
+        )
+        observed_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        audit_dir = (
+            vault_root
+            / "_lineage"
+            / _safe_lineage_component(task_id)
+            / f"claim-rebind-{observed_at}-{secrets.token_hex(8)}"
+        )
+        audit = audit_dir / "intent.json"
+        event = {
+            "task_id": task_id,
+            "observed_at": observed_at,
+            "old_holder": {
+                "role": old_role,
+                "session_id": journal.intent.session_id,
+                "publication_id": journal.publication_id,
+            },
+            "new_holder": {"role": new_role, "session_id": new_session},
+            "basis": basis,
+            "death": death,
+            "note_before_sha256": _sha256(snapshot.content),
+            "note_after_sha256": _sha256(after),
+            "next_action": f"cc-claim {task_id} from {new_role}; no claim has been published by this assignment",
+        }
+        audit_dir.mkdir(parents=True, exist_ok=False)
+        _copy_verified(_canonical(event) + b"\n", 0o600, audit)
+        _copy_verified(snapshot.content, snapshot.mode, audit_dir / "note.before")
+        _copy_verified(after, snapshot.mode, audit_dir / "note.after")
+        _fsync_directory(audit_dir)
+        _fsync_directory(audit_dir.parent)
+        # Release only the proven lapsed residue through its existing archival writer.
+        if any(
+            _residue_state(p) != "absent"
+            or (
+                not _previously_archived(p, journal, vault_root)
+                and _staged_original(p, journal) is not None
+            )
+            for p in residue
+        ):
+            _release_applied_residue(
+                [journal],
+                cache_dir=cache_dir,
+                vault_root=vault_root,
+                task_id=task_id,
+                observed_at=observed_at,
+            )
+        # Re-read at use, after potentially slow archival I/O. A new signal narrows to hold.
+        if _rebind_basis(vault_root, ruling_path, ruling_sha256) != basis:
+            raise _rebind_hold("ruling_changed", "the recorded ruling changed during archival")
+        final_death = _rebind_death(
+            cache_dir=cache_dir,
+            role=old_role,
+            session_id=journal.intent.session_id,
+            task_id=task_id,
+        )
+        if _file_state(snapshot.path) != (snapshot.content, snapshot.mode):
+            raise _rebind_hold("note_changed", "the note changed during rebind")
+        _copy_verified(
+            _canonical(
+                {"basis": basis, "death": final_death, "observed_at": datetime.now(UTC).isoformat()}
+            )
+            + b"\n",
+            0o600,
+            audit_dir / "verified.json",
+        )
+        _fsync_directory(audit_dir)
+        temporary = audit_dir / "note.install"
+        _copy_verified(after, snapshot.mode, temporary)
+        os.replace(temporary, snapshot.path)
+        _fsync_directory(snapshot.path.parent)
+        _copy_verified(
+            _canonical(
+                {
+                    "task_id": task_id,
+                    "assigned_to": new_role,
+                    "note_sha256": _sha256(after),
+                    "observed_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            + b"\n",
+            0o600,
+            audit_dir / "assigned.json",
+        )
+        _fsync_directory(audit_dir)
+    return audit
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -8221,6 +8622,7 @@ __all__ = [
     "release_claim_residue",
     "release_pipeline_held_residue",
     "return_claim",
+    "rebind_dead_claim",
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
     "UniqueKeyLoader",

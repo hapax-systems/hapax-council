@@ -3333,3 +3333,161 @@ def test_governed_recovery_still_holds_a_note_that_no_longer_belongs_to_the_clai
 
     assert recovered.returncode == 8, recovered.stdout + recovered.stderr
     assert reason in recovered.stdout + recovered.stderr
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "--force",
+        "--return-claim",
+        "--recover-claim-publications",
+        "legacy",
+        "missing_basis",
+        "wrong_target",
+    ],
+)
+def test_rebind_cli_usage_cannot_bypass_normal_claim(tmp_path, mode):
+    home = tmp_path / "home"
+    note = _write_task(
+        home, "active", "rebind-cli-refusal", status="claimed", assigned_to="cx-dead"
+    )
+    before = note.read_bytes()
+    options = [
+        "--rebind",
+        "--from",
+        "cx-dead",
+        "--to",
+        "cx-test",
+        "--ruling-req",
+        "/missing/REQ.md",
+        "--ruling-sha256",
+        "a" * 64,
+    ]
+    if mode.startswith("--"):
+        options.append(mode)
+    elif mode == "missing_basis":
+        options = options[:-2]
+    elif mode == "wrong_target":
+        options[4] = "cx-other"
+    result = _claim(
+        home,
+        "rebind-cli-refusal",
+        legacy=mode == "legacy",
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=options,
+    )
+    assert result.returncode != 0
+    assert (
+        "claim_rebind_target_invalid" if mode == "wrong_target" else "claim_rebind_usage_invalid"
+    ) in result.stderr
+    assert note.read_bytes() == before
+    assert not list((home / ".cache" / "hapax").glob("cc-*"))
+
+
+@pytest.mark.parametrize("publication_hold", [False, True])
+def test_rebind_cli_uses_admitted_publisher_and_keeps_started_linkage(tmp_path, publication_hold):
+    from tests.shared.test_sdlc_claim import _REBIND_SHA, _REBIND_WORDS
+
+    home = tmp_path / "home"
+    task_id = "started-claim-rebind"
+    note = _write_task(home, "active", task_id)
+    old_session = "a7a7a7a7-1111-2222-3333-444455556666"
+    old = _claim(
+        home,
+        task_id,
+        session_id=old_session,
+        extra_env={"HAPAX_AGENT_ROLE": "cx-dead", "HAPAX_AGENT_NAME": "cx-dead"},
+    )
+    assert old.returncode == 0, old.stderr
+    note.write_text(
+        note.read_text()
+        .replace("status: claimed", "status: pr_open")
+        .replace(
+            "authority_case:",
+            "branch: keep-work\npr: 4985\npr_repo: hapax-systems/hapax-council\nauthority_case:",
+            1,
+        )
+    )
+    cache = home / ".cache" / "hapax"
+    for marker in cache.glob("cc-active-task-*"):
+        marker.unlink()  # fixture: the predecessor has exited
+    relay = cache / "relay"
+    relay.mkdir()
+    (relay / "cx-dead.yaml").write_text("role: cx-dead\nstatus: retired\n")
+    req = _task_root(home).parent / "hapax-requests" / "active" / "REQ-standing.md"
+    req.parent.mkdir(parents=True)
+    req.write_text(
+        "---\ntype: hapax-request\nrequester: operator\nrequest_id: REQ-standing\n"
+        "status: captured\n---\n# Operator ruling\n\n> " + _REBIND_WORDS + "\n"
+    )
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    (fakebin / "tmux").write_text("#!/bin/sh\nexit 0\n")
+    (fakebin / "tmux").chmod(0o755)
+    env = {
+        "HAPAX_RELAY_DIR": str(relay),
+        "HAPAX_CODEX_HEADLESS_PID_DIR": str(tmp_path / "pids"),
+        "HAPAX_DISPATCH_PROOF_DIR": str(tmp_path / "host-proofs"),
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+    }
+    if publication_hold:
+        # Source reservation must not masquerade as a claim when admission is unavailable.
+        note.write_text(
+            note.read_text().replace("authority_case: CASE-TEST-001", "authority_case: null")
+        )
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        extra_env=env,
+        extra_args=[
+            "--rebind",
+            "--from",
+            "cx-dead",
+            "--to",
+            "cx-test",
+            "--ruling-req",
+            str(req),
+            "--ruling-sha256",
+            _REBIND_SHA,
+        ],
+    )
+    assert "governed assignment recorded" in result.stdout, result.stderr
+    content = note.read_text()
+    assert all(
+        line in content
+        for line in (
+            "assigned_to: cx-test",
+            "status: pr_open",
+            "branch: keep-work",
+            "pr: 4985",
+            "pr_repo: hapax-systems/hapax-council",
+        )
+    )
+    if publication_hold:
+        assert result.returncode == 8
+        assert not list(cache.glob("cc-active-task-*"))
+        assert "resume with cc-claim" in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "admitted publication applied" in result.stdout
+        binding = json.loads((cache / "cc-claim-dispatch-cx-test.json").read_text())
+        assert binding["session_id"] == _SESSION_ID
+        assert (cache / "cc-active-task-cx-test").read_text().strip() == task_id
+        # No successful exit from rebind can skip the ordinary publisher's receipt.
+        roots = default_claim_publication_roots(home=home)
+        from shared.sdlc_claim import resolve_applied_claim_publication
+
+        applied = resolve_applied_claim_publication(
+            vault_root=_task_root(home),
+            cache_dir=cache,
+            role="cx-test",
+            session_id=_SESSION_ID,
+            task_id=task_id,
+            transaction_root=Path(roots.claim_transaction_root),
+            receipt_root=Path(roots.claim_receipt_root),
+            lock_root=Path(roots.claim_lock_root),
+        )
+        assert applied.intent.claim_mode == "resume"

@@ -36,6 +36,11 @@ force=false
 recover_claim_publications_only=false
 release_claim_residue_only=false
 return_claim=false
+rebind_claim=false
+rebind_from=""
+rebind_to=""
+ruling_req=""
+ruling_sha256=""
 rehydrate_activation_cache_only=false
 # Default mode publishes through the admitted Gate-0B claim-publication path.
 # The legacy note/cache writer is available only as an explicit slice-1 fallback.
@@ -48,6 +53,7 @@ usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim --rehydrate-activation-cache <task_id>
        cc-claim --release-claim-residue <task_id>
        cc-claim --return-claim <task_id>
+       cc-claim --rebind <task_id> --from OLD --to THIS_ROLE --ruling-req PATH --ruling-sha256 HASH
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
 Every --dispatch-* option requires one VALUE from the dispatcher receipt.
@@ -76,6 +82,11 @@ dispatch_authority_case="${HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE:-}"
 dispatch_idempotency_key="${HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --rebind) rebind_claim=true; shift ;;
+    --from) require_option_value "$1" "${2:-}"; rebind_from="$2"; shift 2 ;;
+    --to) require_option_value "$1" "${2:-}"; rebind_to="$2"; shift 2 ;;
+    --ruling-req) require_option_value "$1" "${2:-}"; ruling_req="$2"; shift 2 ;;
+    --ruling-sha256) require_option_value "$1" "${2:-}"; ruling_sha256="$2"; shift 2 ;;
     --force) force=true; shift ;;
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
     --rehydrate-activation-cache) rehydrate_activation_cache_only=true; shift ;;
@@ -93,6 +104,15 @@ while [[ $# -gt 0 ]]; do
     *) task_id="$1"; shift ;;
   esac
 done
+if [[ "$rebind_claim" == "true" ]]; then
+  if [[ -z "$task_id" || -z "$rebind_from" || -z "$rebind_to" || -z "$ruling_req" || -z "$ruling_sha256" || "$force" == "true" || "$canon_enforced" != "1" || "$recover_claim_publications_only" == "true" || "$rehydrate_activation_cache_only" == "true" || "$release_claim_residue_only" == "true" ]]; then
+    echo "cc-claim: claim_rebind_usage_invalid: supply one task, --from, --to, --ruling-req and --ruling-sha256, without another mode, --force or legacy fallback." >&2
+    exit 1
+  fi
+elif [[ -n "$rebind_from$ruling_req$ruling_sha256$rebind_to" ]]; then
+  echo "cc-claim: claim_rebind_usage_invalid: rebind options require --rebind." >&2
+  exit 1
+fi
 if [[ "$rehydrate_activation_cache_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$force" == "true" ) ]]; then
   echo "cc-claim: activation_cache_usage_invalid: supply one task id without --force or --recover-claim-publications. Next action: rerun cc-claim --rehydrate-activation-cache <task_id>." >&2
   exit 1
@@ -483,6 +503,36 @@ sys.exit(0 if ok else 1)
   echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
 done
 shopt -u nullglob
+
+# Rebind changes only the governed assignment. The unchanged path below must still
+# admit and publish this session's claim; a failed publication leaves a named resumer.
+if [[ "$rebind_claim" == "true" ]]; then
+  if [[ "$rebind_to" != "$role" || -n "${HAPAX_CHARTER_KEEP_TASK:-}" ]]; then
+    echo "cc-claim: claim_rebind_target_invalid: run from the named successor lane, outside a charter sub-claim." >&2
+    exit 8
+  fi
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$session_id" "$task_id" "$rebind_from" "$ruling_req" "$ruling_sha256" <<'PYEOF'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
+from shared.gate0b_claim_publication_install import default_claim_publication_roots
+from shared.sdlc_claim import ClaimPublicationError, ClaimResidueArchiveHold, rebind_dead_claim
+from shared.sdlc_task_store import TaskStoreError
+roots = default_claim_publication_roots(home=Path.home())
+try:
+    audit = rebind_dead_claim(
+        vault_root=Path(sys.argv[2]), cache_dir=Path(roots.claim_cache_dir),
+        transaction_root=Path(roots.claim_transaction_root), lock_root=Path(roots.claim_lock_root),
+        new_role=sys.argv[3], new_session=sys.argv[4], task_id=sys.argv[5], old_role=sys.argv[6],
+        ruling_path=Path(sys.argv[7]), ruling_sha256=sys.argv[8], receipt_root=Path(roots.claim_receipt_root),
+    )
+except (ClaimPublicationError, ClaimResidueArchiveHold, TaskStoreError, OSError) as exc:
+    print(f"cc-claim: HOLD — {exc}", file=sys.stderr)
+    sys.exit(8)
+print(f"cc-claim: governed assignment recorded at {audit}; proceeding through normal claim publication. "
+      f"If publication holds, resume with cc-claim {sys.argv[5]} from {sys.argv[3]}.")
+PYEOF
+fi
 
 vault_root="$CC_TASK_ROOT"
 note_path=""
