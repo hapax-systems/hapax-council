@@ -57,6 +57,9 @@ NEGATED_READBACK_RE = re.compile(
 )
 #: The ledger class outside the ladder and the pile.
 RETAINED_CLASS = "retained"
+#: The repository minted reduction rows declare, so the review dispatcher can link their PRs
+#: (`review_team.find_task_notes` treats an undeclared pr_repo as no match). The estate default.
+DEFAULT_PR_REPO = "hapax-systems/hapax-council"
 #: Essential/accidental judgment (operator, 2026-09-25 ~01:50Z: "pile is reshaped and reconstituted
 #: until it only contains what ought to be ... essential vs accident"). Made with the catalogue's
 #: own 08-21 test: is the intention valid; if so, what is its fundamental expression and proper
@@ -1035,6 +1038,9 @@ def render_reduction_row(
         "related": ["encountered-machinery-auditor-trigger-20260925"],
         "branch": None,
         "pr": None,
+        # The review dispatcher links a PR only to a row that declares a matching pr_repo; an
+        # undeclared one is not a wildcard. Without it, PR #4762 returned `no_task` on this row.
+        "pr_repo": DEFAULT_PR_REPO,
         "created_at": stamp,
         "updated_at": stamp,
         "claimed_at": None,
