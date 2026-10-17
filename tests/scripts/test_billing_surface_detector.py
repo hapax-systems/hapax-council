@@ -58,6 +58,91 @@ def test_multiline_node_covers_only_added_lines() -> None:
     assert [(f.kind, f.covers) for f in findings] == [("api-key-route", (2,))]
 
 
+@pytest.mark.parametrize("callee", ["client", "provider.Client", "SDK"])
+@pytest.mark.parametrize("keyword", ["api_key", "key", "token"])
+@pytest.mark.parametrize(
+    "value", ['"fixture"', "credential", "credentials.token", "load_secret()", "lambda x: x"]
+)
+def test_client_credential_arguments_remain_detected(callee, keyword, value) -> None:
+    source = f"{callee}({keyword}={value})\n"
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1})
+    assert parsed and not allowed
+    assert [(f.kind, f.covers) for f in findings] == [("api-key-route", (1,))]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "actions.sort({})",
+        "sorted(actions, {})",
+        "min(actions, {})",
+        "max(actions, {})",
+        "builtins.sorted(actions, {})",
+        "heapq.nsmallest(2, actions, {})",
+        "heapq.nlargest(2, actions, {})",
+        "itertools.groupby(actions, {})",
+    ],
+)
+@pytest.mark.parametrize("value", ["lambda pair: pair[0]", "rank", "ranking.rank"])
+def test_ordering_callable_key_is_not_a_credential(call, value) -> None:
+    source = call.format(f"key={value}") + "\n"
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1})
+    assert parsed and not findings
+    assert [(f.kind, f.covers) for f in allowed] == [("ordering-callable-key", (1,))]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'actions.sort(key="fixture")',
+        'sorted(actions, key=os.environ["OPENAI_API_KEY"])',
+        "min(actions, key=load_secret())",
+        "max(actions, key=credentials['token'])",
+        "heapq.nsmallest(2, actions, key=None)",
+        "heapq.nlargest(2, actions, key=123)",
+        'itertools.groupby(actions, key=f"{credential}")',
+        "client.sorted(actions, key=rank)",
+        "client.max(actions, key=rank)",
+        "other.groupby(actions, key=rank)",
+        "other.nsmallest(2, actions, key=rank)",
+        "sorted(actions, api_key=rank)",
+        "actions.sort(token=rank)",
+    ],
+)
+def test_ordering_exemption_keeps_other_values_keywords_and_callees_positive(source) -> None:
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1})
+    assert parsed and not allowed
+    assert "api-key-route" in [f.kind for f in findings]
+
+
+@pytest.mark.parametrize(
+    "source, kinds",
+    [
+        ("sorted(actions, key=rank, api_key=credential)", ["api-key-route"]),
+        ("actions.sort(key=rank, token=credential)", ["api-key-route"]),
+        ("actions.sort(key=lambda x: client(key=x))", ["api-key-route"]),
+        (
+            'actions.sort(key=lambda x: os.environ["OPENAI_API_KEY"])',
+            ["credential-env-read"],
+        ),
+        ("actions.sort(key=rank); client(api_key=credential)", ["api-key-route"]),
+    ],
+)
+def test_ordering_key_exempts_only_its_keyword_not_siblings_or_children(source, kinds) -> None:
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1})
+    assert parsed
+    assert [f.kind for f in findings] == kinds
+    assert [f.kind for f in allowed] == ["ordering-callable-key"]
+
+
+def test_ordering_key_records_only_added_keyword_lines() -> None:
+    source = "sorted(\n    actions,\n    key=rank,\n)\n"
+    assert _node_findings_for_postimage("app.py", source, {2}) == ([], [], True)
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {3})
+    assert parsed and not findings
+    assert [(f.line, f.covers) for f in allowed] == [(3, (3,))]
+
+
 def test_surfaces_on_unchanged_lines_yield_no_finding_and_no_exemption() -> None:
     source = (
         'key = os.environ["OPENAI_API_KEY"]\n'
@@ -434,7 +519,7 @@ def test_exemption_functions_take_ast_nodes_without_line_text() -> None:
     source = Path(__file__).resolve().parents[2] / "scripts" / "billing_surface_detector.py"
     tree = ast.parse(source.read_text())
     functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-    for name in ("_call_is_proxy_bound", "_strip_target_node"):
+    for name in ("_call_is_proxy_bound", "_strip_target_node", "_callable_key_args"):
         arguments = [arg.arg for arg in functions[name].args.args]
         assert arguments in (["call"], ["node"])
         assert not {"content", "line", "raw", "text", "source"}.intersection(arguments)

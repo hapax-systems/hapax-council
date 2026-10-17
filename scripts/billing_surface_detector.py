@@ -246,6 +246,7 @@ _KEY_BEARING_PROBE = re.compile(r"api[_-]?key|apikey|\btoken\b|\bkey\b", re.IGNO
 
 EXEMPTION_SITES: dict[str, str] = {
     "proxy": "per ast.Call: that call's own literal base_url/api_base/endpoint target",
+    "ordering_key": "per key= keyword on an ordering call: lambda or function reference only; siblings and children are still scanned",
     "protective_strip": "per ast node: ONLY the target node of os.environ.pop(<literal>[, default]) or del os.environ[<literal>]; every other child, the default argument included, is scanned",
     "allow_marker": "path-allowlisted comment (tests/**, the scanner's own source); applies to the marked line's nodes only",
     "text_path_non_python": "none: non-Python files, and Python text that did not parse, grant no structural exemption (the marker site is the only one they can carry)",
@@ -253,7 +254,11 @@ EXEMPTION_SITES: dict[str, str] = {
 #: The functions that implement the AST-decided sites. The guard test
 #: (`tests/scripts/test_billing_surface_detector.py`)
 #: pins the same-node exemption behavior without granting a text-based bypass.
-NODE_EXEMPTION_FUNCTIONS: tuple[str, ...] = ("_call_is_proxy_bound", "_strip_target_node")
+NODE_EXEMPTION_FUNCTIONS: tuple[str, ...] = (
+    "_call_is_proxy_bound",
+    "_strip_target_node",
+    "_callable_key_args",
+)
 #: “Line text” carriers the guard refuses to see inside an exemption function.
 _LINE_TEXT_NAMES = frozenset({"content", "line", "raw", "text", "source"})
 
@@ -352,10 +357,42 @@ def _env_read_name_arg(call: ast.Call) -> str | None:
     return None
 
 
+def _callable_key_args(call: ast.Call) -> list[ast.keyword]:
+    """Ordering callbacks, scoped to their keyword rather than the whole Call.
+
+    Recognize lambda/name/attribute reference syntax only on the named ordering
+    APIs. Calls producing a value, literals and subscripts remain suspicious;
+    arbitrary client methods named sorted/min/max/groupby are not ordering APIs.
+    No child of a callback (including a lambda's body) is exempted here.
+    """
+    func = call.func
+    builtins = {"sorted", "min", "max"}
+    ordering = isinstance(func, ast.Name) and func.id in builtins
+    if isinstance(func, ast.Attribute):
+        ordering = func.attr == "sort" or (
+            isinstance(func.value, ast.Name)
+            and (func.value.id, func.attr)
+            in {
+                *(("builtins", name) for name in builtins),
+                ("heapq", "nsmallest"),
+                ("heapq", "nlargest"),
+                ("itertools", "groupby"),
+            }
+        )
+    if not ordering:
+        return []
+    return [
+        kw
+        for kw in call.keywords
+        if kw.arg == "key" and isinstance(kw.value, (ast.Lambda, ast.Name, ast.Attribute))
+    ]
+
+
 def _call_api_key_args(call: ast.Call) -> list[ast.keyword]:
     """The keyword arguments of ``call`` that name a credential."""
 
-    return [kw for kw in call.keywords if kw.arg in _API_KEY_ARG_NAMES]
+    ordering_keys = _callable_key_args(call)
+    return [kw for kw in call.keywords if kw.arg in _API_KEY_ARG_NAMES and kw not in ordering_keys]
 
 
 def _call_is_proxy_bound(call: ast.Call) -> bool:
@@ -462,6 +499,17 @@ def _node_findings_for_postimage(
             continue
         line_no = node.lineno or 1
         if isinstance(node, ast.Call):
+            for keyword in _callable_key_args(node):
+                if node_is_added(keyword):
+                    allowed_out.append(
+                        Finding(
+                            path=path,
+                            line=keyword.lineno,
+                            kind="ordering-callable-key",
+                            text=snippet(keyword),
+                            covers=covered(keyword),
+                        )
+                    )
             api_key_args = _call_api_key_args(node)
             constructor_name = (
                 node.func.id

@@ -77,6 +77,30 @@ _PROXY = 'base_url="http://127.0.0.1:4000"'
 _HEADER_PRE = 'import os\nNOTE = """\nfirst\n"""\n\nvalue = 1\n'
 _HEADER_POST = f'import os\nNOTE = """\nfirst\n++ b/docs/hidden.py\n"""\n\nvalue = 1\n{KEY_LINE}\n'
 _CASES = {
+    "ordering-key": (
+        "app.py",
+        None,
+        "actions.sort(key=lambda pair: pair[0])\n",
+        0,
+        ("ordering-callable-key",),
+        ("api-key-route",),
+    ),
+    "ordering-key-with-key-line": (
+        "app.py",
+        None,
+        f"actions.sort(key=lambda pair: pair[0])\n{KEY_LINE}\n",
+        1,
+        ("api-key-route", "credential-env-read"),
+        (),
+    ),
+    "ordering-key-with-nested-client": (
+        "app.py",
+        None,
+        "actions.sort(key=lambda pair: client(api_key=pair[0]))\n",
+        1,
+        ("api-key-route",),
+        (),
+    ),
     "credential-route": (
         "app.py",
         None,
