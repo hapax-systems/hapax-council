@@ -469,6 +469,15 @@ def recently_changed(path: Path, *, now: datetime) -> bool:
         return False
 
 
+def path_is_within(path: Path, root: Path) -> bool:
+    """A source belongs to its declared root only after resolving symlinks."""
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError):
+        # Unresolvable paths (including symlink loops) cannot witness this pool.
+        return False
+
+
 def read_claude_stream_windows(stream_root: Path, *, now: datetime) -> list[QuotaMeasurement]:
     """Windows and refusals from ``rate_limit_event`` records in Claude CLI stream-json output.
 
@@ -482,6 +491,8 @@ def read_claude_stream_windows(stream_root: Path, *, now: datetime) -> list[Quot
     """
     rows = []
     for path in sorted(stream_root.glob("*/output.jsonl")):
+        if not path_is_within(path, stream_root):
+            continue
         if not recently_changed(path, now=now):
             continue
         subscription_sessions = set()
@@ -607,6 +618,8 @@ def read_claude_probe_receipts(receipts: Path, *, now: datetime) -> list[QuotaMe
     """
     rows = []
     for path in sorted(receipts.glob("*claude-subscription-quota-admission*.yaml")):
+        if not path_is_within(path, receipts):
+            continue
         try:
             if not recently_changed(path, now=now) or b"_used_percent" not in path.read_bytes():
                 continue
