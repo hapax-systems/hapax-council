@@ -451,7 +451,9 @@ tmux_live_status() {
   # -S 0 excludes history. Locate the bottom composer in the visible screen;
   # its immediately preceding paragraph is the current status (possibly with
   # a wrapped tip), and its footer may carry the legacy interrupt indicator.
-  visible="$(tmux capture-pane -pt "$target" -S 0 2>/dev/null)" || return 1
+  # -J rejoins terminal soft wraps; the paragraph pass also joins explicit UI
+  # line breaks, stopping before the tip so prose cannot become busy status.
+  visible="$(tmux capture-pane -J -pt "$target" -S 0 2>/dev/null)" || return 1
   printf '%s\n' "$visible" | awk '
     function rule(s) { gsub(/─/, "", s); return s ~ /^[[:space:]]*$/ }
     { lines[NR] = $0 }
@@ -465,8 +467,16 @@ tmux_live_status() {
       if (!bottom) exit 1
       start = prompt - 2
       while (start > 0 && lines[start] ~ /^[[:space:]]*$/) start--
+      last = start
       while (start > 1 && lines[start-1] !~ /^[[:space:]]*$/) start--
-      if (start > 0) print lines[start]
+      if (start > 0) {
+        status = lines[start]
+        for (i = start + 1; i <= last; i++) {
+          if (lines[i] ~ /^[[:space:]]*⎿/) break
+          status = status " " lines[i]
+        }
+        print status
+      }
       for (i = bottom + 1; i <= NR; i++) print lines[i]
     }'
 }
@@ -477,6 +487,7 @@ send_tmux() {
   if [ "$REQUIRE_ACK" -eq 1 ] && [ "${HAPAX_CLAUDE_SEND_ALLOW_BUSY:-0}" != "1" ]; then
     if ! status="$(tmux_live_status "$target")"; then
       echo "hapax-claude-send: $SESSION live status unavailable; refusing ACK-gated message" >&2
+      echo "  inspect tmux pane hapax-claude-$SESSION and restore the visible Claude composer, then retry" >&2
       exit 15
     fi
     busy_result=0
@@ -488,6 +499,7 @@ send_tmux() {
     fi
     if [ "$busy_result" -ne 1 ]; then
       echo "hapax-claude-send: invalid busy status regex; refusing ACK-gated message" >&2
+      echo "  correct or unset HAPAX_CLAUDE_SEND_BUSY_REGEX, then retry" >&2
       exit 15
     fi
   fi
@@ -508,8 +520,10 @@ send_tmux() {
   fi
   if [ -n "$ACK_TYPED_PREFIX" ]; then
     tmux send-keys -t "$target" -l "$ACK_TYPED_PREFIX"
+    tmux paste-buffer -p -b "$buffer" -t "$target"
+  else
+    tmux paste-buffer -b "$buffer" -t "$target"
   fi
-  tmux paste-buffer -p -b "$buffer" -t "$target"
   tmux delete-buffer -b "$buffer" 2>/dev/null || true
   if [ "$SUBMIT" -eq 1 ]; then
     sleep "${HAPAX_CLAUDE_SEND_SUBMIT_DELAY:-1.10}"
