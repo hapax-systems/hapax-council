@@ -1081,6 +1081,12 @@ def wall_is_live(wall: QuotaMeasurement, rows, *, now: datetime) -> bool:
 
 
 def freeze_predicate(rows: list[QuotaMeasurement], *, now: datetime) -> dict[str, Any]:
+    """A spent window binds unless a later subscription window has been witnessed.
+
+    Only the same capacity and window type can supersede a spent reading. Reuse the readers'
+    explicit subscription-serve witness: foreign-provider, refused and overage readings are
+    not recovery. A lower reading within the same reset never defeats its high-water mark.
+    """
     frozen = [
         row
         for row in rows
@@ -1089,7 +1095,26 @@ def freeze_predicate(rows: list[QuotaMeasurement], *, now: datetime) -> dict[str
         and row.observed_at <= now < row.resets_at
         and (
             (row.label == "wall-signal" and wall_is_live(row, rows, now=now))
-            or (row.label == "observed" and row.unit == "percent_used" and row.quantity >= 100)
+            or (
+                row.label == "observed"
+                and row.unit == "percent_used"
+                and row.quantity >= 100
+                and not any(
+                    newer.capacity_id == row.capacity_id
+                    and row.window is not None
+                    and newer.window == row.window
+                    and newer.label == "observed"
+                    and newer.unit == "percent_used"
+                    and newer.quantity is not None
+                    and 0 <= newer.quantity < 100
+                    and served_by_the_subscription(newer)
+                    and newer.observed_at is not None
+                    and row.observed_at < newer.observed_at <= now
+                    and newer.resets_at is not None
+                    and newer.resets_at > row.resets_at
+                    for newer in rows
+                )
+            )
         )
     ]
     return {

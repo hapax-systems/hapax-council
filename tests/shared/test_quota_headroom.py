@@ -19,6 +19,7 @@ from shared.quota_headroom import (
     claude_rate_limit_windows,
     collect_measurements,
     enrich_ledger,
+    evidence,
     freeze_predicate,
     operator_report,
     read_claude_probe_receipts,
@@ -234,6 +235,108 @@ def test_freeze_active_when_codex_used_percent_100_and_before_reset(tmp_path):
 
 def test_freeze_inactive_after_resets_at(tmp_path):
     assert not freeze_predicate(codex(tmp_path), now=NOW + timedelta(hours=1))["active"]
+
+
+def spent_window_and_successor():
+    spent = evidence(
+        "claude.subscription.weekly",
+        at=datetime(2026, 9, 24, 18, tzinfo=UTC),
+        reset=datetime(2026, 9, 25, 22, tzinfo=UTC),
+        quantity=100,
+        unit="percent_used",
+        window="10080m",
+        label="observed",
+        source="fixture:spent-window",
+    )
+    successor = spent.model_copy(
+        update={
+            "observed_at": spent.observed_at + timedelta(minutes=10),
+            "resets_at": spent.resets_at + timedelta(days=7),
+            "quantity": 2,
+            "details": {"subscription_served": 1},
+            "source": "fixture:served-later-window",
+        }
+    )
+    return spent, successor
+
+
+@pytest.mark.parametrize("age_hours", [0, 2])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_freeze_spent_window_is_superseded_by_later_served_window(age_hours, reverse):
+    spent, successor = spent_window_and_successor()
+    rows = [spent, successor]
+    if reverse:
+        rows.reverse()
+    # Supersession remains a historical fact when the witness's freshness TTL expires.
+    frozen = freeze_predicate(rows, now=A1_NOW + timedelta(hours=age_hours))
+    assert frozen["active"] is False
+    assert frozen["families"] == []
+    assert frozen["until"] is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"capacity_id": "codex.subscription.weekly"},
+        {"capacity_id": "claude.subscription.five_hour"},
+        {"window": "300m"},
+        {"window": None},
+        {"label": "derived"},
+        {"unit": "tokens"},
+        {"quantity": -1},
+        {"quantity": 100},
+        {"quantity": 101},
+        {"observed_at": datetime(2026, 9, 24, 18, tzinfo=UTC)},
+        {"observed_at": datetime(2026, 9, 24, 19, tzinfo=UTC)},
+        {"resets_at": datetime(2026, 9, 25, 22, tzinfo=UTC)},
+        {"resets_at": None},
+        {"details": {}},
+        {"details": {"subscription_served": 0}},
+    ],
+)
+def test_freeze_spent_window_unsafe_successor_keeps_original_reset(change):
+    spent, successor = spent_window_and_successor()
+    frozen = freeze_predicate([spent, successor.model_copy(update=change)], now=A1_NOW)
+    assert frozen["active"] is True
+    assert "claude" in frozen["families"]
+    assert frozen["until"] == "2026-09-25T22:00:00Z"
+
+
+@pytest.mark.parametrize("case", ["served", "foreign-provider", "refused", "overage", "unknown"])
+def test_freeze_spent_window_uses_the_readers_subscription_witness(tmp_path, case):
+    spent, successor = spent_window_and_successor()
+    info = {
+        "status": "rejected" if case == "refused" else "allowed",
+        "rateLimitType": "seven_day",
+        "resetsAt": successor.resets_at.timestamp(),
+        "utilization": 0.02,
+        "isUsingOverage": case == "overage",
+    }
+    if case == "unknown":
+        info.pop("isUsingOverage")
+    claude_stream(
+        tmp_path,
+        stream_init(model="glm-5.3" if case == "foreign-provider" else "claude-opus-5"),
+        stream_dated("2026-09-24T18:10:00Z"),
+        rate_limit_event(info),
+    )
+    frozen = freeze_predicate([spent, *claude_rows(tmp_path)], now=A1_NOW)
+    assert frozen["active"] is (case != "served")
+    assert frozen["until"] == (None if case == "served" else "2026-09-25T22:00:00Z")
+
+
+def test_freeze_spent_window_successor_does_not_hide_its_own_spent_window():
+    spent, successor = spent_window_and_successor()
+    new_spent = successor.model_copy(update={"quantity": 100})
+    frozen = freeze_predicate([spent, successor, new_spent], now=A1_NOW)
+    assert frozen["active"] is True
+    assert frozen["until"] == "2026-10-02T22:00:00Z"
+
+
+def test_freeze_spent_window_unknown_window_type_cannot_be_superseded():
+    spent, successor = spent_window_and_successor()
+    rows = [row.model_copy(update={"window": None}) for row in (spent, successor)]
+    assert freeze_predicate(rows, now=A1_NOW)["active"] is True
 
 
 def test_write_is_atomic(tmp_path, monkeypatch):
