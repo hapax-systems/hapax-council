@@ -58,6 +58,7 @@ def rig(tmp_path, monkeypatch):
         root=tmp_path,
         sequence=0,
         production_gate=module.require_first_exposure,
+        production_context_factory=ssl.create_default_context,
     )
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "local fetch fixture")])
@@ -136,6 +137,7 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
     monkeypatch.setattr(socket, "create_connection", connect)
     context = ssl.create_default_context(cafile=str(cert_path))
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     monkeypatch.setattr(module.ssl, "create_default_context", lambda: context)
     monkeypatch.setattr(module, "require_first_exposure", lambda: None)
     monkeypatch.setattr(module, "now_utc", lambda: env.now)
@@ -464,19 +466,33 @@ def test_tls_still_checks_the_original_hostname(rig):
 
 
 @pytest.mark.parametrize(
-    "floor", [ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1, ssl.TLSVersion.MINIMUM_SUPPORTED]
+    "floor",
+    [
+        ssl.TLSVersion.MINIMUM_SUPPORTED,
+        ssl.TLSVersion.TLSv1,
+        ssl.TLSVersion.TLSv1_1,
+        ssl.TLSVersion.TLSv1_2,
+        ssl.TLSVersion.TLSv1_3,
+    ],
 )
-def test_production_transport_refuses_a_context_below_tls12(rig, floor):
-    context = rig.module.PinnedHTTPS("arxiv.org", PUBLIC_IP)._context
-    assert context.minimum_version >= ssl.TLSVersion.TLSv1_2
+def test_production_transport_enforces_tls12_without_lowering_stronger_floor(rig, floor):
+    context = rig.module.ssl.create_default_context()
     with (
         pytest.warns(DeprecationWarning)
         if floor in (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1)
         else nullcontext()
     ):
         context.minimum_version = floor
-    with pytest.raises(rig.module.FetchStop, match="failed_admission"):
-        rig.module.PinnedHTTPS("arxiv.org", PUBLIC_IP)
+    connection = rig.module.PinnedHTTPS("arxiv.org", PUBLIC_IP)
+    assert connection._context.minimum_version == max(floor, ssl.TLSVersion.TLSv1_2)
+    assert rig.requests == rig.connections == []
+
+
+def test_production_transport_constructs_with_real_platform_context(rig, monkeypatch):
+    monkeypatch.setattr(rig.module.ssl, "create_default_context", rig.production_context_factory)
+    context = rig.module.PinnedHTTPS("arxiv.org", PUBLIC_IP)._context
+    assert context.minimum_version >= ssl.TLSVersion.TLSv1_2
+    assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
     assert rig.requests == rig.connections == []
 
 
