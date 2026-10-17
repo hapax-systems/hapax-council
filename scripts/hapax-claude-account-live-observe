@@ -667,16 +667,24 @@ def _declared_pool_bindings() -> dict | None:
 
 
 def _bound_to_another_pool(route_id: str, pool_bindings: dict | None) -> str | None:
-    """The route's declared pool when this process is NOT running on it; otherwise None."""
+    """The route's explicit or CLI-default pool when this process is running elsewhere."""
     from shared.platform_capability_registry import claude_config_dir_for_env
 
     binding = (pool_bindings or {}).get(route_id)
     if binding is None:
-        return None
+        # Known unbound routes use the CLI default pool, never the observer's inherited
+        # CLAUDE_CONFIG_DIR. Leave unreadable bindings and unknown routes to validation:
+        # a malformed route must fail, not become a successful policy skip.
+        if pool_bindings is None or route_id not in ROUTE_MODEL_PREFIXES:
+            return None
+        config_dir = claude_config_dir_for_env({})
+        pool = "default"
+    else:
+        config_dir, pool = binding.config_dir, binding.pool
     running_on = claude_config_dir_for_env(os.environ).expanduser().resolve()
-    if running_on == binding.config_dir.expanduser().resolve():
+    if running_on == config_dir.expanduser().resolve():
         return None
-    return binding.pool
+    return pool
 
 
 def mint(

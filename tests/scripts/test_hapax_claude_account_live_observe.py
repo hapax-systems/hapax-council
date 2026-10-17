@@ -1085,6 +1085,134 @@ def _run_pool_source_case(observer, args):
     return rc, json.loads(output.getvalue())
 
 
+@pytest.fixture
+def _max2_wrapper_environment(_declared_observer_pool, monkeypatch):
+    observer, writer, binding, args, calls = _declared_observer_pool
+    monkeypatch.setenv("HOME", str(binding.config_dir.parent))
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(binding.receipt_dir))
+    monkeypatch.setenv("HAPAX_CLAUDE_POOL_PACE_ACTIVATION", str(binding.pace_activation))
+    # The real wrapper exports these BEFORE Python imports the writer's defaults.
+    writer.__loader__.exec_module(writer)
+    assert binding.receipt_dir == writer.DEFAULT_RECEIPT_DIR
+    binding.pace_activation.parent.mkdir(parents=True)
+    binding.pace_activation.write_text(
+        json.dumps({"activated_at": iso(NOW - timedelta(minutes=1)), "by": "seat", "reason": "t"})
+    )
+    # max2-pool.sh supplies all paths and leaves the three default routes selected.
+    args = args[2:]
+    args.remove("--no-probe")
+    args += [
+        "--headless-glob",
+        str(binding.headless_dir / "*" / "output.jsonl"),
+        "--transcript-glob",
+        str(binding.config_dir / "projects" / "*" / "*.jsonl"),
+        "--max-age-seconds",
+        "900",
+        "--stale-after-seconds",
+        "1800",
+    ]
+    reading = observer.Observation(
+        "served",
+        NOW,
+        "claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(observer.PROBE_ENV_SCRUBBED),
+        subscription_served=True,
+        windows={"seven_day": (90.0, datetime.fromtimestamp(RESET_7D, UTC))},
+    )
+    monkeypatch.setattr(observer, "probe", lambda now: reading)
+    return observer, writer, binding, args, calls, reading
+
+
+@pytest.mark.parametrize("weekly_used", [90.0, 9.0])
+def test_max2_wrapper_default_routes_never_attempt_default_pool_admissions(
+    _max2_wrapper_environment, weekly_used
+):
+    observer, writer, binding, args, calls, reading = _max2_wrapper_environment
+    reading.windows["seven_day"] = (weekly_used, datetime.fromtimestamp(RESET_7D, UTC))
+    rc, payload = _run_pool_source_case(observer, args)
+    assert rc == 0, payload
+    assert payload["pace_ledger"]["ledgered"] is True
+    review, *skipped = payload["receipts"]
+    assert [argv[argv.index("--route-id") + 1] for argv in calls] == ["claude.review.opus"]
+    assert skipped == [
+        {"route_id": route, "skipped": "route-bound-to-another-pool", "route_pool": "default"}
+        for route in ("claude.headless.full", "claude.interactive.full")
+    ]
+    receipts = list(binding.receipt_dir.glob("*.yaml"))
+    if weekly_used == 90:
+        assert (payload["verdict"], review["returncode"]) == ("pace_held", 3)
+        assert "armed_refuse: pace_line_exceeded" in review["stderr"]
+        assert receipts == []
+    else:
+        assert (payload["verdict"], review["returncode"]) == ("served", 0)
+        assert len(receipts) == 1 and "pool-max-2" in receipts[0].name
+
+
+def test_max2_malformed_route_remains_a_failure_alongside_a_pace_hold(_max2_wrapper_environment):
+    observer, writer, binding, args, calls, reading = _max2_wrapper_environment
+    args += ["--route-id", "claude.review.opus", "--route-id", "claude.invalid"]
+    rc, payload = _run_pool_source_case(observer, args)
+    assert payload["pace_ledger"]["ledgered"] is True
+    assert [r["returncode"] for r in payload["receipts"]] == [3, 2]
+    assert "invalid --route-id" in payload["receipts"][1]["stderr"]
+    assert rc == 5
+    assert list(binding.receipt_dir.glob("*.yaml")) == []
+
+
+def test_max2_does_not_probe_for_only_default_pool_routes(_max2_wrapper_environment, monkeypatch):
+    observer, writer, binding, args, calls, reading = _max2_wrapper_environment
+    args += ["--route-id", "claude.headless.full", "--route-id", "claude.interactive.full"]
+
+    def forbidden_probe(now):
+        raise AssertionError("default-pool routes cannot spend a max-2 probe")
+
+    monkeypatch.setattr(observer, "probe", forbidden_probe)
+    rc, payload = _run_pool_source_case(observer, args)
+    assert (rc, payload["verdict"]) == (4, "no_evidence")
+    assert payload.get("probe") is None and calls == []
+    assert list(binding.receipt_dir.glob("*.yaml")) == []
+
+
+def test_a_real_write_error_remains_a_failure_alongside_a_pace_hold(monkeypatch, tmp_path, capsys):
+    writer = _pool_test_module(_WRITER, "mixed_failure_admission_writer")
+    gates = iter([("armed_refuse", "pace_line_exceeded"), ("armed_allow", "below_line")])
+    monkeypatch.setattr(writer, "_pace_gate", lambda *a, **kw: next(gates))
+    writes = []
+
+    def fail_write(path, fields):
+        writes.append(path)
+        raise OSError("injected receipt storage failure")
+
+    monkeypatch.setattr(writer, "_write_flat_yaml_atomic", fail_write)
+
+    def call_writer(argv, **kwargs):
+        assert Path(argv[1]) == obs.ADMISSION_WRITER
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = writer.main(argv[2:])
+        return subprocess.CompletedProcess(argv, rc, stdout.getvalue(), stderr.getvalue())
+
+    monkeypatch.setattr(obs.subprocess, "run", call_writer)
+    reading = obs.Observation(
+        "served",
+        NOW,
+        "claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
+        subscription_served=True,
+        windows={"seven_day": (90.0, datetime.fromtimestamp(RESET_7D, UTC))},
+    )
+    rc, payload, _ = run_main(monkeypatch, tmp_path, capsys, probe_result=reading)
+    assert payload["pace_ledger"]["ledgered"] is True
+    attempted = [r for r in payload["receipts"] if "returncode" in r]
+    assert [r["returncode"] for r in attempted] == [3, 1]
+    assert len(writes) == 1
+    assert "injected receipt storage failure" in attempted[1]["stderr"]
+    assert rc == 5
+    assert minted(tmp_path) == []
+
+
 @pytest.mark.parametrize("surface", ["transcript", "headless"])
 @pytest.mark.parametrize("foreign_kind", ["serve", "wall"])
 @pytest.mark.parametrize("selection", ["explicit", "default", "symlink"])
