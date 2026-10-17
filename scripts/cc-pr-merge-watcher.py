@@ -78,6 +78,8 @@ from github_pr_status import (  # noqa: E402
     run_graphql_rate_aware,
 )
 
+from shared.github_call_observation import run_gh_observed  # noqa: E402
+
 LOG = logging.getLogger("cc-pr-merge-watcher")
 
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
@@ -138,14 +140,7 @@ def _run_gh_api_json(
     ]
     for key, value in (fields or {}).items():
         cmd.extend(["-f", f"{key}={value}"])
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
+    proc = run_gh_observed(runner, cmd, repo_root=repo_root, timeout=timeout)
     if proc.returncode != 0:
         return None
     try:

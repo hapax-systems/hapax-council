@@ -83,6 +83,7 @@ from github_pr_status import (  # noqa: E402
     run_graphql_rate_aware,
 )
 
+from shared.github_call_observation import run_gh_observed  # noqa: E402
 from shared.merge_queue_lineage import (  # noqa: E402
     DEFAULT_LEDGER_PATH,
     DEFAULT_QUARANTINE_PATH,
@@ -731,14 +732,7 @@ def _gh_api_get_json(
         path,
     ]
     try:
-        proc = runner(
-            cmd,
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
+        proc = run_gh_observed(runner, cmd, repo_root=repo_root, timeout=60)
     except subprocess.TimeoutExpired:
         return False, None, "gh_api_timeout:TimeoutExpired"
     except OSError as exc:
