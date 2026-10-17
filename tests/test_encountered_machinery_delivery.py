@@ -11,7 +11,7 @@ from shared import encountered_machinery_audit as ema
 DELIVERY_NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 
 
-def _delivery_obligation(**over):
+def _obligation(**over):
     value = {
         "source_sha256": "a" * 64,
         "source_ref": "lanebus/cx-test/20261016T110000Z-desk-CLAIM-TURN-1-GO.md",
@@ -31,7 +31,7 @@ def _delivery_obligation(**over):
     return value
 
 
-def _delivery_observation(kind="action", **over):
+def _event(kind="action", **over):
     value = {
         "event_id": "event-" + kind,
         "kind": kind,
@@ -53,7 +53,7 @@ def _delivery_observation(kind="action", **over):
     return value
 
 
-def _delivery(*obligations, observations=(), **over):
+def _score(*obligations, observations=(), **over):
     kw = dict(
         now=DELIVERY_NOW,
         aliases={"cx-alias": "cx-test"},
@@ -67,13 +67,11 @@ def _delivery(*obligations, observations=(), **over):
         },
     )
     kw.update(over)
-    return ema.evaluate_delivery(
-        list(obligations or [_delivery_obligation()]), list(observations), **kw
-    )
+    return ema.evaluate_delivery(list(obligations or [_obligation()]), list(observations), **kw)
 
 
 def test_delivery_aliases_and_repeated_alerts_are_one_obligation():
-    report = _delivery(_delivery_obligation(), _delivery_obligation(recipient="cx-alias"))
+    report = _score(_obligation(), _obligation(recipient="cx-alias"))
     assert report["N"] == 1
     assert report["missed"] == 1
     assert not report["carry_required"]
@@ -81,9 +79,7 @@ def test_delivery_aliases_and_repeated_alerts_are_one_obligation():
 
 @pytest.mark.parametrize("kind", ["copy", "ack", "read_ack"])
 def test_delivery_transport_or_ack_is_never_the_commissioned_action(kind):
-    report = _delivery(
-        observations=[_delivery_observation("native_submission"), _delivery_observation(kind)]
-    )
+    report = _score(observations=[_event("native_submission"), _event(kind)])
     assert report["missed"] == 1
     assert report["timely"] == 0
 
@@ -99,9 +95,7 @@ def test_delivery_transport_or_ack_is_never_the_commissioned_action(kind):
     ],
 )
 def test_delivery_wrong_binding_or_author_report_cannot_prove_effect(change):
-    report = _delivery(
-        observations=[_delivery_observation("native_submission"), _delivery_observation(**change)]
-    )
+    report = _score(observations=[_event("native_submission"), _event(**change)])
     assert report["timely"] == 0
     assert report["missed"] == 1
 
@@ -109,7 +103,7 @@ def test_delivery_wrong_binding_or_author_report_cannot_prove_effect(change):
 @pytest.mark.parametrize("source", ["source", "transport", "outcome"])
 def test_delivery_unreadable_source_is_unknown_never_zero_loss(source):
     coverage = {"source": True, "transport": True, "outcome": True, source: False}
-    report = _delivery(coverage=coverage)
+    report = _score(coverage=coverage)
     assert report["unknown"] == 1
     assert report["missed"] == report["timely"] == 0
     assert report["miss_rate_interval"] == [0.0, 1.0]
@@ -117,16 +111,16 @@ def test_delivery_unreadable_source_is_unknown_never_zero_loss(source):
 
 
 def test_delivery_missing_nudge_stays_in_source_denominator():
-    report = _delivery()
+    report = _score()
     assert report["N"] == report["missed"] == report["delivery_missed"] == 1
     assert report["outcomes"][0]["cause"] == "no_submission"
 
 
 def test_delivery_late_recovery_does_not_erase_miss_or_double_count():
-    report = _delivery(
+    report = _score(
         observations=[
-            _delivery_observation("native_submission", timestamp="2026-10-16T11:02:00Z"),
-            _delivery_observation(timestamp="2026-10-16T11:03:00Z"),
+            _event("native_submission", timestamp="2026-10-16T11:02:00Z"),
+            _event(timestamp="2026-10-16T11:03:00Z"),
         ]
     )
     assert report["missed"] == report["late_performed"] == 1
@@ -134,8 +128,8 @@ def test_delivery_late_recovery_does_not_erase_miss_or_double_count():
 
 
 def test_delivery_legitimate_preexposure_hold_is_retained_and_excluded():
-    report = _delivery(
-        _delivery_obligation(
+    report = _score(
+        _obligation(
             eligibility="hold",
             hold_reason="future claim turn",
             hold_recorded_at="2026-10-16T10:59:00Z",
@@ -146,21 +140,19 @@ def test_delivery_legitimate_preexposure_hold_is_retained_and_excluded():
 
 
 def test_delivery_late_hold_or_missing_role_bound_cannot_censor_failure():
-    report = _delivery(
-        _delivery_obligation(
-            eligibility="hold", hold_reason="busy", hold_recorded_at="2026-10-16T11:10:00Z"
-        )
+    report = _score(
+        _obligation(eligibility="hold", hold_reason="busy", hold_recorded_at="2026-10-16T11:10:00Z")
     )
     assert report["N"] == report["unknown"] == 1
-    missing = _delivery(_delivery_obligation(response_seconds=None))
+    missing = _score(_obligation(response_seconds=None))
     assert missing["unknown"] == 1
 
 
 def test_delivery_response_clock_and_authority_expiry_are_separate():
-    report = _delivery(
+    report = _score(
         observations=[
-            _delivery_observation("native_submission", timestamp="2026-10-16T11:04:00Z"),
-            _delivery_observation(timestamp="2026-10-16T11:06:00Z"),
+            _event("native_submission", timestamp="2026-10-16T11:04:00Z"),
+            _event(timestamp="2026-10-16T11:06:00Z"),
         ]
     )
     assert report["timely"] == 0
@@ -170,11 +162,11 @@ def test_delivery_response_clock_and_authority_expiry_are_separate():
 
 @pytest.mark.parametrize("response_seconds", [300, 600])
 def test_delivery_post_expiry_action_preserves_actual_lag(response_seconds):
-    report = _delivery(
-        _delivery_obligation(response_seconds=response_seconds),
+    report = _score(
+        _obligation(response_seconds=response_seconds),
         observations=[
-            _delivery_observation("native_submission", timestamp="2026-10-16T11:00:30Z"),
-            _delivery_observation(timestamp="2026-10-16T11:06:00Z"),
+            _event("native_submission", timestamp="2026-10-16T11:00:30Z"),
+            _event(timestamp="2026-10-16T11:06:00Z"),
         ],
     )
     outcome = report["outcomes"][0]
@@ -190,11 +182,11 @@ def test_delivery_post_expiry_action_preserves_actual_lag(response_seconds):
 @pytest.mark.parametrize("reverse", [False, True])
 def test_delivery_conflicting_event_receipts_are_unknown(kind, reverse):
     observations = [
-        _delivery_observation("native_submission"),
-        _delivery_observation(),
-        _delivery_observation(kind, result="refused", evidence_sha256="d" * 64),
+        _event("native_submission"),
+        _event(),
+        _event(kind, result="refused", evidence_sha256="d" * 64),
     ]
-    report = _delivery(observations=list(reversed(observations)) if reverse else observations)
+    report = _score(observations=list(reversed(observations)) if reverse else observations)
     outcome = report["outcomes"][0]
     assert outcome["status"] == "UNOBSERVED"
     assert outcome["cause"] == "conflicting_observation_records"
@@ -205,11 +197,11 @@ def test_delivery_conflicting_event_receipts_are_unknown(kind, reverse):
 
 @pytest.mark.parametrize("copy_fields", [{}, {"recipient": "cx-alias"}, {"source_ref": "copy.md"}])
 def test_delivery_repeated_event_copies_remain_timely(copy_fields):
-    report = _delivery(
+    report = _score(
         observations=[
-            _delivery_observation("native_submission"),
-            _delivery_observation(),
-            _delivery_observation(**copy_fields),
+            _event("native_submission"),
+            _event(),
+            _event(**copy_fields),
         ]
     )
     assert report["timely"] == 1 and report["unknown"] == report["missed"] == 0
@@ -218,27 +210,23 @@ def test_delivery_repeated_event_copies_remain_timely(copy_fields):
 
 def test_delivery_correct_refusal_satisfies_attempt_but_not_required_admission():
     obs = [
-        _delivery_observation("native_submission"),
-        _delivery_observation(result="authorized_refusal"),
+        _event("native_submission"),
+        _event(result="authorized_refusal"),
     ]
-    assert _delivery(observations=obs)["timely"] == 1
-    assert (
-        _delivery(_delivery_obligation(predicate="admitted_claim"), observations=obs)["missed"] == 1
-    )
+    assert _score(observations=obs)["timely"] == 1
+    assert _score(_obligation(predicate="admitted_claim"), observations=obs)["missed"] == 1
 
 
 def test_delivery_second_distinct_miss_requests_carry_with_both_source_ids():
-    report = _delivery(_delivery_obligation(), _delivery_obligation(source_sha256="d" * 64))
+    report = _score(_obligation(), _obligation(source_sha256="d" * 64))
     assert report["N"] == report["missed"] == 2
     assert report["carry_required"]
     assert len(set(report["missed_obligation_ids"])) == 2
 
 
 def test_delivery_stage1_never_promotes_even_if_counts_look_better():
-    bad = _delivery(_delivery_obligation(), _delivery_obligation(source_sha256="d" * 64))
-    good = _delivery(
-        observations=[_delivery_observation("native_submission"), _delivery_observation()]
-    )
+    bad = _score(_obligation(), _obligation(source_sha256="d" * 64))
+    good = _score(observations=[_event("native_submission"), _event()])
     for report in (bad, good):
         assert report["promotion_authorized"] is False
         assert report["stage"] == "I"
@@ -257,7 +245,7 @@ created_at: 2026-10-16T11:00:00Z
     assert len(result) == 1
     assert result[0]["required_act"] == "cc-claim example-20261016"
     assert result[0]["response_seconds"] is None
-    assert _delivery(*result)["unknown"] == 1
+    assert _score(*result)["unknown"] == 1
 
 
 def test_delivery_parser_never_promotes_self_reported_result_to_verified_action():
@@ -272,16 +260,16 @@ CLAIM TURN1 RESULT: SUCCESS. cc-claim example-20261016 exited0.
 
 
 def test_delivery_quack_clock_uses_declared_cadence_not_universal_900s():
-    obligation = _delivery_obligation(
+    obligation = _obligation(
         clock_start="mailbox_arrival",
         response_seconds=1800,
         authority_expires_at="2026-10-16T11:30:00Z",
     )
-    report = _delivery(
+    report = _score(
         obligation,
         observations=[
-            _delivery_observation("mailbox_arrival"),
-            _delivery_observation(timestamp="2026-10-16T11:20:00Z"),
+            _event("mailbox_arrival"),
+            _event(timestamp="2026-10-16T11:20:00Z"),
         ],
     )
     assert report["timely"] == 1
@@ -318,7 +306,7 @@ CLAIM TURN 1: cx-test, GO: `cc-claim example-20261016`.
 
 
 def test_delivery_observer_cannot_reuse_author_native_execution():
-    report = _delivery(
+    report = _score(
         observer={
             "role": "observer",
             "native_execution_id": "same-native",
@@ -350,7 +338,7 @@ def test_delivery_observer_cannot_reuse_author_native_execution():
     ],
 )
 def test_delivery_incomplete_or_aliased_author_identity_is_unknown(observer):
-    report = _delivery(observer=observer)
+    report = _score(observer=observer)
     assert report["unknown"] == 1
     assert report["missed"] == 0
 
@@ -387,13 +375,13 @@ def test_delivery_deadline_parser_to_scoring_fails_closed(deadline, status):
     )
     assert len(records) == 1
     observations = [
-        _delivery_observation(kind, source_sha256=records[0]["source_sha256"], timestamp=at)
+        _event(kind, source_sha256=records[0]["source_sha256"], timestamp=at)
         for kind, at in [
             ("native_submission", "2026-10-16T11:00:30Z"),
             ("action", "2026-10-16T11:05:15Z"),
         ]
     ]
-    report = _delivery(*records, observations=observations)
+    report = _score(*records, observations=observations)
     assert report["outcomes"][0]["status"] == status
     assert report["timely"] == 0
     assert report["authority_regressions"] == (status == "MISSED")
@@ -401,9 +389,9 @@ def test_delivery_deadline_parser_to_scoring_fails_closed(deadline, status):
 
 @pytest.mark.parametrize("expiry", [None, "not-a-timestamp"])
 def test_delivery_unknown_authority_bound_never_scores_timely(expiry):
-    report = _delivery(
-        _delivery_obligation(authority_expires_at=expiry),
-        observations=[_delivery_observation("native_submission"), _delivery_observation()],
+    report = _score(
+        _obligation(authority_expires_at=expiry),
+        observations=[_event("native_submission"), _event()],
     )
     assert report["unknown"] == 1 and report["timely"] == report["missed"] == 0
 
@@ -453,10 +441,10 @@ def test_delivery_oversize_source_is_unclassified_and_recorded():
     ],
 )
 def test_delivery_obligation_conflict_precedes_hold_exclusion(change, reverse):
-    obligations = [_delivery_obligation(), _delivery_obligation(**change)]
-    report = _delivery(
+    obligations = [_obligation(), _obligation(**change)]
+    report = _score(
         *(reversed(obligations) if reverse else obligations),
-        observations=[_delivery_observation("native_submission"), _delivery_observation()],
+        observations=[_event("native_submission"), _event()],
     )
     assert report["N"] == report["unknown"] == 1
     assert report["excluded"] == report["timely"] == report["missed"] == 0
@@ -469,14 +457,12 @@ def test_delivery_obligation_conflict_precedes_hold_exclusion(change, reverse):
 @pytest.mark.parametrize("has_start", [False, True])
 def test_delivery_unrepresentable_deadline_is_local_to_one_obligation(field, bound, has_start):
     good = "d" * 64
-    observations = [
-        _delivery_observation(kind, source_sha256=good) for kind in ("native_submission", "action")
-    ]
+    observations = [_event(kind, source_sha256=good) for kind in ("native_submission", "action")]
     if has_start:
-        observations.append(_delivery_observation("native_submission"))
-    report = _delivery(
-        _delivery_obligation(**{field: bound}),
-        _delivery_obligation(source_sha256=good),
+        observations.append(_event("native_submission"))
+    report = _score(
+        _obligation(**{field: bound}),
+        _obligation(source_sha256=good),
         observations=observations,
     )
     assert report["N"] == 2 and report["unknown"] == report["timely"] == 1
@@ -488,9 +474,9 @@ def test_delivery_unrepresentable_deadline_is_local_to_one_obligation(field, bou
     "aliases", [{"cx-test": "cx-test"}, {"cx-test": "cx-alias", "cx-alias": "cx-test"}]
 )
 def test_delivery_alias_cycle_cannot_establish_success(aliases):
-    report = _delivery(
+    report = _score(
         aliases=aliases,
-        observations=[_delivery_observation("native_submission"), _delivery_observation()],
+        observations=[_event("native_submission"), _event()],
     )
     assert report["outcomes"][0]["recipient"] == ""
     assert report["unknown"] == 1 and report["timely"] == report["missed"] == 0
@@ -500,9 +486,9 @@ def test_delivery_alias_cycle_cannot_establish_success(aliases):
 @pytest.mark.parametrize("minute,cause", [(0, "handoff_window_open"), (3, "response_window_open")])
 def test_delivery_open_clock_window_is_unobserved(minute, cause):
     now = DELIVERY_NOW.replace(hour=11, minute=minute, second=45)
-    report = _delivery(
+    report = _score(
         now=now,
-        observations=[_delivery_observation("native_submission", observed_at=now.isoformat())],
+        observations=[_event("native_submission", observed_at=now.isoformat())],
     )
     assert report["outcomes"][0]["cause"] == cause
     assert report["unknown"] == 1 and report["missed"] == report["timely"] == 0
@@ -510,9 +496,9 @@ def test_delivery_open_clock_window_is_unobserved(minute, cause):
 
 
 def test_delivery_bounds_frozen_after_assignment_are_unobserved():
-    report = _delivery(
-        _delivery_obligation(bounds_frozen_at="2026-10-16T11:00:01Z"),
-        observations=[_delivery_observation("native_submission"), _delivery_observation()],
+    report = _score(
+        _obligation(bounds_frozen_at="2026-10-16T11:00:01Z"),
+        observations=[_event("native_submission"), _event()],
     )
     assert report["unknown"] == 1 and report["timely"] == report["missed"] == 0
     assert not report["baseline_complete"]
@@ -533,7 +519,7 @@ def test_round4_source_predicate_survives_parser_to_scorer(predicate, result, st
     text = _desk_go().replace(
         "predicate: command_attempt\n", "" if predicate is None else f"predicate: {predicate}\n"
     )
-    bound = _delivery_obligation()
+    bound = _obligation()
     records = ema.parse_delivery_source(
         text,
         source_ref="20261016T110000Z-GO.md",
@@ -543,14 +529,14 @@ def test_round4_source_predicate_survives_parser_to_scorer(predicate, result, st
     )
     assert len(records) == 1
     observations = [
-        _delivery_observation("native_submission", source_sha256=records[0]["source_sha256"]),
-        _delivery_observation(
+        _event("native_submission", source_sha256=records[0]["source_sha256"]),
+        _event(
             source_sha256=records[0]["source_sha256"],
             result=result,
             verification="source_readback" if predicate == "source_readback" else "command_receipt",
         ),
     ]
-    report = _delivery(*records, observations=observations)
+    report = _score(*records, observations=observations)
     assert report["outcomes"][0]["status"] == status
 
 
@@ -566,9 +552,9 @@ def test_round4_unsupported_task_suffix_never_becomes_a_different_act(suffix):
 
 @pytest.mark.parametrize("role", ["observer", "author"])
 def test_round4_cyclic_observer_or_author_identity_cannot_establish_independence(role):
-    report = _delivery(
+    report = _score(
         aliases={role: role},
-        observations=[_delivery_observation("native_submission"), _delivery_observation()],
+        observations=[_event("native_submission"), _event()],
     )
     assert report["unknown"] == 1 and report["timely"] == report["missed"] == 0
 
@@ -584,13 +570,10 @@ def test_round4_datetime_overflow_is_local_to_one_obligation(field, bad, as_date
     if field == "hold_recorded_at":
         change.update(eligibility="hold", hold_reason="future turn")
     good = "d" * 64
-    report = _delivery(
-        _delivery_obligation(**change),
-        _delivery_obligation(source_sha256=good),
-        observations=[
-            _delivery_observation(kind, source_sha256=good)
-            for kind in ("native_submission", "action")
-        ],
+    report = _score(
+        _obligation(**change),
+        _obligation(source_sha256=good),
+        observations=[_event(kind, source_sha256=good) for kind in ("native_submission", "action")],
     )
     assert [o["status"] for o in report["outcomes"]] == ["UNOBSERVED", "TIMELY"]
 
@@ -608,11 +591,11 @@ def test_round4_datetime_overflow_is_local_to_one_obligation(field, bad, as_date
     ],
 )
 def test_round4_invalid_event_time_cannot_hide_beside_a_success(field, value):
-    report = _delivery(
+    report = _score(
         observations=[
-            _delivery_observation("native_submission"),
-            _delivery_observation(),
-            _delivery_observation(event_id="bad-clock", **{field: value}),
+            _event("native_submission"),
+            _event(),
+            _event(event_id="bad-clock", **{field: value}),
         ]
     )
     assert report["unknown"] == 1 and report["timely"] == report["missed"] == 0
@@ -620,15 +603,13 @@ def test_round4_invalid_event_time_cannot_hide_beside_a_success(field, value):
 
 @pytest.mark.parametrize("offset,expected_n", [(-86401, 0), (1, 0), (-86400, 1), (0, 1)])
 def test_round4_rolling_window_real_population_boundary(offset, expected_n):
-    report = _delivery(
-        _delivery_obligation(assigned_at=(DELIVERY_NOW + timedelta(seconds=offset)).isoformat())
-    )
+    report = _score(_obligation(assigned_at=(DELIVERY_NOW + timedelta(seconds=offset)).isoformat()))
     assert report["N"] == report["source_opportunities"] == expected_n
 
 
 def test_round4_unrepresentable_window_is_unknown():
-    report = _delivery(
-        _delivery_obligation(assigned_at="0001-01-01T00:00:00Z"),
+    report = _score(
+        _obligation(assigned_at="0001-01-01T00:00:00Z"),
         now=datetime.min.replace(tzinfo=UTC),
     )
     assert report["N"] == report["unknown"] == 1
@@ -642,7 +623,7 @@ def test_round4_parser_overflow_preserves_other_source():
 
 @pytest.mark.parametrize("predicate", [[], {"kind": "admitted_claim"}])
 def test_round4_structured_unsupported_predicate_stays_unknown(predicate):
-    report = _delivery(_delivery_obligation(predicate=predicate))
+    report = _score(_obligation(predicate=predicate))
     assert report["unknown"] == 1
 
 
@@ -664,10 +645,10 @@ def _assert_unknown(report):
 @pytest.mark.parametrize("outside", ["2026-10-14T11:00:00Z", "2026-10-17T11:00:00Z"])
 @pytest.mark.parametrize("reverse", [False, True])
 def test_round5_window_conflict(outside, reverse):
-    records = [_delivery_obligation(), _delivery_obligation(assigned_at=outside)]
-    report = _delivery(
+    records = [_obligation(), _obligation(assigned_at=outside)]
+    report = _score(
         *(records[::-1] if reverse else records),
-        observations=[_delivery_observation("native_submission"), _delivery_observation()],
+        observations=[_event("native_submission"), _event()],
     )
     assert report["N"] == report["unknown"] == 1
     assert report["timely"] == report["missed"] == report["excluded"] == 0
@@ -676,7 +657,7 @@ def test_round5_window_conflict(outside, reverse):
 
 
 def _parsed_delivery(text, source_ref="20261016T110000Z-GO.md"):
-    bound = _delivery_obligation()
+    bound = _obligation()
     return ema.parse_delivery_source(
         text,
         source_ref=source_ref,
@@ -693,13 +674,13 @@ def test_round5_deadline_conflict(other, reverse):
     records = _parsed_delivery(_desk_go("\n".join(declarations[::-1] if reverse else declarations)))
     assert len(records) == 1
     observations = [
-        _delivery_observation(kind, source_sha256=records[0]["source_sha256"], timestamp=at)
+        _event(kind, source_sha256=records[0]["source_sha256"], timestamp=at)
         for kind, at in [
             ("native_submission", "2026-10-16T11:00:30Z"),
             ("action", "2026-10-16T11:02:00Z"),
         ]
     ]
-    report = _delivery(*records, observations=observations)
+    report = _score(*records, observations=observations)
     assert records[0]["authority_expires_at"] is None
     _assert_unknown(report)
 
@@ -724,12 +705,12 @@ def test_round5_yaml_conflict(field, values, reverse):
 @pytest.mark.parametrize("reverse", [False, True])
 def test_round5_action_tie(reverse):
     events = [
-        _delivery_observation(),
-        _delivery_observation(event_id="refusal", result="authorized_refusal"),
+        _event(),
+        _event(event_id="refusal", result="authorized_refusal"),
     ]
-    report = _delivery(
+    report = _score(
         observations=[
-            _delivery_observation("native_submission"),
+            _event("native_submission"),
             *(events[::-1] if reverse else events),
         ]
     )
@@ -741,10 +722,10 @@ def test_round5_action_tie(reverse):
 )
 @pytest.mark.parametrize("reverse", [False, True])
 def test_round5_event_binding_conflict(change, reverse):
-    events = [_delivery_observation(), _delivery_observation(**change)]
-    report = _delivery(
+    events = [_event(), _event(**change)]
+    report = _score(
         observations=[
-            _delivery_observation("native_submission"),
+            _event("native_submission"),
             *(events[::-1] if reverse else events),
         ]
     )
@@ -762,10 +743,10 @@ def test_round5_scalar_conflict(field, value):
     old = "cx-test" if field == "to" else "2026-10-16T11:00:00Z"
     records = _parsed_delivery(_desk_go().replace(f"{field}: {old}", f"{field}: {value}"))
     if records:
-        report = _delivery(
+        report = _score(
             *records,
             observations=[
-                _delivery_observation(kind, source_sha256=records[0]["source_sha256"])
+                _event(kind, source_sha256=records[0]["source_sha256"])
                 for kind in ("native_submission", "action")
             ],
         )
@@ -780,9 +761,9 @@ def test_round5_filename_clock():
 def test_round5_agreement_and_window_controls():
     records = _parsed_delivery(_desk_go("Start within 5 min.\n5-min start window"))
     assert records[0]["authority_expires_at"] == "2026-10-16T11:05:00+00:00"
-    report = _delivery(
-        _delivery_obligation(assigned_at="2026-10-14T11:00:00Z"),
-        _delivery_obligation(assigned_at="2026-10-17T11:00:00Z"),
+    report = _score(
+        _obligation(assigned_at="2026-10-14T11:00:00Z"),
+        _obligation(assigned_at="2026-10-17T11:00:00Z"),
     )
     assert report["N"] == report["unknown"] == 0
 
@@ -837,16 +818,46 @@ def test_round5_table_conflicts(kind, reverse):
 @pytest.mark.parametrize("reverse", [False, True])
 def test_round5_frozen_types(change, reverse):
     records = [
-        _delivery_obligation(assignment_time_exact=True),
-        _delivery_obligation(assignment_time_exact=True),
+        _obligation(assignment_time_exact=True),
+        _obligation(assignment_time_exact=True),
     ]
     records[1].update(change)
-    report = _delivery(
+    report = _score(
         *(records[::-1] if reverse else records),
         observations=[
-            _delivery_observation("native_submission"),
-            _delivery_observation(),
+            _event("native_submission"),
+            _event(),
         ],
     )
     _assert_unknown(report)
     assert report["outcomes"][0]["cause"] == "conflicting_obligation_records"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["clock_start", "predicate", "eligibility", "kind", "result", "verification", "event_id"],
+)
+@pytest.mark.parametrize("bad", [[], {"bad": 1}, True, 1])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round6_enum_failure_is_local(field, bad, reverse):
+    bad_obligation = _obligation()
+    events = [_event("native_submission"), _event()]
+    if field in ("clock_start", "predicate", "eligibility"):
+        bad_obligation[field] = bad
+    else:
+        malformed = _event(event_id="malformed")
+        malformed[field] = bad
+        events.append(malformed)
+    good = _obligation(source_sha256="d" * 64)
+    events += [_event(k, source_sha256="d" * 64) for k in ("native_submission", "action")]
+    records = [bad_obligation, good]
+    report = _score(
+        *(records[::-1] if reverse else records), observations=events[::-1] if reverse else events
+    )
+    assert report["N"] == 2
+    assert report["unknown"] == report["timely"] == 1
+    assert report["missed"] == 0 and not report["baseline_complete"]
+    assert {o["source_sha256"]: o["status"] for o in report["outcomes"]} == {
+        "a" * 64: "UNOBSERVED",
+        "d" * 64: "TIMELY",
+    }

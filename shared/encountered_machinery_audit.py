@@ -154,7 +154,7 @@ class _SourceLoader(yaml.SafeLoader):
         self.flatten_mapping(node)
         keys = [self.construct_object(key, deep=True) for key, _ in node.value]
         if any(not isinstance(key, str) for key in keys) or len(keys) != len(set(keys)):
-            raise yaml.YAMLError("ambiguous source mapping")
+            raise yaml.YAMLError("ambiguous source mapping; next action: use unique string keys")
         return super().construct_mapping(node, deep=deep)
 
 
@@ -1202,12 +1202,9 @@ def parse_delivery_source(
 ) -> list[dict[str, Any]]:
     """Extract only the declared desk GO template, never infer action from a RESULT.
 
-    Unrecognized prose is reported by the caller as unclassified coverage. A
-    claim-turn's start window constrains authority; it is NOT a response bound.
-    Role/handoff bounds must be separately declared and frozen before assignment.
-    Oversize diagnostics join the caller's existing source inventory; no I/O here.
-    Only an explicit source ``predicate`` declares the commissioned success rule.
-    Missing or unsupported predicates remain UNKNOWN, including prose-only GO drops.
+    Authority expiry is separate from frozen role/handoff bounds. Only a source's
+    explicit predicate declares success; missing/unsupported stays UNKNOWN.
+    Unrecognized/oversize sources stay in the caller's coverage inventory.
     """
     data = text.encode()
     if len(data) > DELIVERY_SOURCE_MAX_BYTES:
@@ -1394,7 +1391,7 @@ def evaluate_delivery(
     conflicted_events: set[str] = set()
     for event in evidence:
         event_id = event.get("event_id")
-        if not event_id:
+        if not isinstance(event_id, str) or not event_id:
             continue
         # Identity conflicts are checked before any subject/binding/time filtering.
         version = {name: value for name, value in event.items() if name != "source_ref"}
@@ -1461,6 +1458,7 @@ def evaluate_delivery(
             or not isinstance(obligation.get("predicate"), str)
             or obligation.get("predicate")
             not in {"command_attempt", "admitted_claim", "source_readback"}
+            or not isinstance(obligation.get("clock_start"), str)
             or obligation.get("clock_start") not in {"native_submission", "mailbox_arrival"}
             or not all(coverage.get(x) is True for x in ("source", "transport", "outcome"))
         ):
@@ -1473,8 +1471,18 @@ def evaluate_delivery(
             and e.get("native_execution_id") == observer["native_execution_id"]
             and e.get("route") == observer["route"]
             and _SHA256.fullmatch(str(e.get("evidence_sha256", "")))
-            and e.get("event_id")
         ]
+        if any(
+            not isinstance(e.get(field), str) or not e.get(field)
+            for e in relevant
+            for field in (
+                ("event_id", "kind", "result", "verification")
+                if e.get("kind") == "action"
+                else ("event_id", "kind")
+            )
+        ):
+            outcome["cause"] = "invalid_observation_type"
+            continue
         # A record cannot testify to an event later than its own observation.
         # Do not silently discard a malformed matching event beside a success.
         if any(
