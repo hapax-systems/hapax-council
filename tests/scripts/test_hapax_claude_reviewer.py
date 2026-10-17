@@ -892,7 +892,14 @@ def _scripted_claude(
     monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
 
     def run(cmd, *, prompt, timeout_seconds, execution_env):
-        calls.append({"cmd": list(cmd), "prompt": prompt, "timeout_seconds": timeout_seconds})
+        calls.append(
+            {
+                "cmd": list(cmd),
+                "prompt": prompt,
+                "timeout_seconds": timeout_seconds,
+                "execution_env": dict(execution_env),
+            }
+        )
         clock[0] += seconds_per_call
         if len(calls) > len(replies):
             raise AssertionError(f"unexpected claude invocation #{len(calls)}")
@@ -990,6 +997,8 @@ def test_a_reply_with_no_verdict_is_reasked_once_under_the_same_route(monkeypatc
     assert len(calls) == 2
     # same binary, model, effort, tool denial and system prompt: a re-ask never changes route
     assert calls[1]["cmd"] == calls[0]["cmd"]
+    expected_pool = str(Path(os.environ["HOME"]) / ".claude-max-2")
+    assert [call["execution_env"].get("CLAUDE_CONFIG_DIR") for call in calls] == [expected_pool] * 2
     # the packet is replayed whole, followed by the correction; the first reply is not echoed
     assert calls[1]["prompt"].startswith("review packet")
     assert module.REASK_CORRECTION in calls[1]["prompt"]
@@ -1244,3 +1253,9 @@ def test_review_refuses_an_unreadable_pool_declaration(tmp_path: Path) -> None:
     assert result.returncode == 9
     assert "refusing undeclared invocation" in result.stderr
     assert not argv_path.exists()
+
+
+def test_pool_binding_refuses_a_missing_runtime(tmp_path: Path) -> None:
+    module = _load_wrapper("reviewer_missing_pool_runtime")
+    with pytest.raises(ValueError, match="missing pool-binding runtime.*next action"):
+        module._pool_binding(tmp_path)

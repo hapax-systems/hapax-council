@@ -9342,3 +9342,44 @@ class TestGlmcpSecretSourceMigration:
         reviewer = (REPO_ROOT / "scripts" / "hapax-glmcp-reviewer").read_text(encoding="utf-8")
         assert '("secret_source", "filestore:glmcp/api-key")' in reviewer
         assert '("secret_source", "pass:glmcp/api-key")' not in reviewer
+
+
+@pytest.mark.parametrize("failure", ["missing", "malformed"])
+def test_real_pool_binding_load_failure_refuses_receipts(tmp_path, monkeypatch, capsys, failure):
+    namespace = runpy.run_path(str(SCRIPT))
+    registry = tmp_path / "registry.json"
+    if failure == "malformed":
+        registry.write_text("{not json")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    bindings = namespace["_claude_subscription_pool_bindings"]()
+    assert bindings is None
+    assert "Next: repair" in capsys.readouterr().err
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+    scan = namespace["active_claude_admission_receipts_for_pools"](
+        relay, now=datetime(2026, 6, 10, tzinfo=UTC), pool_bindings=bindings
+    )
+    assert scan.admissions == [] and len(scan.ignored_evidence_refs) == 1
+
+
+def test_shared_directory_cannot_be_scanned_again_as_a_pool(tmp_path):
+    from dataclasses import replace
+
+    from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+    namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    binding = resolve_subscription_pool_binding("claude.review.opus", home=tmp_path)
+    assert binding is not None
+    binding = replace(binding, receipt_dir=relay)
+    _claude_admission(
+        relay, observed_at="2026-06-09T23:55:00Z", route_id="claude.review.opus", pool="max-2"
+    )
+    scan = namespace["active_claude_admission_receipts_for_pools"](
+        relay,
+        now=datetime(2026, 6, 10, tzinfo=UTC),
+        pool_bindings={"claude.review.opus": binding},
+    )
+    assert scan.admissions == [] and len(scan.ignored_evidence_refs) == 1
