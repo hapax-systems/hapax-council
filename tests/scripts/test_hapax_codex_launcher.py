@@ -3056,7 +3056,7 @@ esac
     assert "send-keys -t hapax-codex-cx-amber C-u" in tmux_text
     assert "paste-buffer -b hapax-codex-send-cx-amber-" in tmux_text
     assert "delete-buffer -b hapax-codex-send-cx-amber-" in tmux_text
-    assert "send-keys -t hapax-codex-cx-amber C-m" in tmux_text
+    assert "send-keys -t hapax-codex-cx-amber Enter" in tmux_text
 
 
 def test_codex_send_tmux_default_submit_delay_allows_paste_settle() -> None:
@@ -3087,7 +3087,7 @@ case "$1" in
     cat "$file" > {tmux_message}
     ;;
   send-keys)
-    if [ "${{@: -1}}" = "C-m" ]; then
+    if [ "${{@: -1}}" = "Enter" ]; then
       printf '%s\\n' "$HAPAX_CODEX_SEND_ACK_TOKEN" > "$HAPAX_CODEX_SEND_ACK_FILE"
     fi
     ;;
@@ -3132,7 +3132,7 @@ def test_codex_send_tmux_retries_submit_until_required_ack(tmp_path: Path) -> No
     env["HAPAX_CODEX_SEND_ACK_NUDGE_LIMIT"] = "1"
 
     ack_file = tmp_path / "ack.txt"
-    c_m_count = tmp_path / "cm-count.txt"
+    enter_count = tmp_path / "enter-count.txt"
     tmux_log = tmp_path / "tmux.log"
     tmux_message = tmp_path / "tmux-message.txt"
     fake_tmux = tmp_path / "bin" / "tmux"
@@ -3148,13 +3148,13 @@ case "$1" in
     cat "$file" > {tmux_message}
     ;;
   send-keys)
-    if [ "${{@: -1}}" = "C-m" ]; then
+    if [ "${{@: -1}}" = "Enter" ]; then
       count=0
-      if [ -f {c_m_count} ]; then
-        count="$(cat {c_m_count})"
+      if [ -f {enter_count} ]; then
+        count="$(cat {enter_count})"
       fi
       count=$((count + 1))
-      printf '%s\\n' "$count" > {c_m_count}
+      printf '%s\\n' "$count" > {enter_count}
       if [ "$count" -ge 2 ]; then
         printf '%s\\n' "$HAPAX_CODEX_SEND_ACK_TOKEN" > "$HAPAX_CODEX_SEND_ACK_FILE"
       fi
@@ -3189,8 +3189,8 @@ esac
 
     assert result.returncode == 0, result.stderr
     assert ack_file.read_text().strip() == "token-123"
-    assert c_m_count.read_text().strip() == "2"
-    assert tmux_log.read_text().count("send-keys -t hapax-codex-cx-amber C-m") == 2
+    assert enter_count.read_text().strip() == "2"
+    assert tmux_log.read_text().count("send-keys -t hapax-codex-cx-amber Enter") == 2
 
 
 def test_codex_send_tmux_refuses_ack_gated_message_when_pane_is_busy(tmp_path: Path) -> None:
