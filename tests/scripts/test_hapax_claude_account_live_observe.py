@@ -10,9 +10,12 @@ real writer -> ledger reader.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -113,6 +116,9 @@ def _durable_sink_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(obs.PROBE_ENV_SCRUBBED) + ["ANTHROPIC_MODEL"]:
         monkeypatch.delenv(name, raising=False)
+    # These tests are the account-1 observer unit: no CLAUDE_CONFIG_DIR, so the CLI default
+    # pool. A session running the suite must not lend them its own config dir.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
 
 def probe_stream(monkeypatch, *records):
@@ -350,7 +356,10 @@ def test_probe_windows_reach_the_ledger_reader(
     )
     monkeypatch.setattr(obs.subprocess, "run", _REAL_SUBPROCESS_RUN)
     receipts = mint(event, tmp_path, route_ids=obs.DEFAULT_ROUTE_IDS)
-    assert all(r["returncode"] == 0 for r in receipts), receipts
+    attempted = [r for r in receipts if "skipped" not in r]
+    assert attempted and all(r["returncode"] == 0 for r in attempted), receipts
+    # The account-1 observer never mints the max-2-bound review route.
+    assert [r["route_id"] for r in receipts if r.get("skipped")] == ["claude.review.opus"]
     rows = {
         row.capacity_id: row
         for row in read_claude_wall_and_spend(
@@ -628,8 +637,10 @@ def test_a_failed_quantity_probe_keeps_the_passive_admission(
     assert calls == [NOW]
     assert (payload["verdict"], rc) == ("served", 7)
     assert payload["probe"]["outcome"] == "probe_failed"
-    assert len(minted(tmp_path)) == 3
+    # headless and interactive; the review route bills max-2 and is skipped here.
+    assert len(minted(tmp_path)) == 2
     assert any("interactive-full" in name for name in minted(tmp_path))
+    assert not any("review-opus" in name for name in minted(tmp_path))
 
 
 def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
@@ -647,10 +658,8 @@ def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
     broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
     assert calls == [NOW] and rc == 7
-    assert payload["probe"]["requested_for_routes"] == [
-        "claude.review.opus",
-        "claude.interactive.full",
-    ]
+    # The max-2-bound review route never buys an account-1 probe.
+    assert payload["probe"]["requested_for_routes"] == ["claude.interactive.full"]
     assert len(minted(tmp_path)) == 1
     assert "headless-full" in minted(tmp_path)[0]
 
@@ -809,3 +818,427 @@ def test_a_refused_reading_never_suppresses_a_route_probe(monkeypatch, tmp_path:
     stream.write_text("".join(json.dumps(r) + "\n" for r in records))
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
     assert payload["quantity"]["stale"] is False and calls == [NOW]
+
+
+# --- The declared subscription pool (claude.review.opus -> max-2) ------------------------------
+
+#: hapax-claude-account-live-observe.service's SuccessExitStatus=0 3 4.
+OBSERVER_UNIT_SUCCESS_EXIT_STATUS = {0, 3, 4}
+
+
+def test_the_bound_world_tests_run_on_the_real_registry() -> None:
+    """Guard (desk condition 1): the unbound-registry fixture of the family-selection test files
+    must never reach the binding tests below, which pin the real declaration's behaviour."""
+    from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+    assert "HAPAX_PLATFORM_CAPABILITY_REGISTRY" not in os.environ
+    binding = resolve_subscription_pool_binding("claude.review.opus")
+    assert binding is not None and binding.pool == "max-2"
+
+
+def test_the_account_1_observer_unit_stays_green_with_the_review_route_bound_to_max_2(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """The Crow's binding test: with the binding present, the account-1 observer (no
+    CLAUDE_CONFIG_DIR) skips the max-2 route instead of failing its mint, so the unit stays inside
+    SuccessExitStatus; it mints its own routes and never the review route."""
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    window_receipt(tmp_path, NOW - timedelta(minutes=10))
+
+    rc, payload, _calls = run_main(monkeypatch, tmp_path, capsys)
+
+    assert rc in OBSERVER_UNIT_SUCCESS_EXIT_STATUS, payload
+    review = next(r for r in payload["receipts"] if r["route_id"] == "claude.review.opus")
+    assert review == {
+        "route_id": "claude.review.opus",
+        "skipped": "route-bound-to-another-pool",
+        "route_pool": "max-2",
+    }
+    assert any("headless-full" in name for name in minted(tmp_path))
+    assert not any("review-opus" in name and "pool" in name for name in minted(tmp_path))
+
+
+def test_an_unreadable_registry_is_a_broken_instrument_never_a_probe(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Unreadable bindings cannot tell bound from unbound: probing would spend this pool's request
+    for a route bound elsewhere. Refuse first, outside SuccessExitStatus, with nothing minted."""
+    corrupt = tmp_path / "registry.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(corrupt))
+
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
+
+    assert rc == 7
+    assert rc not in OBSERVER_UNIT_SUCCESS_EXIT_STATUS
+    assert payload["verdict"] == "pool_bindings_unreadable"
+    assert calls == []
+    assert minted(tmp_path) == []
+
+
+def test_no_quantity_probe_when_every_requested_route_is_another_pools(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """A stale quantity alone may not buy account 1's request when the only requested route is
+    max-2's: no receipt this run writes could carry the reading."""
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, "--route-id", "claude.review.opus")
+
+    assert calls == []
+    assert payload["quantity"]["stale"] is True
+    assert payload.get("probe") is None
+    assert minted(tmp_path) == []
+
+
+def test_the_account_1_observer_pace_hold_stays_green_with_the_review_route_skipped(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Over account 1's line, its own routes are pace-refused (exit 3 each) and the review route
+    is skipped, not attempted: still ``pace_held`` and exit 0, not a failed mint (exit 5)."""
+    sink_root = tmp_path / "durable"
+    sink_root.mkdir()
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(sink_root))
+    pace_receipts = tmp_path / "pace-receipts"
+    pace_receipts.mkdir()
+    over = run_writer(
+        pace_receipts,
+        "--probe-environment-scrubbed",
+        "--seven-day-used-percent",
+        "90",
+        "--seven-day-resets-at",
+        "2026-09-25T22:00:00Z",
+    )
+    assert over.returncode == 0, over.stderr
+    marker = tmp_path / "activation.json"
+    marker.write_text(
+        json.dumps({"activated_at": "2026-09-24T18:00:00Z", "by": "seat", "reason": "t"}) + "\n",
+        encoding="utf-8",
+    )
+    observation = obs.Observation(
+        kind="served",
+        at=obs._parse_ts("2026-09-24T18:06:36Z"),
+        source="claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
+        windows={
+            "seven_day": (90.0, obs._parse_ts("2026-09-25T22:00:00Z")),
+            "five_hour": (8.0, obs._parse_ts("2026-09-24T21:30:00Z")),
+        },
+        subscription_served=True,
+    )
+
+    rc, payload, _calls = run_main(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        "--pace-receipt-dir",
+        str(pace_receipts),
+        "--pace-headless-glob",
+        str(tmp_path / "no-headless" / "*" / "output.jsonl"),
+        "--pace-activation",
+        str(marker),
+        probe_result=observation,
+    )
+
+    assert (rc, payload["verdict"]) == (0, "pace_held")
+    assert any(r.get("skipped") == "route-bound-to-another-pool" for r in payload["receipts"])
+    assert minted(tmp_path) == []
+
+
+def test_the_max_2_observer_mints_the_review_route_into_its_receipt_directory(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Run inside max-2's own chain (as max2-pool.sh does), the observer mints the review route
+    into max-2's receipt dir."""
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    receipts = cache / "relay" / "receipts-max-2"
+    sink_root = cache / "stage0-durable-sink-max-2"
+    for directory in (home / ".claude-max-2", receipts, sink_root):
+        directory.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / ".claude-max-2"))
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(sink_root))
+    passive_serve(home / ".claude-max-2", NOW - timedelta(minutes=1))
+    monkeypatch.setattr(obs, "probe", lambda now: None)
+
+    rc = obs.main(
+        [
+            "--transcript-glob",
+            str(home / ".claude-max-2" / "projects" / "*" / "*.jsonl"),
+            "--headless-glob",
+            str(cache / "claude-headless-max-2" / "*" / "output.jsonl"),
+            "--receipt-dir",
+            str(receipts),
+            "--pace-receipt-dir",
+            str(receipts),
+            "--pace-headless-glob",
+            str(cache / "claude-headless-max-2" / "*" / "output.jsonl"),
+            "--pace-activation",
+            str(cache / "claude-pool-pace-max-2" / "activation.json"),
+            "--now",
+            iso(NOW),
+            "--max-age-seconds",
+            "1800",
+            "--route-id",
+            "claude.review.opus",
+            "--no-probe",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0, payload
+    [review] = payload["receipts"]
+    assert review["returncode"] == 0, review
+    assert len(list(receipts.glob("*.yaml"))) == 1
+
+
+# Passive source identity is checked before any serve/wall is considered.
+def _pool_test_module(path, name):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def _declared_observer_pool(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv(
+        "HAPAX_PLATFORM_CAPABILITY_REGISTRY",
+        str(REPO_ROOT / "config/platform-capability-registry.json"),
+    )
+    from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+    binding = resolve_subscription_pool_binding("claude.review.opus", home=home)
+    assert binding and binding.pool == "max-2"
+    for directory in [
+        binding.config_dir / "projects",
+        binding.receipt_dir,
+        binding.headless_dir,
+        binding.durable_sink_root,
+    ]:
+        directory.mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(binding.config_dir))
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(binding.durable_sink_root))
+    writer = _pool_test_module(_WRITER, "pool_bound_admission_writer")
+    observer = obs
+
+    def no_probe(*args, **kwargs):
+        raise AssertionError("No live provider probe permitted in local preparation")
+
+    monkeypatch.setattr(observer, "probe", no_probe)
+    writer_calls = []
+
+    def call_writer(argv, **kwargs):
+        assert Path(argv[1]) == observer.ADMISSION_WRITER, argv
+        writer_calls.append(argv[2:])
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = writer.main(argv[2:])
+        return subprocess.CompletedProcess(argv, rc, stdout.getvalue(), stderr.getvalue())
+
+    monkeypatch.setattr(observer.subprocess, "run", call_writer)
+    args = [
+        "--route-id",
+        "claude.review.opus",
+        "--receipt-dir",
+        str(binding.receipt_dir),
+        "--pace-receipt-dir",
+        str(binding.receipt_dir),
+        "--pace-headless-glob",
+        str(binding.headless_dir / "*" / "output.jsonl"),
+        "--pace-activation",
+        str(binding.pace_activation),
+        "--now",
+        NOW.isoformat(),
+        "--no-probe",
+        "--json",
+    ]
+    return observer, writer, binding, args, writer_calls
+
+
+def _pool_source_record(path, kind, surface, at):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = (
+        {"model": "claude-opus-5", "usage": {"input_tokens": 3, "output_tokens": 4}}
+        if kind == "serve"
+        else {"error": "usage limit", "is_error": True}
+    )
+    value = (
+        {"type": "assistant", "timestamp": at.isoformat(), "message": fields}
+        if surface == "transcript"
+        else {"type": "result", "timestamp": at.isoformat(), **fields}
+    )
+    path.write_text(json.dumps(value) + "\n")
+
+
+def _run_pool_source_case(observer, args):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        rc = observer.main(args)
+    return rc, json.loads(output.getvalue())
+
+
+@pytest.mark.parametrize("surface", ["transcript", "headless"])
+@pytest.mark.parametrize("foreign_kind", ["serve", "wall"])
+@pytest.mark.parametrize("selection", ["explicit", "default", "symlink"])
+def test_foreign_evidence_never_admits_or_walls_the_bound_pool(
+    _declared_observer_pool, tmp_path, monkeypatch, surface, foreign_kind, selection
+):
+    observer, writer, binding, args, calls = _declared_observer_pool
+    own_root = binding.config_dir / "projects" if surface == "transcript" else binding.headless_dir
+    filename = "session.jsonl" if surface == "transcript" else "output.jsonl"
+    foreign = tmp_path / "foreign" / "lane" / filename
+    _pool_source_record(foreign, foreign_kind, surface, NOW - timedelta(seconds=10))
+    if foreign_kind == "wall":
+        _pool_source_record(
+            own_root / "own" / filename, "serve", surface, NOW - timedelta(seconds=20)
+        )
+    flag = "--transcript-glob" if surface == "transcript" else "--headless-glob"
+    other_flag = "--headless-glob" if surface == "transcript" else "--transcript-glob"
+    other_root = (
+        binding.headless_dir if surface == "transcript" else binding.config_dir / "projects"
+    )
+    other_name = "output.jsonl" if surface == "transcript" else "*.jsonl"
+    args += [other_flag, str(other_root / "*" / other_name)]
+    if selection == "default":
+        monkeypatch.setattr(
+            observer,
+            "DEFAULT_TRANSCRIPT_GLOB" if surface == "transcript" else "DEFAULT_HEADLESS_GLOB",
+            str(
+                tmp_path
+                / "foreign"
+                / "*"
+                / ("*.jsonl" if surface == "transcript" else "output.jsonl")
+            ),
+        )
+    elif selection == "symlink":
+        link = own_root / "foreign-link" / filename
+        link.parent.mkdir()
+        link.symlink_to(foreign)
+        args += [
+            flag,
+            str(own_root / "*" / ("*.jsonl" if surface == "transcript" else "output.jsonl")),
+        ]
+    else:
+        args += [flag, str(tmp_path / "**" / "*.jsonl")]
+    rc, payload = _run_pool_source_case(observer, args)
+    receipts = list(binding.receipt_dir.glob("*.yaml"))
+    if foreign_kind == "serve":
+        assert (rc, payload["verdict"]) == (4, "no_evidence")
+        assert calls == [] and receipts == []
+    else:
+        assert (rc, payload["verdict"]) == (0, "served")
+        assert len(receipts) == 1 and len(calls) == 1
+
+
+@pytest.mark.parametrize("surface", ["transcript", "headless"])
+def test_own_pool_evidence_still_mints(_declared_observer_pool, surface):
+    observer, writer, binding, args, calls = _declared_observer_pool
+    root = binding.config_dir / "projects" if surface == "transcript" else binding.headless_dir
+    _pool_source_record(
+        root / "own" / ("session.jsonl" if surface == "transcript" else "output.jsonl"),
+        "serve",
+        surface,
+        NOW - timedelta(seconds=20),
+    )
+    args += [
+        "--transcript-glob",
+        str(binding.config_dir / "projects" / "*" / "*.jsonl"),
+        "--headless-glob",
+        str(binding.headless_dir / "*" / "output.jsonl"),
+    ]
+    rc, payload = _run_pool_source_case(observer, args)
+    assert (rc, payload["verdict"]) == (0, "served")
+    assert len(list(binding.receipt_dir.glob("*.yaml"))) == 1
+
+
+@pytest.mark.parametrize("own_pool", [False, True])
+def test_bound_quantity_uses_its_pool_despite_a_foreign_selector(
+    _declared_observer_pool, tmp_path, own_pool
+):
+    observer, writer, binding, args, calls = _declared_observer_pool
+    foreign = tmp_path / "foreign"
+    path = (binding.headless_dir if own_pool else foreign) / "lane/output.jsonl"
+    path.parent.mkdir(parents=True)
+    at = NOW - timedelta(minutes=1)
+    path.write_text(
+        stream(
+            {**SUBSCRIPTION_INIT, "timestamp": iso(at)},
+            {"type": "rate_limit_event", "rate_limit_info": info()},
+        )
+    )
+    args += ["--headless-glob", str(foreign / "*/output.jsonl")]
+    rc, payload = _run_pool_source_case(observer, args)
+    assert rc == 4 and calls == []
+    assert payload["quantity"]["stale"] is not own_pool
+    assert payload["quantity"]["newest_reading_at"] == (iso(at) if own_pool else None)
+
+
+@pytest.mark.parametrize(
+    "surface,link_kind", [("stream", "file"), ("stream", "directory"), ("receipt", "file")]
+)
+@pytest.mark.parametrize("foreign", [True, False])
+def test_quantity_symlink_containment_preserves_refresh(
+    _declared_observer_pool, monkeypatch, surface, link_kind, foreign
+):
+    """A foreign fresh window cannot suppress refresh; a contained link remains usable."""
+    observer, writer, binding, args, writer_calls = _declared_observer_pool
+    root = binding.headless_dir if surface == "stream" else binding.receipt_dir
+    # A sibling with the same prefix is outside the pool, even though its spelling starts
+    # with the pool's path. Internal targets avoid the reader's glob to isolate the link.
+    target_root = root.with_name(root.name + "-foreign") if foreign else root / "storage" / "target"
+    target = target_root / ("output.jsonl" if link_kind == "directory" else "evidence")
+    target.parent.mkdir(parents=True)
+    at = NOW - timedelta(minutes=1)
+    if surface == "stream":
+        target.write_text(
+            stream(
+                {**SUBSCRIPTION_INIT, "timestamp": iso(at)},
+                {"type": "rate_limit_event", "rate_limit_info": info()},
+            )
+        )
+        link = root / "linked" / "output.jsonl"
+        if link_kind == "directory":
+            link.parent.symlink_to(target_root, target_is_directory=True)
+        else:
+            link.parent.mkdir()
+            link.symlink_to(target)
+        rows = observer.read_claude_stream_windows(root, now=NOW)
+    else:
+        target.write_text(
+            "schema: hapax.claude_quota_admission.v1\n"
+            "status: quota_available\n"
+            "auth_surface: subscription\n"
+            "observation: subscription_quota_headroom_observed\n"
+            "probe_environment_scrubbed: [ANTHROPIC_API_KEY]\n"
+            f"observed_at: '{iso(at)}'\n"
+            "seven_day_used_percent: 9\n"
+            "seven_day_resets_at: '2026-09-25T22:00:00Z'\n"
+        )
+        (root / "claude-subscription-quota-admission-linked.yaml").symlink_to(target)
+        rows = observer.read_claude_probe_receipts(root, now=NOW)
+
+    _pool_source_record(
+        binding.config_dir / "projects" / "own" / "session.jsonl",
+        "serve",
+        "transcript",
+        NOW - timedelta(seconds=20),
+    )
+    probes = []
+    monkeypatch.setattr(observer, "probe", lambda now: probes.append(now))
+    args.remove("--no-probe")
+    rc, payload = _run_pool_source_case(observer, args)
+    assert rc == 0 and payload["verdict"] == "served"
+    assert probes == ([NOW] if foreign else [])
+    assert payload["quantity"]["stale"] is foreign
+    assert payload["quantity"]["newest_reading_at"] == (None if foreign else iso(at))
+    if foreign:
+        assert rows == []
+        assert payload["probe"]["requested_for_routes"] == []
+    else:
+        assert rows and all(row.observed_at == at for row in rows)

@@ -21,6 +21,8 @@ from shared.quota_headroom import (
     enrich_ledger,
     freeze_predicate,
     operator_report,
+    read_claude_probe_receipts,
+    read_claude_stream_windows,
     read_claude_wall_and_spend,
     read_codex_token_count,
     read_kimi_403_signal,
@@ -43,6 +45,19 @@ def write(path: Path, value: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value)
     return path
+
+
+@pytest.mark.parametrize("surface", ["stream", "receipt"])
+def test_quantity_readers_ignore_unresolvable_symlink(surface, tmp_path):
+    path = tmp_path / (
+        "lane/output.jsonl"
+        if surface == "stream"
+        else "claude-subscription-quota-admission-loop.yaml"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(path)
+    reader = read_claude_stream_windows if surface == "stream" else read_claude_probe_receipts
+    assert reader(tmp_path, now=NOW) == []
 
 
 def token_event(

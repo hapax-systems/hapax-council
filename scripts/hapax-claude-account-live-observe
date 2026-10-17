@@ -76,6 +76,7 @@ from shared.quota_headroom import (  # noqa: E402
     TraceReadError,
     claude_rate_limit_windows,
     overage_state,
+    path_is_within,
     read_claude_probe_receipts,
     read_claude_stream_windows,
     request_details,
@@ -540,7 +541,7 @@ def _mtime(path: Path) -> datetime | None:
         return None
 
 
-def _recent_files(pattern: str, floor: datetime) -> list[Path]:
+def _recent_files(pattern: str, floor: datetime, *, within: Path | None = None) -> list[Path]:
     """Only files touched since the floor — avoids reading years of stale lane logs."""
     expanded = Path(os.path.expanduser(pattern))
     root = Path(expanded.anchor or "/")
@@ -550,6 +551,8 @@ def _recent_files(pattern: str, floor: datetime) -> list[Path]:
         return []
     keep: list[Path] = []
     for candidate in candidates:
+        if within is not None and not path_is_within(candidate, within):
+            continue
         mtime = _mtime(candidate)
         if mtime is not None and mtime >= floor:
             keep.append(candidate)
@@ -580,6 +583,8 @@ def observe_all(
     max_age_seconds: int,
     headless_glob: str,
     transcript_glob: str,
+    headless_root: Path | None = None,
+    transcript_root: Path | None = None,
 ) -> tuple[str, Observation | None, list[Observation]]:
     """``observe`` plus every observation inside the window, so routes can pick their own.
 
@@ -593,9 +598,9 @@ def observe_all(
     """
     floor = now - timedelta(seconds=max_age_seconds)
     found: list[Observation] = []
-    for path in _recent_files(headless_glob, floor):
+    for path in _recent_files(headless_glob, floor, within=headless_root):
         found.extend(_scan_headless(path, floor))
-    for path in _recent_files(transcript_glob, floor):
+    for path in _recent_files(transcript_glob, floor, within=transcript_root):
         found.extend(_scan_transcript(path, floor))
     return _verdict(found)
 
@@ -645,6 +650,35 @@ def evidence_by_route(
     return by_route
 
 
+def _declared_pool_bindings() -> dict | None:
+    """The registry's route pool bindings; None when unreadable.
+
+    The executable entry point refuses an unreadable registry before observing (exit 7).
+    """
+    from shared.platform_capability_registry import (
+        PlatformCapabilityRegistryError,
+        resolve_subscription_pool_bindings,
+    )
+
+    try:
+        return resolve_subscription_pool_bindings()
+    except PlatformCapabilityRegistryError:
+        return None
+
+
+def _bound_to_another_pool(route_id: str, pool_bindings: dict | None) -> str | None:
+    """The route's declared pool when this process is NOT running on it; otherwise None."""
+    from shared.platform_capability_registry import claude_config_dir_for_env
+
+    binding = (pool_bindings or {}).get(route_id)
+    if binding is None:
+        return None
+    running_on = claude_config_dir_for_env(os.environ).expanduser().resolve()
+    if running_on == binding.config_dir.expanduser().resolve():
+        return None
+    return binding.pool
+
+
 def mint(
     evidence: Observation,
     *,
@@ -669,7 +703,20 @@ def mint(
     means a 14-minute-old observation yields 14 fewer minutes of freshness, automatically.
     """
     results: list[dict] = []
+    pool_bindings = _declared_pool_bindings()
     for route_id in route_ids:
+        # A route that bills another subscription pool is not this observer's to mint: its
+        # reading would be this pool's. Skip it, like a family mismatch, so it is not attempted.
+        other_pool = _bound_to_another_pool(route_id, pool_bindings)
+        if other_pool is not None:
+            results.append(
+                {
+                    "route_id": route_id,
+                    "skipped": "route-bound-to-another-pool",
+                    "route_pool": other_pool,
+                }
+            )
+            continue
         route_evidence = evidence
         if evidence_by_route is not None:
             route_evidence = evidence_by_route.get(route_id)
@@ -889,12 +936,51 @@ def main(argv: list[str] | None = None) -> int:
         print("invalid --now; expected ISO-8601 UTC", file=sys.stderr)
         return 2
     route_ids = tuple(args.route_ids or DEFAULT_ROUTE_IDS)
+    # Unreadable bindings cannot tell a route bound to another pool from an unbound one, so any
+    # probe could spend this pool's request for a route it cannot vouch for. Refuse before
+    # observing, as a broken instrument (exit 7, outside SuccessExitStatus), never as no evidence.
+    pool_bindings = _declared_pool_bindings()
+    if pool_bindings is None:
+        hint = (
+            "the registry's subscription pool bindings could not be read, so no route can be "
+            "told bound from unbound; nothing is probed or minted. Next action: repair "
+            "config/platform-capability-registry.json (or the HAPAX_PLATFORM_CAPABILITY_REGISTRY "
+            "override), then rerun"
+        )
+        if args.json:
+            print(json.dumps({"verdict": "pool_bindings_unreadable", "hint": hint}, indent=1))
+        else:
+            print("account-live: pool_bindings_unreadable")
+            print(f"  {hint}", file=sys.stderr)
+        return 7
+    eligible_route_ids = [
+        route_id
+        for route_id in route_ids
+        if _bound_to_another_pool(route_id, pool_bindings) is None
+    ]
+
+    # A bound route's passive evidence comes from its declared pool, not merely from a
+    # process launched with that pool's config. Resolve each file before reading it so
+    # explicit broad globs and symlinks cannot import another pool's serves or walls.
+    passive_pool = next(
+        (pool_bindings[route_id] for route_id in eligible_route_ids if route_id in pool_bindings),
+        None,
+    )
+    headless_root = passive_pool.headless_dir if passive_pool is not None else None
+    transcript_root = passive_pool.config_dir / "projects" if passive_pool is not None else None
+    if passive_pool is not None:
+        if args.headless_glob == DEFAULT_HEADLESS_GLOB:
+            args.headless_glob = str(headless_root / "*" / "output.jsonl")
+        if args.transcript_glob == DEFAULT_TRANSCRIPT_GLOB:
+            args.transcript_glob = str(transcript_root / "*" / "*.jsonl")
 
     verdict, evidence, found = observe_all(
         now=now,
         max_age_seconds=args.max_age_seconds,
         headless_glob=args.headless_glob,
         transcript_glob=args.transcript_glob,
+        headless_root=headless_root,
+        transcript_root=transcript_root,
     )
 
     # Probe for ROUTE evidence, not merely for account-level evidence. A Fable serve witnesses
@@ -905,8 +991,12 @@ def main(argv: list[str] | None = None) -> int:
     by_route = (
         evidence_by_route(found, route_ids) if verdict == "served" else dict.fromkeys(route_ids)
     )
+    # A route bound to another subscription pool is never minted here (see ``mint``), so it never
+    # buys a probe either: spending this pool's request for a route it cannot vouch for is waste.
     routes_missing_passive_evidence = [
-        route_id for route_id, route_evidence in by_route.items() if route_evidence is None
+        route_id
+        for route_id, route_evidence in by_route.items()
+        if route_evidence is None and route_id in eligible_route_ids
     ]
     # Read the quantity before spending a request on it. An unreadable source narrows:
     # it never triggers a quantity probe on its own.
@@ -914,8 +1004,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         reading_at = newest_window_reading(
             now,
-            receipt_dir=args.receipt_dir or DEFAULT_RECEIPT_DIR,
-            headless_glob=args.headless_glob,
+            receipt_dir=passive_pool.receipt_dir
+            if passive_pool is not None
+            else args.receipt_dir or DEFAULT_RECEIPT_DIR,
+            headless_glob=str(headless_root / "*" / "output.jsonl")
+            if passive_pool is not None
+            else args.headless_glob,
         )
     except TraceReadError:
         reading_at, quantity["read_error"] = None, "corrupt_or_unreadable_quantity_source"
@@ -926,9 +1020,11 @@ def main(argv: list[str] | None = None) -> int:
         reading_at is None or (now - reading_at).total_seconds() > args.quantity_max_age_seconds
     )
     probe_report: dict | None = None
+    # A stale quantity alone buys a probe only when some requested route is this pool's: with
+    # none, no receipt this run writes could carry the reading.
     if (
         verdict != "walled"
-        and (routes_missing_passive_evidence or quantity["stale"])
+        and (routes_missing_passive_evidence or (quantity["stale"] and eligible_route_ids))
         and args.probe
         and not args.dry_run
     ):

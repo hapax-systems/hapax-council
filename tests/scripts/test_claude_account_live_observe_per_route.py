@@ -16,6 +16,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-account-live-observe"
 _spec = importlib.util.spec_from_file_location(
@@ -31,6 +33,20 @@ _spec.loader.exec_module(obs)
 
 NOW = datetime(2026, 9, 2, 2, 0, 0, tzinfo=UTC)
 ROUTES = ("claude.review.opus", "claude.headless.full")
+
+
+@pytest.fixture(autouse=True)
+def _unbound_review_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """These tests pin per-route model-family selection, with claude.review.opus as the opus
+    example; they run in an unbound world. The real max-2 binding is pinned against the real
+    registry in test_hapax_claude_account_live_observe.py, whose guard test fails if this leaks."""
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    for route in registry["routes"]:
+        route.pop("subscription_pool_binding", None)
+    unbound = tmp_path / "registry-without-pool-bindings.json"
+    unbound.write_text(json.dumps(registry), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(unbound))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
 
 def _served(ts: datetime, model: str) -> str:
