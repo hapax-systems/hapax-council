@@ -1,0 +1,19 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Add released deny entries to the Claude Code managed settings
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/shared/managed_settings_sync.py
+OnFailure=hapax-root-failure-intake@%n.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+TimeoutStartSec=90s
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/sbin/hapax-claude-code-managed-settings-sync --owner-uid 1000 --target /etc/claude-code/managed-settings.d/50-hapax-communication-pathway.json
+SyslogIdentifier=hapax-claude-code-managed-settings-sync
+ProtectSystem=strict
+ReadWritePaths=/etc/claude-code/managed-settings.d
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes

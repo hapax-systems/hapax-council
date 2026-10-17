@@ -1,0 +1,101 @@
+#!/usr/bin/bash
+# Install the Claude Code managed-settings deny sync (operator act O6, once per installer version).
+#
+# The installed system timer then adds released deny entries to
+# /etc/claude-code/managed-settings.d/ with no further root acts; removing an entry stays an
+# operator root act. This installer runs only as root, only from the active source release
+# (~/.cache/hapax/source-activation/worktree -> releases/<commit>), only when that commit is an
+# ancestor of origin/main, and installs committed bytes, never working-tree edits. Git runs as
+# the release's owner, never as root.
+set -euo pipefail
+umask 022
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ACTUAL_UID="$(/usr/bin/id -u)"
+if [ "$ACTUAL_UID" != 0 ] && [ "${HAPAX_CCMS_TEST_ACTUAL_UID:-}" = 0 ]; then
+    ACTUAL_UID=0
+fi
+OWNER_UID="${HAPAX_CCMS_OWNER_UID:-1000}"
+OWNER_HOME="${HAPAX_CCMS_OWNER_HOME:-$(getent passwd "$OWNER_UID" | cut -d: -f6 || true)}"
+OWNER_GID="${HAPAX_CCMS_OWNER_GID:-$(getent passwd "$OWNER_UID" | cut -d: -f4 || true)}"
+DEST_ROOT="${HAPAX_CCMS_DEST_ROOT:-}"
+ROOT_UID="${HAPAX_CCMS_ROOT_UID:-0}"
+ROOT_GID="${HAPAX_CCMS_ROOT_GID:-0}"
+SYSTEMCTL="${HAPAX_CCMS_SYSTEMCTL:-/usr/bin/systemctl}"
+UNIT=hapax-claude-code-managed-settings-sync
+LIB_DIR="$DEST_ROOT/usr/local/lib/hapax/claude-code-managed-settings/shared"
+SETTINGS_DIR="$DEST_ROOT/etc/claude-code/managed-settings.d"
+STABLE="$OWNER_HOME/.cache/hapax/source-activation/worktree"
+RECEIPT="$OWNER_HOME/.local/state/hapax/root-required/installed-receipts/claude-code-managed-settings.sha"
+MAIN_REF=refs/remotes/origin/main
+
+refuse() {
+    echo "install-claude-code-managed-settings: $1" >&2
+    exit 2
+}
+
+# Run a command as the release owner with a clean environment.
+as_owner() {
+    local env=(/usr/bin/env -i PATH=/usr/bin:/bin HOME="$OWNER_HOME" LC_ALL=C
+        GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+    if [ "$(/usr/bin/id -u)" = 0 ]; then
+        /usr/bin/setpriv --reuid="$OWNER_UID" --regid="$OWNER_GID" --init-groups -- "${env[@]}" "$@"
+    else
+        "${env[@]}" "$@"
+    fi
+}
+
+[ "$ACTUAL_UID" = 0 ] \
+    || refuse "must run as root; next action: sudo $STABLE/scripts/install-claude-code-managed-settings"
+[ -n "$OWNER_HOME" ] && [ -n "$OWNER_GID" ] \
+    || refuse "cannot resolve the home and group of uid $OWNER_UID; next action: set HAPAX_CCMS_OWNER_HOME and HAPAX_CCMS_OWNER_GID"
+[ "$ROOT" = "$(realpath -e "$STABLE" 2>/dev/null || true)" ] \
+    || refuse "$ROOT is not the active release $STABLE; next action: sudo $STABLE/scripts/install-claude-code-managed-settings"
+HEAD_SHA="$(as_owner /usr/bin/git -C "$ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)"
+[ -n "$HEAD_SHA" ] && [ "$HEAD_SHA" = "$(basename "$ROOT")" ] \
+    || refuse "release $ROOT is at ${HEAD_SHA:-no commit}, not its named commit; next action: rebuild the release from source activation"
+as_owner /usr/bin/git -C "$ROOT" merge-base --is-ancestor "$HEAD_SHA" "$MAIN_REF" \
+    || refuse "release $HEAD_SHA is not an ancestor of $MAIN_REF; next action: activate a released main commit and rerun"
+
+RELS=(
+    shared/managed_settings_deny.py
+    shared/managed_settings_sync.py
+    "scripts/$UNIT"
+    "systemd/units/$UNIT.service"
+    "systemd/units/$UNIT.timer"
+)
+DESTS=(
+    "$LIB_DIR/managed_settings_deny.py"
+    "$LIB_DIR/managed_settings_sync.py"
+    "$DEST_ROOT/usr/local/sbin/$UNIT"
+    "$DEST_ROOT/etc/systemd/system/$UNIT.service"
+    "$DEST_ROOT/etc/systemd/system/$UNIT.timer"
+)
+MODES=(0644 0644 0755 0644 0644)
+
+# Stage every committed blob before installing anything, so a missing file installs nothing.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+for i in "${!RELS[@]}"; do
+    as_owner /usr/bin/git -C "$ROOT" cat-file blob "$HEAD_SHA:${RELS[$i]}" > "$STAGE/$i" \
+        || refuse "${RELS[$i]} is missing at $HEAD_SHA; next action: restore it on main"
+done
+: > "$STAGE/empty"
+
+/usr/bin/install -d -o "$ROOT_UID" -g "$ROOT_GID" -m 0755 \
+    "$LIB_DIR" "$DEST_ROOT/etc/claude-code" "$SETTINGS_DIR"
+/usr/bin/install -o "$ROOT_UID" -g "$ROOT_GID" -m 0644 "$STAGE/empty" "$LIB_DIR/__init__.py"
+for i in "${!RELS[@]}"; do
+    /usr/bin/install -D -o "$ROOT_UID" -g "$ROOT_GID" -m "${MODES[$i]}" "$STAGE/$i" "${DESTS[$i]}"
+done
+
+"$SYSTEMCTL" daemon-reload
+"$SYSTEMCTL" start "$UNIT.service" \
+    || refuse "the first sync refused or failed; next action: journalctl -u $UNIT.service, fix the named refusal, rerun"
+"$SYSTEMCTL" enable --now "$UNIT.timer"
+
+as_owner /usr/bin/mkdir -p "$(dirname "$RECEIPT")"
+printf '%s\n' "$HEAD_SHA" | as_owner /usr/bin/tee "$RECEIPT" > /dev/null
+echo "installed claude-code-managed-settings at $HEAD_SHA; the timer adds released deny entries every 10 minutes; removing an entry stays an operator root act"

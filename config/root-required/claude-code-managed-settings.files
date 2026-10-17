@@ -1,0 +1,10 @@
+# Versioned ownership manifest for the root-required Claude Code managed-settings package.
+# Installing it is operator act O6, once per installer version; the timer it installs keeps the
+# deny list current (add-only) without further root acts.
+config/root-required/claude-code-managed-settings.files
+scripts/install-claude-code-managed-settings
+scripts/hapax-claude-code-managed-settings-sync
+shared/managed_settings_deny.py
+shared/managed_settings_sync.py
+systemd/units/hapax-claude-code-managed-settings-sync.service
+systemd/units/hapax-claude-code-managed-settings-sync.timer
