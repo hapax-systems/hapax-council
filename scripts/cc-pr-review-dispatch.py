@@ -102,7 +102,7 @@ LOG = logging.getLogger("cc-pr-review-dispatch")
 
 DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-DEFAULT_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
+DEFAULT_WAKE_DIR = review_team.REVIEW_WAKE_DIR
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
@@ -1525,6 +1525,7 @@ def constitute_with_substitution(
     route_blocked_families: dict[str, tuple[str, ...]],
     *,
     pr_number: int,
+    pr_review: bool = False,
     diff_bytes: int | None = None,
     prompt_bytes_by_seat: dict[str, int] | None = None,
 ) -> tuple[review_team.Constitution | None, dict[str, Any], str | None]:
@@ -1594,6 +1595,7 @@ def constitute_with_substitution(
                 writer_family,
                 registry,
                 pr_number=pr_number,
+                pr_review=pr_review,
                 outage_families=outage_families,
                 route_blocked_families=route_blocked_families,
             )
@@ -1605,6 +1607,7 @@ def constitute_with_substitution(
             writer_family,
             registry,
             pr_number=pr_number,
+            pr_review=pr_review,
             outage_families=outage_families,
             route_blocked_families=route_blocked_families,
             available_families=[f for f in roster if f not in excluded_for_capacity],
@@ -1627,7 +1630,7 @@ def constitute_with_substitution(
     substitution["substitute_families_seated"] = sorted(
         seated & review_team.substitute_families(registry)
     )
-    if baseline is not None:
+    if baseline is not None and review_team.TWO_FAMILY_UNANIMOUS not in constitution.notes:
         baseline_ids = {seat.id for seat in baseline.seats}
         current_ids = {seat.id for seat in constitution.seats}
         removed = [seat.id for seat in baseline.seats if seat.id not in current_ids]
@@ -1657,6 +1660,7 @@ def append_degraded_merge_record(
     ledger_path: Path | None = None,
     outage_state_path: Path | None = None,
     outage_witness: dict[str, str] | None = None,
+    degraded_rule: str | None = None,
 ) -> None:
     """Record a degraded accept once per task/PR/head under a file lock."""
 
@@ -1674,6 +1678,8 @@ def append_degraded_merge_record(
             if family in outage_witness
         },
     }
+    if degraded_rule:
+        ledger_record["degraded_rule"] = degraded_rule
     ledger_key = (task_id, pr_number, head_sha)
 
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3132,6 +3138,8 @@ def render_dossier_markdown(dossier: dict[str, Any]) -> str:
         f"{dossier['quorum_required']} required",
         "",
     ]
+    if review_team.TWO_FAMILY_UNANIMOUS in dossier.get("constitution_notes", []):
+        lines.extend(["**Degraded: two-family unanimous** (size/route exclusions).", ""])
     if dossier["escalations"]:
         lines.append("### Escalations (cross-family splits and criticals first)")
         for esc in dossier["escalations"]:
@@ -3887,19 +3895,23 @@ def auto_wake(
     wake_dir: Path,
     send_runner: Any,
 ) -> Path:
-    """BLOCK/critical fires the authoring lane's re-dispatch with the findings
-    payload verbatim (you-own-your-PR, automated). The payload file is always
-    written; the lane send is best-effort and loud on failure."""
+    """Surface findings or a typed capacity refusal through the existing lane wake.
+
+    Update the payload on repeat observations, but notify once per task/head.
+    The lane send is best-effort and loud on failure.
+    """
 
     task_id = dossier["task_id"]
     sha8 = _head_short(str(dossier["head_sha"]))
     subject = _review_subject(dossier)
+    refusal = dossier.get("status") == "prompt_capacity_exceeded"
+    verdict = dossier.get("review_team_verdict", "prompt_capacity_exceeded")
     findings = [
         {"reviewer": r["id"], "family": r["family"], **f}
-        for r in dossier["reviewers"]
+        for r in dossier.get("reviewers", [])
         for f in r.get("findings") or []
     ]
-    if dossier["review_team_verdict"] == "no-quorum":
+    if verdict == "no-quorum":
         next_action = (
             "No quorum was reached. Re-run the review team after fixing reviewer availability "
             "or command configuration; do not treat this as author rejection.\n"
@@ -3911,11 +3923,12 @@ def auto_wake(
         )
     payload = (
         f"# Review-team findings — {task_id} ({subject} @ {sha8})\n\n"
-        f"verdict: {dossier['review_team_verdict']}\n\n"
+        f"verdict: {verdict}\n\n"
         + render_untrusted_block(
             "Review-team findings payload",
             yaml.safe_dump(
-                {"escalations": dossier["escalations"], "findings": findings}, sort_keys=False
+                {"escalations": dossier.get("escalations", []), "findings": findings},
+                sort_keys=False,
             ),
         )
         + "\n"
@@ -3924,6 +3937,26 @@ def auto_wake(
     wake_dir.mkdir(parents=True, exist_ok=True)
     wake_path = wake_dir / f"{task_id}-{sha8}.md"
     already_exists = wake_path.exists()
+    if refusal:
+        previous = (
+            wake_path.read_text(encoding="utf-8")
+            if already_exists
+            else (
+                "# Review dispatch capacity refusal\n\nNo reviewer ran. "
+                "Reduce the review subject or restore an admitted fitting route.\n"
+            )
+        )
+        if already_exists and review_team._note_frontmatter(wake_path):
+            previous = previous.split("\n---", 1)[1].lstrip("\n")
+        payload = (
+            "---\n"
+            + yaml.safe_dump(
+                {k: dossier[k] for k in ("task_id", "pr", "head_sha", "status", "capacity_error")},
+                sort_keys=False,
+            )
+            + "---\n\n"
+            + previous
+        )
     wake_path.write_text(payload, encoding="utf-8")
     if already_exists:
         LOG.info("auto-wake payload already existed, not resending: %s", wake_path)
@@ -3939,8 +3972,7 @@ def auto_wake(
             "--session",
             send_session,
             "--",
-            f"Review-team {dossier['review_team_verdict']} on {subject} "
-            f"({task_id}): resolve findings at {wake_path}",
+            f"Review-team {verdict} on {subject} ({task_id}): read the result at {wake_path}",
         ]
         try:
             send_runner(cmd)
@@ -4246,6 +4278,7 @@ def review_pr(
         inputs,
         effective_route_blocked_families,
         pr_number=pr_number,
+        pr_review=True,
     )
     if constitution is None:
         return {
@@ -4463,6 +4496,7 @@ def _apply_review(
             inputs,
             effective_route_blocked_families,
             pr_number=pr_number,
+            pr_review=True,
             diff_bytes=len(pr_diff.encode("utf-8")),
             prompt_bytes_by_seat={
                 seat_id: len(prompt.encode("utf-8"))
@@ -4478,7 +4512,28 @@ def _apply_review(
         }
     plan["family_substitution"] = substitution
     if constitution is None:
+        LOG.warning(
+            "PR #%d head=%s prompt_capacity_exceeded: %s",
+            pr_number,
+            pr_info.head_sha,
+            capacity_error,
+        )
+        for _, fm, task_id in keyed_matches:
+            auto_wake(
+                fm,
+                registry,
+                {
+                    "status": "prompt_capacity_exceeded",
+                    "pr": pr_number,
+                    "task_id": task_id,
+                    "head_sha": pr_info.head_sha,
+                    "capacity_error": capacity_error,
+                },
+                wake_dir=wake_dir,
+                send_runner=send_runner,
+            )
         return {
+            "head_sha": pr_info.head_sha,
             "status": "prompt_capacity_exceeded",
             "pr": pr_number,
             "reason": capacity_error,
@@ -4625,17 +4680,22 @@ def _apply_review(
                 )
             else:
                 dossier["no_quorum_cause"] = "verdict split below quorum"
-        if dossier["review_team_verdict"] == review_team.QUORUM_ACCEPT and dossier.get(
-            "degraded_family_outage"
+        if dossier["review_team_verdict"] == review_team.QUORUM_ACCEPT and (
+            dossier.get("degraded_family_outage")
+            or review_team.TWO_FAMILY_UNANIMOUS in dossier.get("constitution_notes", [])
         ):
-            # the degraded-merges ledger: every accept earned under an outage
-            # is enumerable for post-recovery re-review (postmortem
-            # remediation; the degradation rule's receipt half)
+            # Existing ledger: enumerate outage and unanimous-two degraded accepts
+            # for re-review after recovery.
             append_degraded_merge_record(
                 task_id=target_task_id,
                 pr_number=pr_number,
                 head_sha=pr_info.head_sha,
                 degraded_families=list(dossier["degraded_family_outage"]),
+                degraded_rule=(
+                    "two_family_unanimous"
+                    if review_team.TWO_FAMILY_UNANIMOUS in dossier.get("constitution_notes", [])
+                    else None
+                ),
                 now_iso=now_iso,
                 outage_witness=outage_witness,
             )
@@ -4959,7 +5019,24 @@ def review_artifact(
     if constitution is None:
         plan["outage_families"] = sorted(inputs.outage_families)
         plan["constitution_error"] = constitution_error
-        return {"status": "constitution_blocked", "plan": plan}
+        if not apply:
+            return {"status": "constitution_blocked", "plan": plan}
+        refusal = {
+            "status": "prompt_capacity_exceeded",
+            "pr": None,
+            "task_id": task_id,
+            "head_sha": head_sha,
+            "capacity_error": constitution_error,
+            "artifact_review": {"manifest": manifest},
+        }
+        LOG.warning(
+            "artifact %s head=%s prompt_capacity_exceeded: %s",
+            task_id,
+            head_sha,
+            constitution_error,
+        )
+        auto_wake(frontmatter, registry, refusal, wake_dir=wake_dir, send_runner=send_runner)
+        return {**refusal, "reason": constitution_error, "plan": plan}
     plan["quorum_required"] = constitution.quorum_required
     plan["seats"] = [{"id": seat.id, "family": seat.family} for seat in constitution.seats]
     plan["constitution_notes"] = list(constitution.notes)

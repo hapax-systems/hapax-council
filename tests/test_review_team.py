@@ -5398,3 +5398,177 @@ class TestDispatcherRepoThreading:
             tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
         )
         assert [fm["task_id"] for _, fm in found] == ["discovery"]
+
+
+class TestTwoFamilyUnanimous:
+    marker = "degraded_to:two_family_unanimous"
+
+    @pytest.mark.parametrize("cause", ["size", "route"])
+    def test_two_fitting_families_require_unanimity(self, cause):
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        excluded = {r["family"] for r in rt.review_family_entries(reg)} - {"codex", "muse"}
+        team = rt.constitute_team(
+            "t1_critical",
+            "codex",
+            reg,
+            pr_number=99,
+            pr_review=True,
+            available_families=["codex", "muse"],
+            size_excluded_families=excluded if cause == "size" else set(),
+            route_blocked_families={f: ("route_state_blocked",) for f in excluded}
+            if cause == "route"
+            else {},
+        )
+        assert {s.family for s in team.seats} == {"codex", "muse"}
+        assert team.quorum_required == 2
+        assert self.marker in team.notes
+
+    @pytest.mark.parametrize("cause", ["missing", "outage", "one"])
+    def test_other_absence_and_one_family_refuse(self, cause):
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        available = ["codex"] if cause == "one" else ["codex", "muse"]
+        excluded = {r["family"] for r in rt.review_family_entries(reg)} - set(available)
+        with pytest.raises(ValueError):
+            rt.constitute_team(
+                "t2_standard",
+                "codex",
+                reg,
+                pr_number=99,
+                pr_review=True,
+                available_families=available,
+                size_excluded_families=excluded if cause == "one" else excluded - {"claude"},
+                outage_families={"claude"} if cause == "outage" else set(),
+            )
+
+    def test_three_fitting_families_keep_normal_team(self):
+        rt = _load_review_team_module()
+        team = rt.constitute_team(
+            "t2_standard",
+            "codex",
+            rt.load_lens_registry(),
+            pr_number=99,
+            pr_review=True,
+            available_families=["codex", "muse", "local"],
+            size_excluded_families={"claude", "gemini", "glm", "vibe"},
+        )
+        assert len(team.seats) == 3 and self.marker not in team.notes
+
+    @pytest.mark.parametrize(
+        "second,critical,expected",
+        [
+            ("accept", False, "quorum-accept"),
+            ("block", False, "no-quorum"),
+            ("accept", True, "blocked"),
+            ("error", False, "no-quorum"),
+        ],
+    )
+    def test_dossier_votes_and_critical_veto(self, second, critical, expected):
+        rt = _load_review_team_module()
+        d = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", findings=[_critical()] if critical else []),
+                _review("muse-1", "muse", second),
+            ],
+            team_class="t1_critical",
+            constitution_notes=(self.marker,),
+        )
+        assert d["review_team_verdict"] == expected
+        assert d["quorum_required"] == 2
+
+    def test_admission_rechecks_capacity_and_retires_for_third_family(self):
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roster = {r["family"] for r in rt.review_family_entries(reg)}
+        excluded = roster - {"codex", "muse"}
+        sizes = {
+            f"{f}-1": rt.seat_diff_capacity(f"{f}-1", reg)["prompt_limit_bytes"]
+            + (1 if f in excluded else -1)
+            for f in roster
+        }
+        d = _synth(
+            rt,
+            [_review(f"{f}-1", f) for f in ("codex", "muse")],
+            team_class="t1_critical",
+            constitution_notes=(self.marker,)
+            + tuple(f"family_replaced_for_size:{f}" for f in sorted(excluded)),
+        )
+        d["family_substitution"] = {
+            "excluded_for_prompt": {
+                f: {"prompt_bytes": sizes[f"{f}-1"], "prompt_limit_bytes": sizes[f"{f}-1"] - 1}
+                for f in excluded
+            },
+            "prompt_bytes_by_seat": sizes,
+        }
+
+        def check():
+            return rt._dossier_validity_blockers(
+                d,
+                pr_head_sha="a" * 40,
+                pr_number=99,
+                registry=reg,
+                route_blocked_families={},
+                capacity_evidence_measurer=lambda *_: (1000, sizes),
+            )
+
+        assert check() == ()
+        sizes["local-1"] -= 1
+        assert check()  # a third family now fits: the old two-seat review cannot admit
+        sizes["local-1"] += 1
+        d["reviewers"][1]["verdict"] = "block"
+        assert "review_dossier_quorum_not_met:1/2" in check()
+        d["reviewers"][1]["verdict"] = "accept"
+        d["reviewers"][1]["findings"] = [_critical()]
+        assert "review_dossier_unresolved_critical:1" in check()
+
+    def test_refuted_block_is_not_unanimous_accept(self, monkeypatch):
+        rt = _load_review_team_module()
+        finding = _critical()
+        monkeypatch.setattr(rt, "_blocking_criticals", lambda *a, **kw: ([], [("muse-1", finding)]))
+        d = _synth(
+            rt,
+            [_review("codex-1", "codex"), _review("muse-1", "muse", "block", findings=[finding])],
+            team_class="t1_critical",
+            constitution_notes=(self.marker,),
+        )
+        assert d["review_team_verdict"] == "no-quorum"
+
+    def test_route_recovery_retires_the_rule_at_admission(self):
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roster = {r["family"] for r in rt.review_family_entries(reg)}
+        routes = rt.review_family_route_ids(reg)
+        blocked = {
+            f: (f"{routes.get(f, 'unknown')}:route_state_blocked",)
+            for f in roster - {"codex", "muse"}
+        }
+        team = rt.constitute_team(
+            "t1_critical",
+            "codex",
+            reg,
+            pr_number=99,
+            pr_review=True,
+            route_blocked_families=blocked,
+        )
+        d = _synth(
+            rt,
+            [_review(f"{f}-1", f) for f in ("codex", "muse")],
+            team_class="t1_critical",
+            constitution_notes=team.notes,
+        )
+
+        def check():
+            return rt._dossier_validity_blockers(
+                d,
+                pr_head_sha="a" * 40,
+                pr_number=99,
+                registry=reg,
+                route_blocked_families=blocked,
+                capacity_evidence_measurer=lambda *_: (1000, {f"{f}-1": 1000 for f in roster}),
+            )
+
+        assert check() == ()
+        del blocked["local"]
+        assert "review_dossier_two_family_rule_ineligible" in check()
