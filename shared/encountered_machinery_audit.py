@@ -147,6 +147,17 @@ def _normalize(raw: str | None, vocab: tuple[str, ...]) -> str | None:
     return None
 
 
+class _SourceLoader(yaml.SafeLoader):
+    """Frozen bindings cannot use YAML's implicit last-key-wins resolution."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        self.flatten_mapping(node)
+        keys = [self.construct_object(key, deep=True) for key, _ in node.value]
+        if any(not isinstance(key, str) for key in keys) or len(keys) != len(set(keys)):
+            raise yaml.YAMLError("ambiguous source mapping; next action: use unique string keys")
+        return super().construct_mapping(node, deep=deep)
+
+
 def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---\n"):
         return {}, text
@@ -154,8 +165,9 @@ def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if end < 0:
         return {}, text
     try:
-        data = yaml.safe_load(text[4:end]) or {}
-    except yaml.YAMLError:
+        data = yaml.load(text[4:end], Loader=_SourceLoader) or {}
+    except (yaml.YAMLError, ValueError, OverflowError):
+        # SafeLoader constructs timestamps too; bad calendar/offset fields are unknown.
         data = {}
     return (data if isinstance(data, dict) else {}), text[end + 4 :].lstrip("\n")
 
@@ -210,19 +222,19 @@ def _walls_of(cell: str | None) -> tuple[str, ...]:
 
 
 def _date_of(text: str, context: datetime | None) -> datetime | None:
-    m = _FULL_DATE_RE.search(text)
-    if m:
-        try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=UTC)
-        except ValueError:
-            return context
-    m = _ENCOUNTERED_RE.search(text)
-    if m and context is not None:
-        try:
-            return datetime(context.year, int(m.group(1)), int(m.group(2)), tzinfo=UTC)
-        except ValueError:
-            return context
-    return context
+    try:
+        dates = {datetime(*(int(x) for x in m), tzinfo=UTC) for m in _FULL_DATE_RE.findall(text)}
+        if len(dates) > 1:
+            return None
+        basis = next(iter(dates)) if dates else context
+        if basis is not None:
+            dates.update(
+                datetime(basis.year, int(month), int(day), tzinfo=UTC)
+                for month, day in _ENCOUNTERED_RE.findall(text)
+            )
+        return next(iter(dates)) if len(dates) == 1 else None if dates else context
+    except ValueError:
+        return None
 
 
 def parse_catalogue(text: str) -> Catalogue:
@@ -277,6 +289,8 @@ def _table_record(
     cells: list[str], header: list[str], lineno: int, context: datetime | None
 ) -> _Record | None:
     first_head = header[0]
+    if len(header) != len(set(header)):
+        raise LedgerError("ambiguous catalogue columns; next action: use unique headers")
     col = {name: i for i, name in enumerate(header)}
     first = cells[0]
     status_i = col.get("status")
@@ -418,7 +432,10 @@ class LedgerClass:
 
 def parse_ledger(text: str) -> list[LedgerClass]:
     lines = text.splitlines()
-    start = next((i for i, ln in enumerate(lines) if ln.startswith("## Class ledger")), None)
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("## Class ledger")]
+    if len(starts) > 1:
+        raise LedgerError("ambiguous class ledger; next action: retain one authoritative section")
+    start = starts[0] if starts else None
     if start is None:
         raise LedgerError(
             "no '## Class ledger' section; next action: restore the ledger table in "
@@ -431,14 +448,14 @@ def parse_ledger(text: str) -> list[LedgerClass]:
         if lines[i].startswith("## "):
             break
         if not ln.startswith("|"):
-            if header is not None and classes:
-                break
             continue
         if _is_separator(ln):
             continue
         cells = split_cells(ln)
         if header is None:
             header = [c.lower() for c in cells]
+            if len(header) != len(set(header)):
+                raise LedgerError("ambiguous ledger columns; next action: use unique headers")
             if not {"class", "members", "disposition", "row"} <= set(header):
                 raise LedgerError(
                     f"ledger header {header} lacks class/members/disposition/row; next action: "
@@ -483,7 +500,14 @@ def parse_ledger(text: str) -> list[LedgerClass]:
         )
     if not classes:
         raise LedgerError("class ledger table is empty; next action: restore its rows")
+    _validate_ledger(classes)
     return classes
+
+
+def _validate_ledger(ledger: list[LedgerClass]) -> None:
+    for ids in ([c.key for c in ledger], [mid for c in ledger for mid, _ in c.members]):
+        if len(ids) != len(set(ids)):
+            raise LedgerError("ambiguous ledger ids; next action: remove duplicates")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -628,15 +652,13 @@ def evaluate(
     The wall catalogue (row ``wall-catalogue-and-judgment-basis-20260925``) supplies it; until
     then it is None and T9 is not evaluated. Walls are never invented here."""
     ledger = list(ledger)
+    _validate_ledger(ledger)
     flags: list[Flag] = [Flag("T7", s, d) for s, d in catalogue.hygiene]
     member_class: dict[str, tuple[str, int]] = {}
     for c in ledger:
         for bad in c.bad_members:
             flags.append(Flag("T7", c.key, f"unparseable ledger member {bad!r}"))
         for mid, weight in c.members:
-            if mid in member_class:
-                flags.append(Flag("T7", mid, f"in two classes: {member_class[mid][0]} and {c.key}"))
-                continue
             member_class[mid] = (c.key, weight)
             if mid not in catalogue.entries:
                 flags.append(Flag("T7", mid, f"ledger member not in catalogue: class {c.key}"))
@@ -1144,3 +1166,572 @@ def render_flag_drop(
         "where you agree."
     )
     return "\n".join(lines) + "\n"
+
+
+# Stage I is a read-only fold of frozen source/observation records. It does not
+# issue coordination events, attest authority, promote a method, or send work.
+DELIVERY_CLASS = "delivery-and-transcript-carriers"
+DELIVERY_WINDOW = timedelta(hours=24)
+DELIVERY_SOURCE_MAX_BYTES = 262144
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_DELIVERY_TASK_ID = r"[a-z0-9]+(?:-[a-z0-9]+)*-20\d{6}"
+_DELIVERY_COMMAND = re.compile(
+    r"\bcc-(?:claim\s+(?:--(?:return-claim|release-claim-residue)\s+)?|close\s+(?:--return-claim\s+)?)"
+    rf"{_DELIVERY_TASK_ID}(?![\w-])"
+)
+_DELIVERY_LANE = r"(?:claude/|codex/)?(cx-[\w-]+|kimi-[\w-]+|dev\d+)"
+# The commission unit: one GO clause naming its recipient (Quack's design read, 10-17).
+# A RESULT ("TURN 52 RESULT: …") cannot match: the turn must be followed by ": <recipient>, GO".
+_DELIVERY_GO_CLAUSE = re.compile(
+    r"(\*\*)?\b(?:CLAIM|CLOSE)\s+TURN\s*\d+(?:\s*\([^()\n]*\))?:\s*"
+    rf"{_DELIVERY_LANE}(?:\s*\([^()\n]*\))?,\s*GO\b"
+)
+# Anything that looks like a GO but is not the strict clause is unclassified, never scored.
+_DELIVERY_GO_LOOSE = re.compile(r"\b(?:CLAIM|CLOSE)\s+TURN\s*\d+[^\n]*\bGO\b")
+_DELIVERY_LIST_ITEM = re.compile(r"\s{0,3}(\d+)[.)]\s+(.*)")
+_DELIVERY_COMMISSION_VERBS = {
+    "claim": "cc-claim {}",
+    "close": "cc-close {}",
+    "release-claim-residue": "cc-claim --release-claim-residue {}",
+}
+
+
+def _delivery_commission_acts(raw: Any, recipient: str) -> list[str] | None:
+    """The typed frontmatter commission, all or nothing; None when any entry is malformed.
+
+    An empty list is the desk's typed declaration that the turn commissions no act.
+    """
+    if not isinstance(raw, list):
+        return None
+    acts: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, Mapping) or set(entry) != {"recipient", "verb", "task_id"}:
+            return None
+        who, verb, task = entry["recipient"], entry["verb"], entry["task_id"]
+        lane = re.fullmatch(_DELIVERY_LANE, who) if isinstance(who, str) else None
+        if (
+            lane is None
+            or lane.group(1) != recipient
+            or not isinstance(verb, str)  # An unhashable verb must fail locally, not raise.
+            or verb not in _DELIVERY_COMMISSION_VERBS
+            or not isinstance(task, str)
+            or not re.fullmatch(_DELIVERY_TASK_ID, task)
+        ):
+            return None
+        act = _DELIVERY_COMMISSION_VERBS[verb].format(task)
+        if act in acts:
+            return None  # A repeated act is ambiguous; never collapse it silently.
+        acts.append(act)
+    return acts
+
+
+def _delivery_clause_acts(body: str, recipient: str) -> tuple[list[str], str | None]:
+    """Legacy strict clause reader: the clause's inline command, or the list right after it."""
+    clauses = list(_DELIVERY_GO_CLAUSE.finditer(body))
+    if not clauses:
+        return [], "go_clause_not_strict" if _DELIVERY_GO_LOOSE.search(body) else None
+    if len(clauses) > 1:
+        return [], "multiple_go_clauses"
+    clause = clauses[0]
+    if clause.group(2) != recipient:
+        return [], "recipient_mismatch"
+    line_end = body.find("\n", clause.end())
+    line_end = len(body) if line_end < 0 else line_end
+    extent = line_end
+    if clause.group(1):  # A bold clause ends at its closing marker.
+        close = body.find("**", clause.end(), line_end)
+        extent = line_end if close < 0 else close
+    inline = list(dict.fromkeys(_DELIVERY_COMMAND.findall(body[clause.end() : extent])))
+    if len(inline) > 1:
+        return [], "multiple_inline_commands"
+    if inline:
+        return inline, None
+    acts: list[str] = []
+    expected, item = 1, None
+    for line in body[line_end + 1 :].split("\n"):
+        numbered = _DELIVERY_LIST_ITEM.fullmatch(line)
+        if numbered and int(numbered.group(1)) == expected:
+            if item is not None and (found := _DELIVERY_COMMAND.search(item)):
+                acts.append(found.group(0))
+            expected, item = expected + 1, numbered.group(2)
+        elif not line.strip():
+            continue  # Blank lines may precede or separate list items.
+        elif item is not None and line[:1].isspace():
+            item += "\n" + line  # An indented continuation of the current item.
+        else:
+            break  # The list (or its absence) ends at the first other line.
+    if item is not None and (found := _DELIVERY_COMMAND.search(item)):
+        acts.append(found.group(0))
+    acts = list(dict.fromkeys(acts))
+    return (acts, None) if acts else ([], "go_clause_without_commands")
+
+
+def _delivery_time(value: Any) -> datetime | None:
+    try:
+        parsed = (
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if isinstance(value, str)
+            else value
+        )
+        if isinstance(parsed, datetime) and parsed.tzinfo:
+            return parsed.astimezone(UTC)
+    except (ValueError, OverflowError):
+        pass  # A representable local timestamp can still overflow when converted to UTC.
+    return None
+
+
+def parse_delivery_source(
+    text: str,
+    *,
+    source_ref: str,
+    bounds: Mapping[str, Any],
+    unclassified: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Extract only the commissioned acts, never infer action from a RESULT or prose.
+
+    The commission unit is the frontmatter ``commission:`` list when present (all or
+    nothing; prose is then never read for acts). A legacy source falls back to one
+    strict GO clause naming the frontmatter recipient: its single inline command, or
+    the ordered list immediately after it. Anything not fully parsed is recorded as
+    unclassified coverage and never scored. A ``--release-claim-residue`` act is
+    explicit: held and excluded as ``prerequisite_repair``.
+
+    Authority expiry is separate from frozen role/handoff bounds. Only a source's
+    explicit predicate declares success; missing/unsupported stays UNKNOWN.
+    """
+
+    def skip(reason: str, **extra: Any) -> list[dict[str, Any]]:
+        if unclassified is not None:
+            unclassified.append(
+                {
+                    "source_ref": source_ref,
+                    "classification": "unclassified",
+                    "reason": reason,
+                    **extra,
+                }
+            )
+        return []
+
+    data = text.encode()
+    if len(data) > DELIVERY_SOURCE_MAX_BYTES:
+        return skip("source_byte_limit", bytes=len(data))
+    front, body = split_frontmatter(text)
+    target = re.fullmatch(
+        rf"{_DELIVERY_LANE}(?:\s+\([^()\n]*\))?\s*",
+        str(front.get("to", "")),
+    )
+    if "commission" in front:
+        commission = _delivery_commission_acts(
+            front["commission"], target.group(1) if target else ""
+        )
+        if commission is None:
+            return skip("commission_invalid")
+        if not commission:
+            return []  # Typed: this turn commissions no act.
+        acts = commission
+    else:
+        acts, reason = _delivery_clause_acts(body, target.group(1) if target else "")
+        if reason == "recipient_mismatch" and target is None:
+            reason = "recipient_unbound" if front else "frontmatter_unparsed"
+        if reason:
+            return skip(reason)
+        if not acts:
+            return []  # Not a commission source at all (no GO clause or commission).
+    clock_text = str(front.get("created_at", ""))
+    clock_match = re.match(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))", clock_text
+    )
+    assigned = _delivery_time(front.get("created_at"))
+    if assigned is None and clock_match:
+        assigned = _delivery_time(clock_match.group(1))
+    filename = re.match(r"(\d{8}T\d{6}Z)", source_ref.rsplit("/", 1)[-1])
+    try:
+        filename_time = (
+            datetime.strptime(filename.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+            if filename
+            else None
+        )
+    except (ValueError, OverflowError):
+        # One malformed source remains unclassified; keep folding others.
+        return skip("invalid_filename_clock")
+    clocks = re.findall(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})", clock_text)
+    exact_clock = (
+        len(set(clocks)) <= 1
+        and "estimate" not in clock_text.lower()
+        and (not filename_time or filename_time == assigned)
+    )
+    if assigned is None:
+        assigned = filename_time
+        exact_clock = False
+    if target is None:
+        return skip("recipient_unbound")
+    if assigned is None:
+        return skip("assignment_time_unbound")
+    recipient = target.group(1)
+    bound = bounds.get(recipient, {})
+    bound = bound if isinstance(bound, Mapping) else {}
+    expiry = None
+    windows = re.findall(
+        r"\bstart\s+within\s+(\S+)\s+min(?:ute)?s?\b"
+        r"|(?<!\S)(\S+)[ -]min(?:ute)?s?\s+(?:start\s+)?window\b",
+        body,
+        re.I,
+    )
+    try:
+        minutes = {int(a or b) for a, b in windows}
+        if len(minutes) == 1 and (duration := minutes.pop()) > 0:
+            expiry = (assigned + timedelta(minutes=duration)).isoformat()
+    except (ValueError, OverflowError):
+        pass  # Missing, conflicting or unparseable authority bounds stay UNKNOWN.
+    # A residue release repairs a prerequisite; it is commissioned explicitly but never
+    # scored as the turn's act (held before assignment, so the fold EXCLUDES it).
+    residue_hold = {
+        "eligibility": "hold",
+        "hold_reason": "prerequisite_repair",
+        "hold_recorded_at": assigned.isoformat(),
+    }
+    return [
+        {
+            "source_ref": source_ref,
+            "source_sha256": hashlib.sha256(data).hexdigest(),
+            "recipient": recipient,
+            "required_act": command,
+            # GO commissions a command, but does not say which outcome satisfies it.
+            # Preserve the source's explicit predicate; absent/unsupported stays UNKNOWN.
+            "predicate": front.get("predicate"),
+            "assigned_at": assigned.isoformat(),
+            "assignment_time_exact": exact_clock,
+            "authority_expires_at": expiry,
+            "response_seconds": bound.get("response_seconds"),
+            "handoff_seconds": bound.get("handoff_seconds"),
+            "bounds_frozen_at": bound.get("frozen_at"),
+            "bounds_source_sha256": bound.get("source_sha256"),
+            "clock_start": bound.get("clock_start"),
+            "eligibility": "eligible",
+            **(residue_hold if "--release-claim-residue" in command else {}),
+        }
+        for command in acts
+    ]
+
+
+def _same_frozen_value(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_frozen_value(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(
+            _same_frozen_value(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return left == right
+
+
+def evaluate_delivery(
+    obligations: Iterable[Mapping[str, Any]],
+    observations: Iterable[Mapping[str, Any]],
+    *,
+    now: datetime,
+    aliases: Mapping[str, str],
+    coverage: Mapping[str, bool],
+    observer: Mapping[str, str],
+) -> dict[str, Any]:
+    """Evaluate the rolling24h source population, with two independent clocks.
+
+    The I/O boundary verifies evidence bytes and binds the independent observer;
+    this pure fold checks their exact subject/identity and time. Missing bounds,
+    incomplete coverage, conflicting aliases/records or unbound identity remain
+    UNOBSERVED. An ACK or an author's RESULT text is never an action receipt.
+    """
+
+    def canonical(role: Any) -> str:
+        role = str(role or "")
+        seen: set[str] = set()
+        while role in aliases:
+            if role in seen:
+                return ""  # invalid alias cycle cannot silently merge recipients
+            seen.add(role)
+            role = aliases[role]
+        return role
+
+    def key(record: Mapping[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(record.get("source_sha256", "")),
+            canonical(record.get("recipient")),
+            str(record.get("required_act", "")),
+        )
+
+    clock = _delivery_time(now)
+    try:
+        window_start = clock - DELIVERY_WINDOW if clock is not None else None
+    except OverflowError:
+        window_start = None
+    population: dict[tuple[str, str, str], dict[str, Any]] = {}
+    conflicts: set[tuple[str, str, str]] = set()
+    intersects: set[tuple[str, str, str]] = set()
+    for raw in obligations:
+        k = key(raw)
+        assigned = _delivery_time(raw.get("assigned_at"))
+        if (
+            assigned is None
+            or window_start is None
+            or clock is None
+            or window_start <= assigned <= clock
+        ):
+            intersects.add(k)
+        item = dict(raw, recipient=k[1])
+        # Copy paths differ, but all other frozen predicate fields must agree.
+        if k in population:
+            old = {a: b for a, b in population[k].items() if a != "source_ref"}
+            new = {a: b for a, b in item.items() if a != "source_ref"}
+            if not _same_frozen_value(old, new):
+                conflicts.add(k)
+        else:
+            population[k] = item
+
+    independent = all(
+        observer.get(k)
+        for k in (
+            "role",
+            "native_execution_id",
+            "route",
+            "author_role",
+            "author_native_execution_id",
+        )
+    )
+    observer_role = canonical(observer.get("role"))
+    author_role = canonical(observer.get("author_role"))
+    independent = (
+        independent and bool(observer_role and author_role) and observer_role != author_role
+    )
+    independent = independent and observer.get("native_execution_id") != observer.get(
+        "author_native_execution_id"
+    )
+    evidence = list(observations)
+    versions: dict[str, dict[str, Any]] = {}
+    conflicted_events: set[str] = set()
+    for event in evidence:
+        event_id = event.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            continue
+        # Identity conflicts are checked before any subject/binding/time filtering.
+        version = {name: value for name, value in event.items() if name != "source_ref"}
+        version["recipient"] = canonical(event.get("recipient"))
+        if event_id in versions and not _same_frozen_value(versions[event_id], version):
+            conflicted_events.add(event_id)
+        else:
+            versions[event_id] = version
+    outcomes: list[dict[str, Any]] = []
+    for k, obligation in population.items():
+        if k not in intersects:
+            continue
+        assigned = _delivery_time(obligation.get("assigned_at"))
+        oid = hashlib.sha256("\0".join(k).encode()).hexdigest()
+        outcome: dict[str, Any] = {
+            "obligation_id": oid,
+            "recipient": k[1],
+            "source_ref": obligation.get("source_ref"),
+            "source_sha256": k[0],
+            "required_act": k[2],
+            "status": "UNOBSERVED",
+            "cause": "missing_binding_or_coverage",
+            "delivery_missed": False,
+            "response_missed": False,
+            "late_performed": False,
+            "authority_regression": False,
+            "observation_event_ids": [],
+        }
+        outcomes.append(outcome)
+        if clock is None or window_start is None:
+            outcome["cause"] = "unrepresentable_observation_window"
+            continue
+        if k in conflicts:
+            outcome["cause"] = "conflicting_obligation_records"
+            continue
+        hold_at = _delivery_time(obligation.get("hold_recorded_at"))
+        if (
+            obligation.get("eligibility") == "hold"
+            and assigned
+            and hold_at
+            and hold_at <= assigned
+            and obligation.get("hold_reason")
+        ):
+            outcome.update(status="EXCLUDED", cause=obligation["hold_reason"])
+            continue
+        frozen = _delivery_time(obligation.get("bounds_frozen_at"))
+        expiry = _delivery_time(obligation.get("authority_expires_at"))
+        response = obligation.get("response_seconds")
+        handoff = obligation.get("handoff_seconds")
+        valid_bounds = all(type(x) is int and x > 0 for x in (response, handoff))
+        if (
+            not independent
+            or not assigned
+            or not frozen
+            or not expiry
+            or frozen > assigned
+            or not _SHA256.fullmatch(k[0])
+            or not k[1]
+            or not k[2]
+            or not _SHA256.fullmatch(str(obligation.get("bounds_source_sha256", "")))
+            or obligation.get("assignment_time_exact", True) is not True
+            or not valid_bounds
+            or obligation.get("eligibility") != "eligible"
+            or not isinstance(obligation.get("predicate"), str)
+            or obligation.get("predicate")
+            not in {"command_attempt", "admitted_claim", "source_readback"}
+            or not isinstance(obligation.get("clock_start"), str)
+            or obligation.get("clock_start") not in {"native_submission", "mailbox_arrival"}
+            or not all(coverage.get(x) is True for x in ("source", "transport", "outcome"))
+        ):
+            continue
+        relevant = [
+            e
+            for e in evidence
+            if key(e) == k
+            and e.get("observer_role") == observer["role"]
+            and e.get("native_execution_id") == observer["native_execution_id"]
+            and e.get("route") == observer["route"]
+            and _SHA256.fullmatch(str(e.get("evidence_sha256", "")))
+        ]
+        if any(
+            not isinstance(e.get(field), str) or not e.get(field)
+            for e in relevant
+            for field in (
+                ("event_id", "kind", "result", "verification")
+                if e.get("kind") == "action"
+                else ("event_id", "kind")
+            )
+        ):
+            outcome["cause"] = "invalid_observation_type"
+            continue
+        # A record cannot testify to an event later than its own observation.
+        # Do not silently discard a malformed matching event beside a success.
+        if any(
+            (at := _delivery_time(e.get("timestamp"))) is None
+            or (observed := _delivery_time(e.get("observed_at"))) is None
+            or not assigned <= at <= observed <= clock
+            for e in relevant
+        ):
+            outcome["cause"] = "invalid_observation_time"
+            continue
+        conflicts_here = conflicted_events.intersection(e["event_id"] for e in relevant)
+        if conflicts_here:
+            outcome.update(
+                cause="conflicting_observation_records",
+                observation_event_ids=sorted(conflicts_here),
+            )
+            continue
+        start_kind = obligation["clock_start"]
+        starts = [
+            at
+            for e in relevant
+            if e.get("kind") == start_kind and (at := _delivery_time(e["timestamp"])) is not None
+        ]
+        start = min(starts) if starts else None
+        try:
+            handoff_due = assigned + timedelta(seconds=handoff)
+            # Missing submission cannot hide an unrepresentable response bound.
+            response_due = (start or assigned) + timedelta(seconds=response)
+        except OverflowError:
+            outcome["cause"] = "unrepresentable_deadline"
+            continue
+        if clock < handoff_due:
+            outcome["cause"] = "handoff_window_open"
+            continue
+        delivery_missed = start is None or start > handoff_due
+        outcome["delivery_missed"] = delivery_missed
+        if start is None:
+            outcome.update(
+                status="MISSED",
+                cause="no_submission" if start_kind == "native_submission" else "no_receipt",
+            )
+            continue
+        predicate = obligation["predicate"]
+        actions = []
+        for event in relevant:
+            if event.get("kind") != "action":
+                continue
+            at = _delivery_time(event["timestamp"])
+            if at < start:
+                continue
+            verification = (
+                "source_readback" if predicate == "source_readback" else "command_receipt"
+            )
+            allowed_results = (
+                {"admitted", "authorized_refusal"}
+                if predicate == "command_attempt"
+                else {"admitted"}
+            )
+            if predicate == "source_readback":
+                allowed_results = {"matched"}
+            if (
+                event.get("verification") != verification
+                or event.get("result") not in allowed_results
+            ):
+                continue
+            if expiry and at > expiry and event.get("result") != "authorized_refusal":
+                outcome["authority_regression"] = True
+                # Expired authority rejects success, not evidence that the act occurred.
+            actions.append((at, event))
+        actions.sort(key=lambda pair: pair[0])
+        action = actions[0] if actions else None
+        if action and len({e["result"] for at, e in actions if at == action[0]}) > 1:
+            outcome["cause"] = "conflicting_action_results"
+            continue
+        if not delivery_missed and not action and clock < response_due:
+            outcome["cause"] = "response_window_open"
+            continue
+        response_missed = (action is None and clock >= response_due) or bool(
+            action and action[0] > response_due
+        )
+        missed = delivery_missed or response_missed or outcome["authority_regression"]
+        outcome.update(
+            status="MISSED" if missed else "TIMELY",
+            cause=(
+                "late_handoff"
+                if delivery_missed
+                else "authority_expired"
+                if outcome["authority_regression"]
+                else "receipt_without_required_act"
+                if response_missed
+                else "timely_act"
+            ),
+            response_missed=response_missed,
+            late_performed=bool(missed and action),
+            handoff_lag_seconds=(start - assigned).total_seconds(),
+            action_lag_seconds=(action[0] - start).total_seconds() if action else None,
+            authorized_refusal=bool(action and action[1].get("result") == "authorized_refusal"),
+            observation_event_ids=sorted({e["event_id"] for e in relevant}),
+        )
+
+    eligible = [o for o in outcomes if o["status"] != "EXCLUDED"]
+    missed = [o for o in eligible if o["status"] == "MISSED"]
+    unknown = sum(o["status"] == "UNOBSERVED" for o in eligible)
+    n = len(eligible)
+    return {
+        "stage": "I",
+        "promotion_authorized": False,
+        "source_opportunities": len(outcomes),
+        "N": n,
+        "excluded": len(outcomes) - n,
+        "observable": n - unknown,
+        "unknown": unknown,
+        "missed": len(missed),
+        "timely": sum(o["status"] == "TIMELY" for o in eligible),
+        "delivery_missed": sum(o["delivery_missed"] for o in eligible),
+        "response_missed": sum(o["response_missed"] for o in eligible),
+        "late_performed": sum(o["late_performed"] for o in eligible),
+        "authority_regressions": sum(o["authority_regression"] for o in eligible),
+        "miss_rate_interval": [len(missed) / n, (len(missed) + unknown) / n] if n else None,
+        "interval_scope": "recognized source obligations only; unreadable/unclassified source population is additionally UNKNOWN",
+        "baseline_complete": bool(
+            n
+            and not unknown
+            and all(coverage.get(x) is True for x in ("source", "transport", "outcome"))
+        ),
+        "carry_required": len(missed) >= 2,
+        "missed_obligation_ids": [o["obligation_id"] for o in missed],
+        "coverage": dict(coverage),
+        "outcomes": outcomes,
+    }

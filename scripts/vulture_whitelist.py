@@ -5289,7 +5289,13 @@ _ = (
 # script.
 from shared.encountered_machinery_audit import Trend as _EmaTrend  # noqa: E402
 from shared.encountered_machinery_audit import (  # noqa: E402
+    evaluate_delivery as _ema_evaluate_delivery,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
     parse_catalogue as _ema_parse_catalogue,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    parse_delivery_source as _ema_parse_delivery_source,
 )
 from shared.encountered_machinery_audit import (  # noqa: E402
     parse_ledger as _ema_parse_ledger,
@@ -5309,6 +5315,8 @@ from shared.encountered_machinery_audit import (  # noqa: E402
 
 _ = (
     _EmaTrend.unobserved,
+    _ema_evaluate_delivery,
+    _ema_parse_delivery_source,
     _ema_parse_catalogue,
     _ema_parse_ledger,
     _ema_render_flag_drop,
