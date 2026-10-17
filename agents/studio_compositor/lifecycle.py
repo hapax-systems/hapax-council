@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import signal
@@ -168,6 +167,36 @@ def _hero_effect_target_for_prefx(compositor: Any) -> tuple[str, Any] | None:
     return None
 
 
+def apply_initial_recording_consent(compositor: Any, *, now: float | None = None) -> bool:
+    """Set the recording and HLS valves from the perception record at start.
+
+    The valves are built open, so this runs before the pipeline plays. Only a
+    fresh record that affirms ``persistence_allowed`` leaves them open; a
+    missing, stale, unreadable or malformed record closes them. Returns
+    whether recording is allowed.
+    """
+    from .models import RECORDING_BLOCKED_REMEDY
+    from .state import refresh_overlay_from_perception_file
+
+    overlay_state = compositor._overlay_state
+    refresh_overlay_from_perception_file(
+        overlay_state, PERCEPTION_STATE_PATH, now=time.time() if now is None else now
+    )
+    allowed, cause = overlay_state.recording_consent()
+    compositor._consent_recording_allowed = allowed
+    for valve in compositor._recording_valves.values():
+        valve.set_property("drop", not allowed)
+    if compositor._hls_valve is not None:
+        compositor._hls_valve.set_property("drop", not allowed)
+    if not allowed:
+        log.warning(
+            "Starting with recording BLOCKED (cause=%s; remedy: %s)",
+            cause,
+            RECORDING_BLOCKED_REMEDY,
+        )
+    return allowed
+
+
 def start_compositor(compositor: Any) -> None:
     """Build and start the pipeline."""
     from .fx_chain import fx_tick_callback
@@ -260,21 +289,7 @@ def start_compositor(compositor: Any) -> None:
     else:
         log.info("HeroPreFxEffect disabled: legacy hero-only path is explicit opt-in")
 
-    # Read initial consent state
-    try:
-        if PERCEPTION_STATE_PATH.exists():
-            raw = PERCEPTION_STATE_PATH.read_text()
-            initial = json.loads(raw)
-            if time.time() - initial.get("timestamp", 0) < 10:
-                if not initial.get("persistence_allowed", True):
-                    compositor._consent_recording_allowed = False
-                    for valve in compositor._recording_valves.values():
-                        valve.set_property("drop", True)
-                    if compositor._hls_valve is not None:
-                        compositor._hls_valve.set_property("drop", True)
-                    log.warning("Starting with recording BLOCKED (consent not available)")
-    except Exception:
-        log.debug("Failed to read initial consent state", exc_info=True)
+    apply_initial_recording_consent(compositor)
 
     bus = compositor.pipeline.get_bus()
     bus.add_signal_watch()

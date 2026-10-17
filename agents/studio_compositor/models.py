@@ -5,7 +5,15 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
+
+# A perception record older than this no longer grants recording consent.
+PERCEPTION_RECORD_MAX_AGE_S = 10.0
+# Logged with every recording refusal; names no person and no record value.
+RECORDING_BLOCKED_REMEDY = (
+    "restore the hapax-daimonion perception-state writer; recording resumes when "
+    "a fresh record affirms persistence_allowed"
+)
 
 
 class CameraV4L2(BaseModel):
@@ -140,7 +148,9 @@ class OverlayData(BaseModel):
     emotion_arousal: float = 0.0
     audio_energy_rms: float = 0.0
     active_contracts: list[str] = Field(default_factory=list)
-    persistence_allowed: bool = True
+    # Absence is not permission: a record without an explicit boolean
+    # true never grants persistence, and a non-boolean answer is malformed.
+    persistence_allowed: StrictBool = False
     guest_present: bool = False
     consent_phase: str = "no_guest"
     timestamp: float = 0.0
@@ -166,6 +176,7 @@ class OverlayState:
         self._lock = threading.Lock()
         self._data = OverlayData()
         self._stale = True
+        self._stale_cause = "record_missing"
 
     @property
     def data(self) -> OverlayData:
@@ -181,7 +192,23 @@ class OverlayState:
         with self._lock:
             self._data = data
             self._stale = False
+            self._stale_cause = ""
 
-    def mark_stale(self) -> None:
+    def mark_stale(self, cause: str = "record_stale") -> None:
         with self._lock:
             self._stale = True
+            self._stale_cause = cause
+
+    def recording_consent(self) -> tuple[bool, str]:
+        """Return ``(allowed, cause)`` for recording and HLS persistence.
+
+        Only a current record whose ``persistence_allowed`` is exactly True
+        allows. A stale state never allows, whatever the last record said.
+        ``cause`` is a sanitized token, empty when allowed.
+        """
+        with self._lock:
+            if self._stale:
+                return False, self._stale_cause
+            if self._data.persistence_allowed is not True:
+                return False, "persistence_not_affirmed"
+            return True, ""

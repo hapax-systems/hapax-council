@@ -18,7 +18,12 @@ from .effects import try_graph_preset
 from .follow_mode import FollowModeController, read_follow_mode_recommendation
 from .layout import compute_safe_tile_layout
 from .layout_safety import canonical_layout_mode
-from .models import OverlayData
+from .models import (
+    PERCEPTION_RECORD_MAX_AGE_S,
+    RECORDING_BLOCKED_REMEDY,
+    OverlayData,
+    OverlayState,
+)
 from .profiles import apply_camera_profile, evaluate_active_profile
 
 log = logging.getLogger(__name__)
@@ -586,6 +591,65 @@ def process_hero_camera_override(
         return False
 
 
+# Tolerated clock skew for a record dated in the future. Beyond it the
+# record could stay "fresh" forever, so it is treated as stale.
+_PERCEPTION_RECORD_FUTURE_SKEW_S = 1.0
+
+
+def refresh_overlay_from_perception_file(
+    overlay_state: OverlayState, path: Path, *, now: float
+) -> None:
+    """Load the perception record into ``overlay_state``.
+
+    Anything but a fresh, well-formed record marks the state stale with a
+    sanitized cause (``record_missing``, ``record_unreadable``,
+    ``record_malformed`` or ``record_stale``); a stale state never grants
+    recording consent. The cause names no record value.
+    """
+    try:
+        raw = path.read_bytes()  # decoded inside the parse guard below
+    except FileNotFoundError:
+        overlay_state.mark_stale("record_missing")
+        return
+    except OSError:
+        overlay_state.mark_stale("record_unreadable")
+        return
+    try:
+        data = OverlayData(**json.loads(raw))
+    except Exception:
+        # Validation errors echo the offending input; log the cause only.
+        log.debug("Perception record unusable (cause=record_malformed)")
+        overlay_state.mark_stale("record_malformed")
+        return
+    age = now - data.timestamp
+    if not -_PERCEPTION_RECORD_FUTURE_SKEW_S <= age <= PERCEPTION_RECORD_MAX_AGE_S:
+        overlay_state.mark_stale("record_stale")
+        return
+    overlay_state.update(data)
+
+
+def enforce_recording_consent(compositor: Any) -> tuple[bool, str]:
+    """Drive the recording and HLS valves from the overlay state's consent.
+
+    Returns ``(allowed, cause)``. A change is applied on the GLib main loop;
+    a refusal is logged with its sanitized cause and a remedy.
+    """
+    allowed, cause = compositor._overlay_state.recording_consent()
+    if allowed != compositor._consent_recording_allowed:
+        compositor._consent_recording_allowed = allowed
+        if not allowed:
+            log.warning("Recording BLOCKED (cause=%s; remedy: %s)", cause, RECORDING_BLOCKED_REMEDY)
+        GLib = compositor._GLib
+        if GLib:
+            from .consent import disable_persistence, enable_persistence
+
+            if allowed:
+                GLib.idle_add(lambda: enable_persistence(compositor))
+            else:
+                GLib.idle_add(lambda: disable_persistence(compositor))
+    return allowed, cause
+
+
 def state_reader_loop(compositor: Any) -> None:
     """Daemon thread: read perception-state.json every 1s."""
 
@@ -593,33 +657,13 @@ def state_reader_loop(compositor: Any) -> None:
     reconnect_counter = 0
     layout_check_counter = 0
     while compositor._running:
-        try:
-            if PERCEPTION_STATE_PATH.exists():
-                raw = PERCEPTION_STATE_PATH.read_text()
-                data = OverlayData(**json.loads(raw))
-                if time.time() - data.timestamp > 10:
-                    compositor._overlay_state.mark_stale()
-                else:
-                    compositor._overlay_state.update(data)
-            else:
-                compositor._overlay_state.mark_stale()
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
-            log.debug("Failed to read perception state: %s", exc)
-            compositor._overlay_state.mark_stale()
+        refresh_overlay_from_perception_file(
+            compositor._overlay_state, PERCEPTION_STATE_PATH, now=time.time()
+        )
 
-        # Consent enforcement
-        with compositor._overlay_state._lock:
-            consent_ok = compositor._overlay_state._data.persistence_allowed
-        if consent_ok != compositor._consent_recording_allowed:
-            compositor._consent_recording_allowed = consent_ok
-            GLib = compositor._GLib
-            if GLib:
-                from .consent import disable_persistence, enable_persistence
-
-                if consent_ok:
-                    GLib.idle_add(lambda: enable_persistence(compositor))
-                else:
-                    GLib.idle_add(lambda: disable_persistence(compositor))
+        # Consent enforcement: only a fresh record that affirms
+        # persistence_allowed keeps recording open.
+        enforce_recording_consent(compositor)
 
         # Phase 6 follow-up (volitional-director epic): live-video egress
         # compose-safe hot-swap. The persistence-allowed check above guards
